@@ -1,54 +1,68 @@
-import { AgentApi } from "@effect-flue/shared";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import Agent from "./Agent.ts";
-import { AgentHandlers, AgentStub } from "./handlers.ts";
+import { AgentApi } from "@effect-flue/shared"
+import * as Cloudflare from "alchemy/Cloudflare"
+import { Effect, Layer, Path, Redacted } from "effect"
+import * as Etag from "effect/unstable/http/Etag"
+import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
+import * as HttpRouter from "effect/unstable/http/HttpRouter"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
+import Agent from "./Agent.ts"
+import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
+
+const requireEnv = (key: string): string => {
+  const value = process.env[key]
+  if (value === undefined || value === "") {
+    throw new Error(
+      `${key} is required (set it in .env before running alchemy deploy)`,
+    )
+  }
+  return value
+}
+
+const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
+  fileResponse: () => Effect.die("HttpPlatform.fileResponse not supported"),
+  fileWebResponse: () =>
+    Effect.die("HttpPlatform.fileWebResponse not supported"),
+})
 
 export default class Api extends Cloudflare.Worker<Api>()(
   "Api",
-  { main: import.meta.filename, assets: "../web/dist" },
+  {
+    main: import.meta.filename,
+    assets: {
+      directory: "./apps/web/dist",
+      config: {
+        htmlHandling: "auto-trailing-slash",
+        notFoundHandling: "single-page-application",
+      },
+    },
+    env: {
+      OPENROUTER_API_KEY: Redacted.make(requireEnv("OPENROUTER_API_KEY")),
+    },
+  },
   Effect.gen(function* () {
-    const agents = yield* Agent;
-
-    const AgentStubLive: Layer.Layer<AgentStub> = Layer.succeed(
-      AgentStub,
-      agents,
-    );
-
-    const AppLive = HttpApiBuilder.layer(AgentApi).pipe(
-      Layer.provide(AgentHandlers),
-      Layer.provide(AgentStubLive),
-      Layer.provide(HttpServer.layerServices),
-    );
-
-    const { handler } = HttpRouter.toWebHandler(AppLive);
+    const agents = yield* Agent
 
     return {
-      fetch: Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const ctx =
-          yield* Effect.context<Cloudflare.WorkerEnvironment | AgentStub>();
-        const webRequest = yield* HttpServerRequest.toWeb(request).pipe(
-          Effect.orDie,
-        );
-        const response = yield* Effect.promise(() => handler(webRequest, ctx));
-        return HttpServerResponse.fromWeb(response);
-      }).pipe(Effect.provideService(AgentStub, agents)),
-    };
-  }).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        Cloudflare.R2BucketBindingLive,
-        Cloudflare.SecretBindingLive,
+      fetch: HttpApiBuilder.layer(AgentApi).pipe(
+        Layer.provide(AgentHandlers),
+        Layer.provide([Etag.layer, HttpPlatformStub, Path.layer]),
+        HttpRouter.toHttpEffect,
+        Effect.map((handler) =>
+          Effect.gen(function* () {
+            const env = yield* Cloudflare.WorkerEnvironment
+            // Worker env binding round-trips through Redacted; unwrap.
+            const rawKey = env.OPENROUTER_API_KEY
+            const apiKey = Redacted.isRedacted(rawKey)
+              ? Redacted.value(rawKey)
+              : String(rawKey)
+            return yield* handler.pipe(
+              Effect.provideService(AgentStub, agents),
+              Effect.provideService(OpenRouterApiKey, apiKey),
+              Effect.orDie,
+            )
+          }),
+        ),
       ),
-    ),
-  ),
+    }
+  }),
 ) {}

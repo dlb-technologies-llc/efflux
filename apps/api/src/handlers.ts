@@ -1,23 +1,68 @@
-import { AgentApi, StreamPart } from "@effect-flue/shared";
-import * as Cloudflare from "alchemy/Cloudflare";
-import * as Context from "effect/Context";
-import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import type Agent from "./Agent.ts";
+import {
+  AgentApi,
+  HistoryResponse,
+  Message,
+  PromptResponse,
+} from "@effect-flue/shared"
+import * as Cloudflare from "alchemy/Cloudflare"
+import { Context, Effect } from "effect"
+import { HttpApiBuilder } from "effect/unstable/httpapi"
+import type Agent from "./Agent.ts"
 
-// Per-Agent DurableObjectNamespace stub yielded once at the Worker init
-// phase and provided to handlers via this context tag.
-export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>;
+export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
 
 export class AgentStub extends Context.Service<AgentStub, AgentNamespace>()(
   "api/AgentStub",
 ) {}
 
-const encodeStreamPart = Schema.encodeSync(StreamPart);
-const textEncoder = new TextEncoder();
+export class OpenRouterApiKey extends Context.Service<
+  OpenRouterApiKey,
+  string
+>()("api/OpenRouterApiKey") {}
+
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+
+const callOpenRouter = (
+  apiKey: string,
+  model: string,
+  messages: ReadonlyArray<{ role: string; content: string }>,
+) =>
+  Effect.tryPromise({
+    try: async () => {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model, messages }),
+      })
+      const body = await res.text()
+      if (!res.ok) {
+        throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 500)}`)
+      }
+      const json = JSON.parse(body) as {
+        choices: Array<{
+          message: { content: string }
+          finish_reason: string
+        }>
+        model: string
+      }
+      const choice = json.choices[0]
+      if (!choice) {
+        throw new Error(`OpenRouter returned no choices: ${body.slice(0, 500)}`)
+      }
+      return {
+        text: choice.message.content,
+        finishReason: choice.finish_reason,
+        model: json.model,
+      }
+    },
+    catch: (cause) =>
+      cause instanceof Error
+        ? cause
+        : new Error(`OpenRouter call failed: ${String(cause)}`),
+  })
 
 export const AgentHandlers = HttpApiBuilder.group(
   AgentApi,
@@ -26,45 +71,61 @@ export const AgentHandlers = HttpApiBuilder.group(
     handlers
       .handle("prompt", ({ params, payload }) =>
         Effect.gen(function* () {
-          const agents = yield* AgentStub;
-          const agent = agents.getByName(`${params.name}/${params.id}`);
-          return yield* agent.prompt(payload);
+          const agents = yield* AgentStub
+          const apiKey = yield* OpenRouterApiKey
+          const agent = agents.getByName(`${params.name}/${params.id}`)
+
+          const history = yield* agent.history().pipe(Effect.orDie)
+
+          const result = yield* callOpenRouter(
+            apiKey,
+            payload.model ?? DEFAULT_MODEL,
+            [...history, { role: "user", content: payload.message }],
+          ).pipe(
+            Effect.tapError((err) =>
+              Effect.sync(() =>
+                console.error("OpenRouter failed:", err.message),
+              ),
+            ),
+            Effect.orDie,
+          )
+
+          const messageCount = yield* agent
+            .append([
+              { role: "user", content: payload.message },
+              { role: "assistant", content: result.text },
+            ])
+            .pipe(Effect.orDie)
+
+          return new PromptResponse({
+            text: result.text,
+            finishReason: result.finishReason,
+            toolCallCount: 0,
+            model: result.model,
+            messageCount,
+          })
         }),
       )
       .handle("history", ({ params }) =>
         Effect.gen(function* () {
-          const agents = yield* AgentStub;
-          const agent = agents.getByName(`${params.name}/${params.id}`);
-          const history = yield* agent.history();
-          return { history };
+          const agents = yield* AgentStub
+          const agent = agents.getByName(`${params.name}/${params.id}`)
+          const history = yield* agent.history().pipe(Effect.orDie)
+          return new HistoryResponse({
+            history: history.map(
+              (m) => new Message({ role: m.role, content: m.content }),
+            ),
+          })
         }),
       )
       .handle("reset", ({ params }) =>
         Effect.gen(function* () {
-          const agents = yield* AgentStub;
-          const agent = agents.getByName(`${params.name}/${params.id}`);
-          yield* agent.reset();
+          const agents = yield* AgentStub
+          const agent = agents.getByName(`${params.name}/${params.id}`)
+          yield* agent.reset().pipe(Effect.orDie)
         }),
       )
-      .handle("stream", ({ params, payload }) =>
-        Effect.gen(function* () {
-          const agents = yield* AgentStub;
-          const env = yield* Cloudflare.WorkerEnvironment;
-          const agent = agents.getByName(`${params.name}/${params.id}`);
-          const sseBytes = agent.streamPrompt(payload).pipe(
-            Stream.map((part) => {
-              const json = JSON.stringify(encodeStreamPart(part));
-              return textEncoder.encode(`data: ${json}\n\n`);
-            }),
-            Stream.provideService(Cloudflare.WorkerEnvironment, env),
-          );
-          return HttpServerResponse.stream(sseBytes, {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-            },
-          });
-        }),
+      .handle("stream", () =>
+        Effect.die(new Error("stream handler not implemented yet")),
       ),
-);
+)

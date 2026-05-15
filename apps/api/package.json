@@ -14,13 +14,14 @@
   "dependencies": {
     "@effect-flue/shared": "workspace:*",
     "@effect/ai-openrouter": "4.0.0-beta.66",
+    "@effect/platform-bun": "4.0.0-beta.66",
     "@effect/platform-node": "4.0.0-beta.66",
     "alchemy": "2.0.0-beta.39",
     "effect": "4.0.0-beta.66"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",
-    "@types/node": "^22.10.0",
+    "@types/bun": "^1.3.13",
     "typescript": "^5.6.0"
   }
 }

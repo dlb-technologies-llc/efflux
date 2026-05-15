@@ -1,7 +1,7 @@
 import { PromptRequest, StreamPart } from "@effect-flue/shared"
-import * as Effect from "effect/Effect"
-import * as Schema from "effect/Schema"
-import * as Stream from "effect/Stream"
+import { Effect as Effect } from "effect"
+import { Schema as Schema } from "effect"
+import { Stream as Stream } from "effect"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
 
@@ -27,13 +27,17 @@ export const promptAtom = runtime.fn(
     args: SessionArgs & { readonly message: string; readonly model?: string; readonly skill?: string },
   ) {
     const client = yield* ApiClient
+    // HttpApiClient encodes the payload via PromptRequest schema, which is
+    // a Schema.Class — it requires an actual class instance, not a plain
+    // object with the matching shape. Same constraint as the server's
+    // response encoder. See ISSUES.md.
     return yield* client.agents.prompt({
       params: { name: args.name, id: args.id },
-      payload: {
+      payload: new PromptRequest({
         message: args.message,
         ...(args.model !== undefined ? { model: args.model } : {}),
         ...(args.skill !== undefined ? { skill: args.skill } : {}),
-      },
+      }),
     })
   }),
 )

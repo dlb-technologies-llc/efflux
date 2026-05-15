@@ -1,4 +1,4 @@
-import * as Schema from "effect/Schema"
+import { Schema as Schema } from "effect"
 
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),

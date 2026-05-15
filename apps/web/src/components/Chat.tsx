@@ -1,8 +1,8 @@
-import { useAtom, useAtomRefresh, useAtomValue } from "@effect/atom-react"
-import { Cause } from "effect"
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
+import { Cause, Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { historyAtom, historyKey, streamAtom } from "../atoms.ts"
+import { historyAtom, historyKey, promptAtom } from "../atoms.ts"
 import { MessageList } from "./MessageList.tsx"
 
 export interface ChatProps {
@@ -11,59 +11,37 @@ export interface ChatProps {
 }
 
 export function Chat({ name, id }: ChatProps) {
-  // Controlled input + accumulated stream text. `submitError` mirrors stream
-  // failures into the UI; everything else is driven by atom results.
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
-  const [streamingText, setStreamingText] = React.useState<string>("")
+  const [pending, setPending] = React.useState(false)
 
-  // Memoise the family key so the per-session history atom is stable across
-  // renders and `useAtomValue` subscribes to one underlying atom per session.
-  const sessionAtom = React.useMemo(() => historyAtom(historyKey({ name, id })), [name, id])
-
+  const sessionAtom = React.useMemo(
+    () => historyAtom(historyKey({ name, id })),
+    [name, id],
+  )
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
+  const sendPrompt = useAtomSet(promptAtom, { mode: "promiseExit" })
 
-  // Stream is the single source of truth for the model call. The Worker's
-  // streamPrompt persists the assistant message to DO storage on completion
-  // (and partial text on interrupt), so refetching `historyAtom` after the
-  // stream ends is what restores authoritative history.
-  const [streamResult, startStream] = useAtom(streamAtom)
-
-  // Watch streamResult and accumulate text deltas / clean up on completion.
-  // Note: this is a stream transform (fold), not a mutation side-effect — the
-  // anti-pattern the skill flags is using useEffect for mutation responses.
-  React.useEffect(() => {
-    AsyncResult.match(streamResult, {
-      onInitial: () => undefined,
-      onFailure: (failure) => {
-        const failReason = failure.cause.reasons.find(Cause.isFailReason)
-        setSubmitError(failReason ? failReason.error.message : "Stream failed")
-        setStreamingText("")
-      },
-      onSuccess: (success) => {
-        const part = success.value
-        if (part._tag === "text-delta") {
-          setStreamingText((prev) => prev + part.delta)
-        } else if (part._tag === "done") {
-          setStreamingText("")
-          refreshHistory()
-        }
-      },
-    })
-  }, [streamResult, refreshHistory])
-
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
     setSubmitError(null)
     setInput("")
-    setStreamingText("")
-    startStream({ name, id, message })
+    setPending(true)
+    const exit = await sendPrompt({ name, id, message })
+    setPending(false)
+    Exit.match(exit, {
+      onFailure: (cause) => {
+        const failReason = cause.reasons.find(Cause.isFailReason)
+        setSubmitError(failReason ? failReason.error.message : "Stream failed")
+      },
+      onSuccess: () => {
+        refreshHistory()
+      },
+    })
   }
-
-  const pending = historyResult.waiting || streamResult.waiting
 
   return (
     <main className="chat">
@@ -77,20 +55,19 @@ export function Chat({ name, id }: ChatProps) {
           const failReason = failure.cause.reasons.find(Cause.isFailReason)
           return (
             <p className="error">
-              Failed to load history: {failReason ? failReason.error.message : "Something went wrong"}
+              Failed to load history:{" "}
+              {failReason ? failReason.error.message : "Something went wrong"}
             </p>
           )
         },
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
-      {streamingText.length > 0
-        ? (
-          <div className="message message-assistant pending">
-            <div className="role">assistant (streaming)</div>
-            {streamingText}
-          </div>
-        )
-        : null}
+      {pending ? (
+        <div className="message message-assistant pending">
+          <div className="role">assistant</div>
+          thinking...
+        </div>
+      ) : null}
       {submitError !== null ? <p className="error">{submitError}</p> : null}
       <form className="composer" onSubmit={handleSubmit}>
         <input
