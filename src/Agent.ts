@@ -15,35 +15,37 @@ import { Skills } from "./Skills.ts";
 
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6";
 
-const Message = Schema.Struct({
-  role: Schema.Literal("user", "assistant"),
+export class Message extends Schema.Class<Message>("Message")({
+  role: Schema.Literals(["user", "assistant"]),
   content: Schema.String,
-});
-type Message = typeof Message.Type;
+}) {}
+
+const HistorySchema = Schema.Array(Message);
 
 export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
   "Agents",
   Effect.gen(function* () {
-    // Per-class bindings, resolved once.
     const skills = yield* Cloudflare.R2Bucket.bind(Skills);
     const apiKey = yield* Cloudflare.Secret.bind(OpenRouterKey);
     const sandbox = yield* Cloudflare.Container.bind(Sandbox);
 
+    // Nested Effect.gen is the DurableObjectNamespace contract: outer
+    // = per-class init, inner = per-instance methods.
+    // @effect-diagnostics-next-line returnEffectInGen:off
     return Effect.gen(function* () {
       const state = yield* Cloudflare.DurableObjectState;
       const container = yield* Cloudflare.start(sandbox);
 
-      // OpenRouter client layer, built once per DO instance.
       const clientLayer = OpenRouterClient.layer({
-        apiKey: Redacted.make(yield* apiKey),
+        apiKey: Redacted.make(yield* apiKey.pipe(Effect.orDie)),
       }).pipe(Layer.provide(FetchHttpClient.layer));
 
-      // Tool the model can invoke. Runs inside the container sandbox.
       const Bash = Tool.make("bash", {
         description: "Execute a bash command in a sandboxed Linux container.",
         parameters: Schema.Struct({
           command: Schema.String.annotate({
-            description: "The shell command to run, e.g. `grep -ri auth /workspace/kb`.",
+            description:
+              "The shell command to run, e.g. `grep -ri auth /workspace/kb`.",
           }),
         }),
         success: Schema.Struct({
@@ -57,49 +59,68 @@ export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
       const toolkitLayer = toolkit.toLayer(
         Effect.succeed(
           toolkit.of({
-            bash: ({ command }) =>
-              container.exec(command).pipe(Effect.orDie),
+            bash: ({ command }: { command: string }) =>
+              container.exec(command).pipe(
+                Effect.map((r) => ({ ...r, exitCode: Number(r.exitCode) })),
+                Effect.orDie,
+              ),
           }),
         ),
       );
 
+      const stripFrontmatter = (s: string) =>
+        s.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+
       const loadSkill = (name: string) =>
         skills.get(`skills/${name}.md`).pipe(
           Effect.flatMap((obj) =>
-            obj === null
-              ? Effect.succeed("")
-              : obj.text(),
+            obj === null ? Effect.succeed("") : obj.text(),
           ),
           Effect.map(stripFrontmatter),
-          Effect.catchAll(() => Effect.succeed("")),
+          Effect.catchCause(() => Effect.succeed("")),
         );
 
-      const loadHistory = state.storage
-        .get<readonly Message[]>("history")
-        .pipe(Effect.map((h) => h ?? []));
+      const decodeHistory = Schema.decodeUnknownEffect(HistorySchema);
+      const encodeHistory = Schema.encodeEffect(HistorySchema);
 
-      const saveHistory = (h: readonly Message[]) =>
-        state.storage.put("history", h);
+      const loadHistory = state.storage.get<unknown>("history").pipe(
+        Effect.flatMap((raw) =>
+          raw === undefined
+            ? Effect.succeed<ReadonlyArray<Message>>([])
+            : decodeHistory(raw),
+        ),
+        Effect.orDie,
+      );
+
+      const saveHistory = (h: ReadonlyArray<Message>) =>
+        encodeHistory(h).pipe(
+          Effect.flatMap((encoded) => state.storage.put("history", encoded)),
+          Effect.orDie,
+        );
 
       return {
         prompt: (input: { message: string; model?: string; skill?: string }) =>
           Effect.gen(function* () {
-            const skill = yield* loadSkill(input.skill ?? "support");
+            const skillBody = yield* loadSkill(input.skill ?? "support");
             const history = yield* loadHistory;
-            const next: readonly Message[] = [
+            const next: ReadonlyArray<Message> = [
               ...history,
-              { role: "user" as const, content: input.message },
+              new Message({ role: "user", content: input.message }),
+            ];
+
+            const messages = [
+              ...(skillBody
+                ? [Prompt.makeMessage("system", { content: skillBody })]
+                : []),
+              ...next.map((m) =>
+                Prompt.makeMessage(m.role, {
+                  content: [Prompt.makePart("text", { text: m.content })],
+                }),
+              ),
             ];
 
             const response = yield* LanguageModel.generateText({
-              system: skill || undefined,
-              prompt: Prompt.fromMessages(
-                next.map((m) =>
-                  m.role === "user"
-                    ? Prompt.user(m.content)
-                    : Prompt.assistant(m.content),
-                ),
-              ),
+              prompt: Prompt.fromMessages(messages),
               toolkit,
             }).pipe(
               Effect.provide(
@@ -107,9 +128,9 @@ export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
               ),
             );
 
-            const updated: readonly Message[] = [
+            const updated: ReadonlyArray<Message> = [
               ...next,
-              { role: "assistant" as const, content: response.text },
+              new Message({ role: "assistant", content: response.text }),
             ];
             yield* saveHistory(updated);
 
@@ -133,6 +154,3 @@ export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
     });
   }),
 ) {}
-
-const FRONTMATTER = /^---\n[\s\S]*?\n---\n/;
-const stripFrontmatter = (s: string) => s.replace(FRONTMATTER, "").trim();

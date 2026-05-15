@@ -11,4 +11,4 @@ export const OpenRouterKey = Effect.gen(function* () {
     store,
     value,
   });
-});
+}).pipe(Effect.orDie);

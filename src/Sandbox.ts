@@ -3,6 +3,7 @@ import { Stack } from "alchemy/Stack";
 import * as Effect from "effect/Effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Stream from "effect/Stream";
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
 
@@ -40,12 +41,15 @@ export const SandboxLive = Sandbox.make(
             ),
           ),
           Effect.map(([exitCode, stdout, stderr]) => ({
-            exitCode,
+            exitCode: Number(exitCode),
             stdout,
             stderr,
           })),
           Effect.scoped,
         ),
+      fetch: Effect.succeed(
+        HttpServerResponse.text("Sandbox container (use exec via RPC)"),
+      ),
     });
   }),
 );

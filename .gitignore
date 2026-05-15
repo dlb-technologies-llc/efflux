@@ -1,0 +1,7 @@
+node_modules
+.alchemy
+.wrangler
+dist
+*.log
+.env
+.dev.vars
