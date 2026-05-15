@@ -1,0 +1,26 @@
+{
+  "name": "@effect-flue/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "alchemy deploy",
+    "dev": "alchemy dev",
+    "destroy": "alchemy destroy",
+    "tail": "alchemy tail",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect-flue/shared": "workspace:*",
+    "@effect/ai-openrouter": "4.0.0-beta.66",
+    "@effect/platform-node": "4.0.0-beta.66",
+    "alchemy": "2.0.0-beta.39",
+    "effect": "4.0.0-beta.66"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240620.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  }
+}
