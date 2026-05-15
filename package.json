@@ -6,9 +6,16 @@
   "description": "Flue's Support Agent example, rebuilt in Effect v4 + alchemy-effect. Proves the framework isn't necessary.",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
-    "build": "pnpm -r build",
-    "deploy": "pnpm --filter @effect-flue/api deploy",
-    "dev": "pnpm --filter @effect-flue/api dev"
+    "build": "pnpm --filter @effect-flue/web build && pnpm --filter @effect-flue/api typecheck",
+    "predeploy": "pnpm build",
+    "deploy": "alchemy deploy",
+    "destroy": "alchemy destroy",
+    "tail": "alchemy tail",
+    "dev": "alchemy dev"
+  },
+  "dependencies": {
+    "alchemy": "2.0.0-beta.39",
+    "effect": "4.0.0-beta.66"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

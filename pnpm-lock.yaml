@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      alchemy:
+        specifier: 2.0.0-beta.39
+        version: 2.0.0-beta.39(@effect/platform-node@4.0.0-beta.66(effect@4.0.0-beta.66)(ioredis@5.10.1))(effect@4.0.0-beta.66)(typescript@5.9.3)(vite@5.4.21(@types/node@22.19.19))(vitest@4.1.6(@types/node@22.19.19)(vite@5.4.21(@types/node@22.19.19)))(workerd@1.20260515.1)(ws@8.20.1)
+      effect:
+        specifier: 4.0.0-beta.66
+        version: 4.0.0-beta.66
     devDependencies:
       typescript:
         specifier: ^5.6.0

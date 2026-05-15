@@ -14,7 +14,7 @@ import { AgentHandlers, AgentStub } from "./handlers.ts";
 
 export default class Api extends Cloudflare.Worker<Api>()(
   "Api",
-  { main: import.meta.filename },
+  { main: import.meta.filename, assets: "../web/dist" },
   Effect.gen(function* () {
     const agents = yield* Agent;
 
