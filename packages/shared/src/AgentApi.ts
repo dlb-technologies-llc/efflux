@@ -12,9 +12,19 @@ import {
   PromptResponse,
 } from "./Schemas.ts"
 
+// Session keys are URL path segments backed by DO ids; constrain to safe
+// characters to prevent path-traversal-like attacks via `:name` / `:id`.
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
+const SafeId = Schema.String.pipe(
+  Schema.refine((s): s is string => SAFE_ID_PATTERN.test(s), {
+    title: "SafeId",
+    description: "alphanumeric, hyphen, underscore; 1-128 chars",
+  }),
+)
+
 const AgentParams = Schema.Struct({
-  name: Schema.String,
-  id: Schema.String,
+  name: SafeId,
+  id: SafeId,
 })
 
 const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {

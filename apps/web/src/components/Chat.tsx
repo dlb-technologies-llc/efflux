@@ -1,8 +1,8 @@
-import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { Cause, Exit } from "effect"
+import { useAtom, useAtomRefresh, useAtomValue } from "@effect/atom-react"
+import { Cause } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { historyAtom, historyKey, promptAtom, streamAtom } from "../atoms.ts"
+import { historyAtom, historyKey, streamAtom } from "../atoms.ts"
 import { MessageList } from "./MessageList.tsx"
 
 export interface ChatProps {
@@ -11,52 +11,59 @@ export interface ChatProps {
 }
 
 export function Chat({ name, id }: ChatProps) {
-  // Controlled input is the only local state. Loading / error / messages all
-  // come from atom results.
+  // Controlled input + accumulated stream text. `submitError` mirrors stream
+  // failures into the UI; everything else is driven by atom results.
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
+  const [streamingText, setStreamingText] = React.useState<string>("")
 
   // Memoise the family key so the per-session history atom is stable across
-  // renders and `useAtom` subscribes to one underlying atom for the session.
+  // renders and `useAtomValue` subscribes to one underlying atom per session.
   const sessionAtom = React.useMemo(() => historyAtom(historyKey({ name, id })), [name, id])
 
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
 
+  // Stream is the single source of truth for the model call. The Worker's
+  // streamPrompt persists the assistant message to DO storage on completion
+  // (and partial text on interrupt), so refetching `historyAtom` after the
+  // stream ends is what restores authoritative history.
   const [streamResult, startStream] = useAtom(streamAtom)
-  const promptSet = useAtomSet(promptAtom, { mode: "promiseExit" })
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  // Watch streamResult and accumulate text deltas / clean up on completion.
+  // Note: this is a stream transform (fold), not a mutation side-effect — the
+  // anti-pattern the skill flags is using useEffect for mutation responses.
+  React.useEffect(() => {
+    AsyncResult.match(streamResult, {
+      onInitial: () => undefined,
+      onFailure: (failure) => {
+        const failReason = failure.cause.reasons.find(Cause.isFailReason)
+        setSubmitError(failReason ? failReason.error.message : "Stream failed")
+        setStreamingText("")
+      },
+      onSuccess: (success) => {
+        const part = success.value
+        if (part._tag === "text-delta") {
+          setStreamingText((prev) => prev + part.delta)
+        } else if (part._tag === "done") {
+          setStreamingText("")
+          refreshHistory()
+        }
+      },
+    })
+  }, [streamResult, refreshHistory])
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
     setSubmitError(null)
     setInput("")
-
-    // Kick off the SSE stream in parallel so deltas appear live alongside the
-    // non-streaming POST that the server persists into history.
+    setStreamingText("")
     startStream({ name, id, message })
-
-    const exit = await promptSet({ name, id, message })
-    Exit.match(exit, {
-      onFailure: (cause) => {
-        // v4: Cause is flat — iterate the reasons array for the first Fail.
-        const failReason = cause.reasons.find(Cause.isFailReason)
-        setSubmitError(failReason ? failReason.error.message : "Something went wrong")
-      },
-      onSuccess: () => {
-        refreshHistory()
-      },
-    })
   }
 
   const pending = historyResult.waiting || streamResult.waiting
-
-  const liveDelta = AsyncResult.match(streamResult, {
-    onInitial: () => null,
-    onFailure: () => null,
-    onSuccess: (success) => (success.value._tag === "text-delta" ? success.value.delta : null),
-  })
 
   return (
     <main className="chat">
@@ -76,11 +83,11 @@ export function Chat({ name, id }: ChatProps) {
         },
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
-      {liveDelta !== null
+      {streamingText.length > 0
         ? (
           <div className="message message-assistant pending">
             <div className="role">assistant (streaming)</div>
-            {liveDelta}
+            {streamingText}
           </div>
         )
         : null}

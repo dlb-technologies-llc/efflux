@@ -1,9 +1,11 @@
-import { StreamPart } from "@effect-flue/shared"
+import { PromptRequest, StreamPart } from "@effect-flue/shared"
 import * as Effect from "effect/Effect"
 import * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
+
+const encodePromptRequest = Schema.encodeSync(PromptRequest)
 
 /**
  * Arguments shared by every per-session atom.
@@ -145,14 +147,17 @@ export const streamAtom = runtime.fn(
   (args: SessionArgs & { readonly message: string; readonly model?: string; readonly skill?: string }) =>
     Stream.fromAsyncIterable(
       (async function*() {
-        const response = await fetch(`/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
+        const body = encodePromptRequest(
+          new PromptRequest({
             message: args.message,
             ...(args.model !== undefined ? { model: args.model } : {}),
             ...(args.skill !== undefined ? { skill: args.skill } : {}),
           }),
+        )
+        const response = await fetch(`/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
         })
         if (!response.ok || response.body === null) {
           throw new Error(`Stream request failed: ${response.status} ${response.statusText}`)

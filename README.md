@@ -128,7 +128,7 @@ pnpm typecheck                          # tsc --noEmit across all workspaces
 pnpm build                              # builds the FE then typechecks the Worker
 ```
 
-`pnpm build` first runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. The web build is what gets shipped to the Worker as static assets (see the note in `alchemy.run.ts` — the wiring is split between this stack and the Worker class definition).
+`pnpm build` first runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. The Worker class in `apps/api/src/Api.ts` declares `assets: "../web/dist"`, so the same Worker serves both `/agents/*` (HttpApi) and `/` (the built FE) on deploy.
 
 ## Deploy
 
