@@ -164,17 +164,21 @@ export const UploadSkills = Action(
       contentsHash: string
       bucketName: string
       jurisdiction?: "default" | "eu" | "fedramp"
+      // Absolute paths resolved by `alchemy.run.ts` from `import.meta.dirname`
+      // so the upload is independent of the deploy CWD.
+      skillsDir: string
+      rolesDir: string
     }) {
       yield* uploadDir(
         input.bucketName,
         input.jurisdiction,
-        path.join("apps", "api", "skills"),
+        input.skillsDir,
         "skills",
       )
       yield* uploadDir(
         input.bucketName,
         input.jurisdiction,
-        path.join("apps", "api", "roles"),
+        input.rolesDir,
         "roles",
       )
       return { contentsHash: input.contentsHash }

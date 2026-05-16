@@ -31,10 +31,33 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 // `WorkerEnvironment` is only available inside per-event Effects (fetch
 // dispatch + cron callback). Yielding it in the outer Worker init crashes
 // the Worker with the opaque `[object Object]` failure (see ISSUES.md).
+//
+// `requireEnv` in the deploy props is the primary guard, but defending the
+// runtime path too prevents a silent "undefined" Bearer token from ever
+// reaching OpenRouter if a binding round-trip ever drops the value.
 const unwrapApiKey = Effect.gen(function* () {
   const env = yield* Cloudflare.WorkerEnvironment
   const raw = env.OPENROUTER_API_KEY
-  return String(Redacted.isRedacted(raw) ? Redacted.value(raw) : raw)
+  if (raw === undefined || raw === null || raw === "") {
+    return yield* Effect.die(
+      new Error("OPENROUTER_API_KEY missing from Worker environment"),
+    )
+  }
+  if (Redacted.isRedacted(raw)) {
+    const value = Redacted.value(raw)
+    if (typeof value !== "string" || value === "") {
+      return yield* Effect.die(
+        new Error("OPENROUTER_API_KEY is empty or non-string after unwrap"),
+      )
+    }
+    return value
+  }
+  if (typeof raw !== "string") {
+    return yield* Effect.die(
+      new Error(`OPENROUTER_API_KEY has unexpected type: ${typeof raw}`),
+    )
+  }
+  return raw
 })
 
 export default class Api extends Cloudflare.Worker<Api>()(

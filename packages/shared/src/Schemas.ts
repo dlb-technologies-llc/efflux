@@ -1,5 +1,18 @@
 import { Schema as Schema } from "effect"
 
+// Shared safe-identifier pattern for URL path segments AND R2 object keys.
+// The latter use applies to `skill` and `role` below, where unconstrained
+// input would let any caller probe the R2 keyspace via `skills/<key>.md` /
+// `roles/<key>.md` and would let an unbounded per-isolate cache grow one
+// entry per unique input. Same constraint as AgentApi's `:name` / `:id`.
+const SAFE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
+export const SafeName = Schema.String.pipe(
+  Schema.refine((s): s is string => SAFE_NAME_PATTERN.test(s), {
+    title: "SafeName",
+    description: "alphanumeric, hyphen, underscore; 1-64 chars",
+  }),
+)
+
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),
   content: Schema.String,
@@ -8,8 +21,8 @@ export class Message extends Schema.Class<Message>("Message")({
 export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")({
   message: Schema.String,
   model: Schema.optionalKey(Schema.String),
-  skill: Schema.optionalKey(Schema.String),
-  role: Schema.optionalKey(Schema.String),
+  skill: Schema.optionalKey(SafeName),
+  role: Schema.optionalKey(SafeName),
 }) {}
 
 export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse")({
