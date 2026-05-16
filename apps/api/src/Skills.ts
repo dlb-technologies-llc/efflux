@@ -1,5 +1,6 @@
 import { AgentError } from "@effect-flue/shared"
 import * as r2 from "@distilled.cloud/cloudflare/r2"
+import type * as runtime from "@cloudflare/workers-types"
 import { Action } from "alchemy"
 import * as Cloudflare from "alchemy/Cloudflare"
 import { Context, Effect } from "effect"
@@ -23,9 +24,10 @@ export const Skills = Cloudflare.R2Bucket("Skills")
  * native handle at the per-event entry keeps `loadSkillBody`'s requirement
  * down to just `SkillsBucket`.
  */
-export class SkillsBucket extends Context.Service<SkillsBucket, R2Bucket>()(
-  "api/SkillsBucket",
-) {}
+export class SkillsBucket extends Context.Service<
+  SkillsBucket,
+  runtime.R2Bucket
+>()("api/SkillsBucket") {}
 
 // Per-isolate cache. Markdown bodies don't change without a redeploy
 // (which mints a new isolate), so caching for the lifetime of the isolate
