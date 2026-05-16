@@ -1,9 +1,11 @@
 import { AgentApi } from "@effect-flue/shared"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Effect, Layer, Path, Redacted } from "effect"
+import { Cause, Effect, Layer, Path, Redacted } from "effect"
 import * as Etag from "effect/unstable/http/Etag"
 import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
+import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable"
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import Agent from "./Agent.ts"
 import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
@@ -55,10 +57,35 @@ export default class Api extends Cloudflare.Worker<Api>()(
             const apiKey = Redacted.isRedacted(rawKey)
               ? Redacted.value(rawKey)
               : String(rawKey)
+            // HttpApiBuilder deliberately Effect.die's HttpApiSchemaError
+            // (request-decode failures) and the encoded result of typed
+            // endpoint errors. Those errors implement HttpServerRespondable
+            // for a structured response (400 for schema errors, the encoded
+            // body for typed errors). We catch the cause here, walk failures
+            // and defects, and render the first respondable value found.
+            // Without this, request-decode failures surface as CF's generic
+            // 500 plain-text rather than the intended 400 JSON.
             return yield* handler.pipe(
               Effect.provideService(AgentStub, agents),
               Effect.provideService(OpenRouterApiKey, apiKey),
-              Effect.orDie,
+              Effect.catchCause((cause) => {
+                for (const reason of cause.reasons) {
+                  const value = Cause.isFailReason(reason)
+                    ? reason.error
+                    : Cause.isDieReason(reason)
+                      ? reason.defect
+                      : undefined
+                  if (
+                    value !== undefined &&
+                    HttpServerRespondable.isRespondable(value)
+                  ) {
+                    return HttpServerRespondable.toResponse(value)
+                  }
+                }
+                return Effect.logError("Unhandled worker cause", cause).pipe(
+                  Effect.as(HttpServerResponse.empty({ status: 500 })),
+                )
+              }),
             )
           }),
         ),
