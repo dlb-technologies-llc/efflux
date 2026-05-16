@@ -1,8 +1,8 @@
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
+import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
 import { Cause, Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { historyAtom, historyKey, promptAtom } from "../atoms.ts"
+import { historyAtom, historyKey, streamAtom } from "../atoms.ts"
 import { MessageList } from "./MessageList.tsx"
 
 export interface ChatProps {
@@ -14,6 +14,7 @@ export function Chat({ name, id }: ChatProps) {
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
+  const [streaming, setStreaming] = React.useState("")
 
   const sessionAtom = React.useMemo(
     () => historyAtom(historyKey({ name, id })),
@@ -21,16 +22,29 @@ export function Chat({ name, id }: ChatProps) {
   )
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
-  const sendPrompt = useAtomSet(promptAtom, { mode: "promiseExit" })
+  const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
+
+  useAtomSubscribe(streamAtom, (result) => {
+    if (!AsyncResult.isSuccess(result)) return
+    const part = result.value
+    if (part._tag === "text-delta") {
+      setStreaming((prev) => prev + part.delta)
+      return
+    }
+    if (part._tag === "error") {
+      setSubmitError(part.message)
+    }
+  })
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
+    setStreaming("")
     setSubmitError(null)
     setInput("")
     setPending(true)
-    const exit = await sendPrompt({ name, id, message })
+    const exit = await runStream({ name, id, message })
     setPending(false)
     Exit.match(exit, {
       onFailure: (cause) => {
@@ -38,6 +52,7 @@ export function Chat({ name, id }: ChatProps) {
         setSubmitError(failReason ? failReason.error.message : "Stream failed")
       },
       onSuccess: () => {
+        setStreaming("")
         refreshHistory()
       },
     })
@@ -62,7 +77,12 @@ export function Chat({ name, id }: ChatProps) {
         },
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
-      {pending ? (
+      {streaming.length > 0 ? (
+        <div className="message message-assistant">
+          <div className="role">assistant</div>
+          {streaming}
+        </div>
+      ) : pending ? (
         <div className="message message-assistant pending">
           <div className="role">assistant</div>
           thinking...
