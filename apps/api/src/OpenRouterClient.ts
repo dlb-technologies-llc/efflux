@@ -161,6 +161,10 @@ export const streamOpenRouter = (args: {
           ),
         ),
         Stream.filterMap(toStreamPart),
+        // Some OpenRouter-hosted models (notably Anthropic) emit
+        // `finish_reason` on more than one chunk, which would otherwise
+        // produce duplicate `done` frames. Stop at the first one.
+        Stream.takeUntil((part) => part._tag === "done"),
       ),
     ),
   )

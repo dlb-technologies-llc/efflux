@@ -64,12 +64,29 @@ export function Chat({ name, id }: ChatProps) {
         const failReason = cause.reasons.find(Cause.isFailReason)
         setSubmitError(failReason ? failReason.error.message : "Stream failed")
       },
+      // Don't clear `streaming` here — the bubble would disappear for the
+      // duration of the history refetch and visually pop back. The success
+      // effect below clears `streaming` once the refreshed history actually
+      // contains the new assistant turn.
       onSuccess: () => {
-        setStreaming("")
         refreshHistory()
       },
     })
   }
+
+  // Clear the live-streaming buffer only AFTER the refreshed history contains
+  // the new assistant turn. Avoids the disappear-then-reappear flicker that
+  // would otherwise happen between `setStreaming("")` and the historyAtom
+  // refetch resolving.
+  const previousHistoryLengthRef = React.useRef(0)
+  React.useEffect(() => {
+    if (!AsyncResult.isSuccess(historyResult)) return
+    const length = historyResult.value.history.length
+    if (length > previousHistoryLengthRef.current && streaming.length > 0) {
+      setStreaming("")
+    }
+    previousHistoryLengthRef.current = length
+  }, [historyResult, streaming.length])
 
   return (
     <main className="chat">
@@ -91,14 +108,15 @@ export function Chat({ name, id }: ChatProps) {
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
       {streaming.length > 0 ? (
-        <div className="message message-assistant">
+        <div className="message message-assistant message-streaming">
           <div className="role">assistant</div>
           {streaming}
+          {pending ? <span className="streaming-cursor" aria-hidden /> : null}
         </div>
       ) : pending ? (
         <div className="message message-assistant pending">
           <div className="role">assistant</div>
-          thinking...
+          <span className="thinking-dots">thinking</span>
         </div>
       ) : null}
       {submitError !== null ? <p className="error">{submitError}</p> : null}
