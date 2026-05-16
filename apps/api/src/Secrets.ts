@@ -1,6 +1,6 @@
 import * as Cloudflare from "alchemy/Cloudflare";
-import * as Config from "effect/Config";
-import * as Effect from "effect/Effect";
+import { Config as Config } from "effect";
+import { Effect as Effect } from "effect";
 
 export const Store = Cloudflare.SecretsStore("AgentSecrets");
 

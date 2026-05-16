@@ -1,112 +1,80 @@
 # effect-flue
 
-> **You don't need Flue.** Here's [Flue's Support Agent example](https://github.com/withastro/flue#support-agent) rebuilt in Effect v4 + alchemy-effect, with model choice via OpenRouter. ~450 lines, no framework.
+> A deployable Cloudflare agent runtime built from Effect v4 + alchemy-effect primitives. No framework required.
 
-## What's the claim
+[Flue](https://flueframework.com) bills itself as "The Agent Harness Framework" — Claude Code, but headless and programmable. Every primitive it ships (per-session DOs, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface) is something you already have on Cloudflare + Effect. This repo proves it: a complete Support Agent with streaming chat UI, every line written in `effect`, `@effect/ai-openrouter`, `@effect/atom-react`, or `alchemy`.
 
-[Flue](https://flueframework.com) is "The Agent Harness Framework" — Claude Code, but headless and programmable. It bundles:
+## What's in here
 
-- Per-instance Durable-Object-backed sessions
-- A container or virtual sandbox
-- An R2-mounted "filesystem-as-context" for skills
-- A model client with tool calling
-- Typed structured output via Valibot
-- An HTTP trigger surface (`POST /agents/<name>/<id>`)
-
-Every one of those is a primitive you already have access to if you're on Cloudflare + Effect:
-
-| Flue | Underlying CF primitive | What we use |
-|---|---|---|
-| Persistent session by URL `<id>` | Durable Object | `alchemy/Cloudflare` `DurableObjectNamespace` |
-| Sandbox | CF Containers | `alchemy/Cloudflare` `Container` |
-| Skills / AGENTS.md | R2 | `alchemy/Cloudflare` `R2Bucket` |
-| Model + tools | — | `@effect/ai-openrouter` + `effect/unstable/ai` |
-| Webhook | Worker | `alchemy/Cloudflare` `Worker` |
-| Typed output | Valibot | `effect/Schema` |
-| Secrets | — | `alchemy/Cloudflare` `SecretsStore` |
-| Deploy | `flue build` | `alchemy deploy` |
-
-This repo is the proof.
-
-## Side-by-side: the Support Agent
-
-### Flue (~30 lines of agent code)
-
-```ts
-// .flue/agents/support.ts
-import { getVirtualSandbox } from '@flue/runtime/cloudflare';
-import type { FlueContext } from '@flue/runtime';
-
-export const triggers = { webhook: true };
-
-export default async function ({ init, payload, env }: FlueContext) {
-  const sandbox = await getVirtualSandbox(env.KNOWLEDGE_BASE);
-  const harness = await init({ sandbox, model: 'openrouter/moonshotai/kimi-k2.6' });
-  const session = await harness.session();
-
-  return await session.prompt(
-    `You are a support agent. Search the knowledge base for articles
-     relevant to this request, then write a helpful response.
-
-     Customer: ${payload.message}`,
-    { role: 'triager' },
-  );
-}
+```
+alchemy.run.ts            # Stack: Worker + DO + R2 + Container + SecretsStore
+apps/
+  api/                    # Cloudflare Worker (HttpApi + DurableObject + Container)
+    src/
+      Api.ts              # Worker class — composes HttpApi + serves the FE
+      Agent.ts            # DurableObjectNamespace — sessions, prompt, streamPrompt
+      handlers.ts         # HttpApi handlers (prompt, history, reset, stream)
+      Sandbox.ts          # CF Container resource + entry script
+      Skills.ts           # R2Bucket resource
+      Secrets.ts          # SecretsStore + OpenRouter key
+  web/                    # Vite + React FE (chat UI)
+    src/
+      App.tsx             # Layout + transcript
+      atoms.ts            # @effect/atom-react Query + Mutation atoms
+      runtime.ts          # Effect runtime + HttpApiClient
+      components/         # Chat UI components
+packages/
+  shared/                 # HttpApi definition, schemas, error types
+    src/                  # AgentApi, Message, PromptResponse, StreamPart, ...
+pnpm-workspace.yaml
+tsconfig.base.json
 ```
 
-### This repo (every line is a primitive you already understand)
+## The architecture
 
-See [`src/Agent.ts`](./src/Agent.ts) for the agent itself, [`src/Api.ts`](./src/Api.ts) for the Worker entry, and [`alchemy.run.ts`](./alchemy.run.ts) for the stack.
+The Worker owns a single HttpApi defined in `@effect-flue/shared`. The same `HttpApi` shape is used three ways:
 
-The agent is a `DurableObjectNamespace`. Each `<id>` segment is one DO instance with its own message history, container sandbox, and bindings:
+1. Server: `HttpApiBuilder.layer(AgentApi)` mounts handlers in `apps/api/src/handlers.ts`.
+2. Client: `HttpApiClient.make(AgentApi, …)` in `apps/web/src/runtime.ts` gives the FE a fully typed call surface.
+3. Stream contract: `StreamPart` is a tagged union; every SSE frame is `Schema.encodeSync(StreamPart)` on the server and `Schema.decodeUnknownEffect(StreamPart)` on the client.
 
-```ts
-export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
-  "Agents",
-  Effect.gen(function* () {
-    const skills = yield* Cloudflare.R2Bucket.bind(Skills);
-    const apiKey = yield* Cloudflare.Secret.bind(OpenRouterKey);
-    const sandbox = yield* Cloudflare.Container.bind(Sandbox);
-
-    return Effect.gen(function* () {
-      const state = yield* Cloudflare.DurableObjectState;
-      const container = yield* Cloudflare.start(sandbox);
-      // ... build OpenRouter layer, tools, expose prompt() method
-    });
-  }),
-) {}
+```
+┌───────────────────────┐                  ┌────────────────────────────────┐
+│   Browser (React)     │   HTTP / SSE     │   Cloudflare Worker (Api)      │
+│                       │ ───────────────► │                                │
+│  apps/web             │                  │   HttpApiBuilder.layer(        │
+│   • atom-react Query  │                  │     AgentApi                   │
+│   • atom-react Mutation                  │   )                            │
+│   • HttpApiClient     │                  │                                │
+│   • StreamPart decode │                  │   handlers.ts: prompt /        │
+│                       │                  │     history / reset / stream   │
+└───────────────────────┘                  └────────────┬───────────────────┘
+                                                        │
+                                                        │ DurableObjectNamespace.getByName
+                                                        ▼
+                                            ┌────────────────────────────────┐
+                                            │  Agents (DurableObject)        │
+                                            │   • history in DO storage      │
+                                            │   • prompt()  — generateText   │
+                                            │   • streamPrompt() — streamText│
+                                            └──┬──────────┬──────────┬───────┘
+                                               │          │          │
+                                       OpenRouter    R2 (skills)  Container
+                                       LanguageModel              (Sandbox)
 ```
 
-## What's wired
+The FE talks to `/agents/*` over the typed client. Streaming uses `POST /agents/<name>/<id>/stream`, which returns `text/event-stream`. Inside the Worker, `LanguageModel.streamText` produces a Stream; the handler maps each frame through `StreamPart` and writes `data: <json>\n\n`. The browser decodes back into the same union and renders deltas as they arrive.
 
-- **Persistent sessions** — DO storage holds the message array under `history`. Same `<id>` continues, new `<id>` starts fresh.
-- **Model choice via OpenRouter** — caller picks the model per request. Falls back to `anthropic/claude-sonnet-4-6`.
-- **Skills from R2** — `skills/support.md` is uploaded to R2 and loaded on each prompt. Frontmatter stripped, body becomes the system prompt.
-- **Container sandbox** — every DO instance starts a [`Sandbox` Container](./src/Sandbox.ts). The model gets a `bash` tool that runs commands inside it.
-- **Typed structured output** — every prompt returns `{ text, finishReason, toolCallCount, model, messageCount }` validated through Effect Schema.
+## How it's used
 
-## Usage
-
-Set the OpenRouter key, then deploy:
+Every endpoint is a method on the `AgentApi` HttpApi:
 
 ```sh
-export OPENROUTER_API_KEY=sk-or-...
-pnpm install
-pnpm deploy
-```
-
-Then talk to it:
-
-```sh
-# Start a session, default model
+# Start (or continue) a session — default model
 curl https://<your-worker>/agents/support/user-abc \
   -d '{"message": "How do I reset my password?"}'
 
-# Same id continues the conversation
-curl https://<your-worker>/agents/support/user-abc \
-  -d '{"message": "Thanks. One more question..."}'
-
-# Caller picks the model
+# Same id continues the conversation; caller picks the model
 curl https://<your-worker>/agents/support/user-abc \
   -d '{
     "message": "Summarize what we discussed",
@@ -118,50 +86,95 @@ curl https://<your-worker>/agents/support/user-abc
 
 # Reset
 curl -X DELETE https://<your-worker>/agents/support/user-abc
+
+# Stream the next reply as SSE
+curl -N https://<your-worker>/agents/support/user-abc/stream \
+  -d '{"message": "Walk me through this slowly"}'
 ```
 
-## The honest cost
+Each `<name>/<id>` pair routes to one `Agent` DurableObject instance with its own history, container sandbox, and bindings.
 
-Flue's Support Agent example is ~30 lines. This repo is ~450 lines. The framework was doing real work for you:
+## The chat UI
 
-- Auto-wiring DO bindings
-- Auto-loading skills from filesystem context
-- Auto-resolving models per call
-- HTTP routing
-- Container lifecycle
+`apps/web` is a Vite + React app. It does not duplicate any type from the Worker — every request and response goes through:
 
-**What you give up:** convenience and a zero-config DX.
+```ts
+// apps/web/src/runtime.ts
+const client = yield* HttpApiClient.make(AgentApi, { baseUrl: window.location.origin });
+```
+
+Mutations (send, reset) are `@effect/atom-react` mutation atoms; the history view is a query atom. The streaming endpoint is consumed as a `Stream<StreamPart>`, validated frame-by-frame via `Schema.decodeUnknownEffect(StreamPart)`. If the server adds a new part variant tomorrow, the client breaks at the schema, not at a `JSON.parse` followed by a `switch`.
+
+In dev, Vite's proxy forwards `/agents/*` to the local Worker at `http://localhost:8787`. In production, the FE is served from the same Worker, so `window.location.origin` resolves to the Worker hostname and no CORS is involved.
+
+## Streaming
+
+The DurableObject `streamPrompt` method returns a `Stream` driven by `LanguageModel.streamText`. The Worker handler wraps that stream with `Stream.map(part => textEncoder.encode("data: " + JSON.stringify(encodeStreamPart(part)) + "\n\n"))` and hands it to `HttpServerResponse.stream`.
+
+The DO accumulates `text-delta` parts into a local buffer as the stream runs, and uses `Stream.ensuring` to persist whatever it has when the stream terminates — successfully or otherwise. If the client disconnects mid-stream, the assistant's partial text is saved with `finishReason: "interrupted"`, so the next `GET /agents/<name>/<id>` shows the partial reply, not nothing.
+
+On the browser side the same `StreamPart` schema decodes each SSE frame. Unknown tags are filtered out, so a server that emits a new variant won't crash the UI — old clients just stop rendering the new frames.
+
+## Dev
+
+```sh
+pnpm install
+
+# Two terminals (no concurrent runner is wired):
+pnpm dev                                # terminal 1 — alchemy dev (Worker at :8787)
+pnpm --filter @effect-flue/web dev      # terminal 2 — Vite (FE at :5173, proxies /agents)
+
+pnpm typecheck                          # tsc --noEmit across all workspaces
+pnpm build                              # builds the FE then typechecks the Worker
+```
+
+`pnpm build` first runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. The Worker class in `apps/api/src/Api.ts` declares `assets: "../web/dist"`, so the same Worker serves both `/agents/*` (HttpApi) and `/` (the built FE) on deploy.
+
+## Deploy
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...
+pnpm deploy
+```
+
+The `predeploy` script runs `pnpm build` first, so a stale or missing `apps/web/dist` can't ship. `alchemy deploy` reads `alchemy.run.ts` at the repo root, which yields the SecretsStore, OpenRouter key, R2 bucket, Skills, and the Worker (which itself binds the `Agents` DurableObjectNamespace and the `Sandbox` Container).
+
+Useful root scripts:
+
+| Script             | What it does                                    |
+| ------------------ | ----------------------------------------------- |
+| `pnpm dev`         | `alchemy dev` — local Worker + emulated bindings |
+| `pnpm deploy`      | `alchemy deploy` (runs `predeploy` first)        |
+| `pnpm destroy`     | `alchemy destroy` — tear down the stack          |
+| `pnpm tail`        | `alchemy tail` — stream Worker logs              |
+| `pnpm typecheck`   | `pnpm -r typecheck` across every workspace      |
+
+## The claim
+
+The original Flue Support Agent example is ~30 lines. This repo is larger — but every line is something you can point at and explain:
+
+| Flue                                 | Underlying CF primitive   | What we use                              |
+| ------------------------------------ | ------------------------- | ---------------------------------------- |
+| Persistent session by URL `<id>`     | Durable Object            | `alchemy/Cloudflare` `DurableObjectNamespace` |
+| Sandbox                              | CF Containers             | `alchemy/Cloudflare` `Container`         |
+| Skills / AGENTS.md                   | R2                        | `alchemy/Cloudflare` `R2Bucket`          |
+| Model + tools                        | —                         | `@effect/ai-openrouter` + `effect/unstable/ai` |
+| Webhook                              | Worker                    | `alchemy/Cloudflare` `Worker`            |
+| Typed output                         | Valibot                   | `effect/Schema`                          |
+| Secrets                              | —                         | `alchemy/Cloudflare` `SecretsStore`      |
+| Streaming                            | SSE                       | `Stream` + `HttpServerResponse.stream`   |
+| Chat UI                              | —                         | React + `@effect/atom-react` + `HttpApiClient` |
+| Deploy                               | `flue build`              | `alchemy deploy`                         |
+
+**What you give up:** convenience and a zero-config DX. Flue does auto-wiring you have to do once here.
 
 **What you gain:**
 
-- No framework lock-in. Every line is `effect`, `@effect/ai-openrouter`, or `alchemy`.
-- Full Effect composition — Layers, Fibers, structured concurrency, OpenTelemetry, retry policies.
-- Infra-as-code in the same file tree as the agent. `alchemy.run.ts` declares the DO namespace, R2 bucket, Container app, Secrets store, and Worker.
-- Model choice is just a string from the request payload — no provider abstraction needed.
+- No framework lock-in. Every line is `effect`, `@effect/ai-openrouter`, `@effect/atom-react`, or `alchemy`.
+- One schema, two sides. `AgentApi` and `StreamPart` are defined once in `packages/shared` and consumed by the Worker and the FE — the typechecker enforces that they agree.
+- Full Effect composition — Layers, Fibers, structured concurrency, OpenTelemetry, retry policies, schema-validated streaming.
+- Infra-as-code in the same file tree. `alchemy.run.ts` declares the DO namespace, R2 bucket, Container app, Secrets store, and Worker.
+- Mid-stream disconnect leaves consistent state on disk, not a half-written row.
 - Testable services. Each piece is a Layer you can swap.
 
-## What's NOT in this proof
-
-Intentionally skipped to keep the scope honest:
-
-- **Roles / subagents** — Flue's `role` system. Easy to add: parse a second R2 markdown file and overlay system prompts at call time.
-- **`task()` child sessions** — would be a separate DO method that opens a detached session inside the same instance.
-- **MCP** — out of scope per the brief.
-- **Streaming** — would swap `generateText` for `streamText` and return an SSE response.
-- **`flue dev` hot-reload** — `alchemy dev` is the equivalent; not identical DX.
-
-Each of these is additive, not foundational. The point of this repo is: **the foundation requires no framework.**
-
-## File map
-
-```
-alchemy.run.ts          # Stack: Worker + DO + R2 + Container + SecretsStore
-src/
-  Agent.ts              # The DurableObjectNamespace — sessions, prompt, tools
-  Api.ts                # Worker fetch handler — routing
-  Sandbox.ts            # CF Container resource + entry script
-  Skills.ts             # R2Bucket resource
-  Secrets.ts            # SecretsStore + OpenRouter key
-skills/
-  support.md            # System prompt + role for the support agent
-```
+The foundation requires no framework.

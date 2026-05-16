@@ -1,9 +1,9 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack } from "alchemy/Stack";
-import * as Effect from "effect/Effect";
+import { Effect as Effect } from "effect";
 import type { PlatformError } from "effect/PlatformError";
-import * as Stream from "effect/Stream";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { Stream as Stream } from "effect";
+import { HttpServerResponse as HttpServerResponse } from "effect/unstable/http";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner";
 
