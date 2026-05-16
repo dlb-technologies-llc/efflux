@@ -20,12 +20,19 @@ import {
   Effect,
   Filter,
   Layer,
+  Queue,
   Ref,
   Result,
   Schema,
   Stream,
 } from "effect"
-import { LanguageModel } from "effect/unstable/ai"
+import * as AiError from "effect/unstable/ai/AiError"
+import {
+  LanguageModel,
+  Prompt,
+  Response as AiResponse,
+  Toolkit,
+} from "effect/unstable/ai"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -109,34 +116,70 @@ export const AgentHandlers = HttpApiBuilder.group(
             message: payload.message,
           })
 
-          const generation = LanguageModel.generateText({
-            prompt: messages,
-            toolkit: AgentToolkit,
-          })
-          const withModel =
-            payload.model !== undefined
-              ? OpenRouterLanguageModel.withConfigOverride(generation, {
-                  model: payload.model,
-                })
-              : generation
+          // Effect AI's `generateText` runs ONE round per call: it asks the
+          // model, resolves any tool calls the model emitted, and returns
+          // the merged content array. It does NOT continue the conversation
+          // so the model can react to the tool results. We loop here until
+          // `finishReason !== "tool-calls"` or hop cap is hit.
+          const MAX_TOOL_HOPS = 8
 
-          const response = yield* withModel.pipe(
-            Effect.provide(AgentToolkitLayer),
-            Effect.catch((cause) =>
-              Effect.fail(
-                new AgentError({
-                  message:
-                    cause instanceof Error
-                      ? cause.message
-                      : `LanguageModel.generateText failed: ${String(cause)}`,
-                }),
-              ),
-            ),
-            // Persist the user's message on failure so it isn't lost when
-            // the loop fails before producing a reply. Matches the stream
-            // handler's `Stream.ensuring` pattern. `Effect.tapCause` is
-            // v4's renaming of `Effect.tapErrorCause`. Inner `catchCause`
-            // ensures an append failure doesn't shadow the original cause.
+          // `Effect.tapCause` on the whole loop persists the user message
+          // when the loop fails — same intent as the streaming handler's
+          // `Stream.ensuring`. Append failures are swallowed with a logged
+          // cause so they don't shadow the original error.
+          const loop = Effect.gen(function* () {
+            let promptValue: Prompt.Prompt = Prompt.make(messages)
+            let finalText = ""
+            let finalFinishReason: AiResponse.FinishReason = "unknown"
+            let toolCallCount = 0
+
+            for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+              const call = LanguageModel.generateText({
+                prompt: promptValue,
+                toolkit: AgentToolkit,
+              })
+              const withModel =
+                payload.model !== undefined
+                  ? OpenRouterLanguageModel.withConfigOverride(call, {
+                      model: payload.model,
+                    })
+                  : call
+
+              const response = yield* withModel.pipe(
+                Effect.provide(AgentToolkitLayer),
+                Effect.catch((cause) =>
+                  Effect.fail(
+                    new AgentError({
+                      message:
+                        cause instanceof Error
+                          ? cause.message
+                          : `LanguageModel.generateText failed: ${String(cause)}`,
+                    }),
+                  ),
+                ),
+              )
+
+              toolCallCount += response.toolCalls.length
+              // Carry the latest text forward — once `finishReason` lands on
+              // a terminal state the loop exits and we persist this value.
+              finalText = response.text
+              finalFinishReason = response.finishReason
+
+              if (response.finishReason !== "tool-calls") break
+
+              // Feed the assistant tool-call message + tool-result messages
+              // back into the prompt so the next iteration lets the model
+              // see what its tool calls returned.
+              promptValue = Prompt.concat(
+                promptValue,
+                Prompt.fromResponseParts(response.content),
+              )
+            }
+
+            return { finalText, finalFinishReason, toolCallCount }
+          })
+
+          const result = yield* loop.pipe(
             Effect.tapCause(() =>
               agent
                 .append([{ role: "user", content: payload.message }])
@@ -144,19 +187,17 @@ export const AgentHandlers = HttpApiBuilder.group(
             ),
           )
 
-          const toolCallCount = response.toolCalls.length
-
           const messageCount = yield* agent
             .append([
               { role: "user", content: payload.message },
-              { role: "assistant", content: response.text },
+              { role: "assistant", content: result.finalText },
             ])
             .pipe(Effect.orDie)
 
           return new PromptResponse({
-            text: response.text,
-            finishReason: response.finishReason,
-            toolCallCount,
+            text: result.finalText,
+            finishReason: result.finalFinishReason,
+            toolCallCount: result.toolCallCount,
             model: payload.model ?? DEFAULT_MODEL,
             messageCount,
           })
@@ -214,22 +255,84 @@ export const AgentHandlers = HttpApiBuilder.group(
           const buffer = yield* Ref.make("")
           const toolCallCount = yield* Ref.make(0)
 
-          const generation = LanguageModel.streamText({
-            prompt: messages,
-            toolkit: AgentToolkit,
-          })
-          // `withConfigOverride` does NOT accept Stream; override Config
-          // via Layer instead.
-          const withModel =
-            payload.model !== undefined
-              ? generation.pipe(
-                  Stream.provide(
-                    Layer.succeed(OpenRouterLanguageModel.Config, {
-                      model: payload.model,
-                    }),
-                  ),
-                )
-              : generation
+          // Same as the prompt handler: Effect AI's `streamText` runs ONE
+          // round (model → tool calls → tool results) and ends. We loop so
+          // the model can react to the tool results, concatenating each
+          // iteration's part stream into the SSE output. Intermediate
+          // `finish: tool-calls` frames are filtered so the FE sees ONE
+          // final `done` frame at the end.
+          const MAX_TOOL_HOPS = 8
+
+          // Effect AI's `streamText` runs ONE round per call (model →
+          // resolve tool calls → end). We loop here so the model can react
+          // to its own tool results. Parts from every iteration flow into a
+          // single queue that drives the SSE pipeline below; intermediate
+          // `finish: tool-calls` frames are dropped so the FE only sees ONE
+          // `done` at the very end.
+          //
+          // A forked driver fiber owns the iteration: collect parts, decide
+          // whether to loop, and push only the parts we want to emit into
+          // the queue. `Stream.fromQueue` consumes them downstream — no
+          // recursive Stream type inference needed.
+          const loopedStream = Stream.unwrap(
+            Effect.gen(function* () {
+              const queue = yield* Queue.bounded<
+                AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>>,
+                AiError.AiError | Cause.Done
+              >(64)
+
+              const driver = Effect.gen(function* () {
+                let promptValue: Prompt.Prompt = Prompt.make(messages)
+                for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+                  const baseCall = LanguageModel.streamText({
+                    prompt: promptValue,
+                    toolkit: AgentToolkit,
+                  })
+                  const withModel =
+                    payload.model !== undefined
+                      ? baseCall.pipe(
+                          Stream.provide(
+                            Layer.succeed(OpenRouterLanguageModel.Config, {
+                              model: payload.model,
+                            }),
+                          ),
+                        )
+                      : baseCall
+
+                  const collected: Array<AiResponse.AnyPart> = []
+                  let lastFinishReason: AiResponse.FinishReason | undefined
+
+                  yield* withModel.pipe(
+                    Stream.runForEach((part) =>
+                      Effect.gen(function* () {
+                        collected.push(part)
+                        if (part.type === "finish") {
+                          lastFinishReason = part.reason
+                          // Suppress intermediate finish frames; only the
+                          // terminal finish (next branch) reaches the FE.
+                          if (part.reason === "tool-calls") return
+                        }
+                        yield* Queue.offer(queue, part)
+                      }),
+                    ),
+                  )
+
+                  if (lastFinishReason !== "tool-calls") break
+                  promptValue = Prompt.concat(
+                    promptValue,
+                    Prompt.fromResponseParts(collected),
+                  )
+                }
+              }).pipe(
+                Effect.ensuring(Queue.end(queue)),
+                Effect.tapCause((cause) => Queue.failCause(queue, cause)),
+                Effect.forkScoped,
+              )
+
+              yield* driver
+              return Stream.fromQueue(queue)
+            }),
+          )
 
           const encodeStreamPart = Schema.encodeSync(StreamPart)
 
@@ -261,7 +364,7 @@ export const AgentHandlers = HttpApiBuilder.group(
             )
           })
 
-          const sseFrames = withModel.pipe(
+          const sseFrames = loopedStream.pipe(
             Stream.provide(AgentToolkitLayer),
             // Provide the ambient services consumed by the toolkit layer's
             // `RIn` (LanguageModel + SkillsBucket). These are satisfied
