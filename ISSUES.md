@@ -420,3 +420,143 @@ need to add `<Kind>BindingLive`."
   `Cloudflare.cron(...).subscribe` API should reference the `*Live` service
   by a user-visible name with a docstring pointing at the matching `*Live`
   layer to provide.
+
+---
+
+## Effect AI's `LanguageModel.generateText` / `streamText` run ONE round per call
+
+**TL;DR:** `LanguageModel.generateText({ prompt, toolkit })` does **not**
+auto-loop multi-hop tool calls. It runs exactly **one** round — model
+inference, tool-call resolution, tool-result attachment — and returns. If
+`response.finishReason === "tool-calls"`, the model wanted to continue but
+your code has to drive the next iteration: concatenate
+`Prompt.fromResponseParts(response.content)` onto the prompt and call
+`generateText` again until `finishReason !== "tool-calls"` (or a hop cap
+trips). `streamText` has the same semantics — the part stream ends after
+that round's tool-result parts. Without a loop, the model emits "Let me
+call the tool for you!", invokes the tool, then ends the call before the
+tool result ever reaches the user. Tracked against PR #24 (commit
+`e243c3fb`); fix lives in `apps/api/src/handlers.ts:124-180` (prompt loop)
+and `apps/api/src/handlers.ts:264-330` (stream loop).
+
+### Stack
+
+- `effect@4.0.0-beta.66`
+- `alchemy@2.0.0-beta.39`
+- Cloudflare Workers runtime
+
+### Symptoms
+
+- The assistant replies with something like "Let me call the tool for
+  you!" or "I'll look that up now." then the response ends. The model
+  invoked the tool, the toolkit ran it, the result was attached to the
+  conversation — but the assistant never got a chance to *speak about*
+  the result.
+- `response.finishReason === "tool-calls"` on the returned `AiResponse`.
+  This is the model telling you "I want to continue after seeing the tool
+  output," not "I'm done."
+- In the streaming handler, the SSE stream emits a `finish` frame with
+  `reason: "tool-calls"` immediately after the tool-result parts, then
+  closes. The FE sees a terminal `done` and stops listening.
+- No error is raised. The call "succeeds." Everything looks fine in
+  `wrangler tail`. The only signal is the assistant text being a
+  pre-tool-call announcement instead of a post-tool-call answer.
+
+### Root cause
+
+`LanguageModel.generateText` (`node_modules/.../effect/src/unstable/ai/LanguageModel.ts`,
+the `generateContent` implementation) is a single-round primitive:
+
+1. Send the prompt to the provider.
+2. If the response includes tool calls, resolve them via the toolkit and
+   attach `tool-result` parts to `response.content`.
+3. Return.
+
+There is no internal `while (finishReason === "tool-calls")` loop. The
+toolkit param controls **which tools the model may call**, not whether
+the runtime will keep calling the model after results land. `streamText`
+matches — once the tool-result parts have been pushed into the stream,
+the stream completes.
+
+### Fix
+
+Wrap `generateText` in an explicit hop-capped loop, concatenating the
+prior round's response parts onto the prompt each iteration. From
+`apps/api/src/handlers.ts:124-180`:
+
+```ts
+const MAX_TOOL_HOPS = 8
+const loop = Effect.gen(function* () {
+  let promptValue: Prompt.Prompt = Prompt.make(messages)
+  let finalText = ""
+  let finalFinishReason: AiResponse.FinishReason = "unknown"
+
+  for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+    const response = yield* LanguageModel.generateText({
+      prompt: promptValue,
+      toolkit: AgentToolkit,
+    })
+    finalText = response.text
+    finalFinishReason = response.finishReason
+
+    if (response.finishReason !== "tool-calls") break
+
+    // Feed the assistant tool-call message + tool-result messages back
+    // into the prompt so the next iteration lets the model see what its
+    // tool calls returned.
+    promptValue = Prompt.concat(
+      promptValue,
+      Prompt.fromResponseParts(response.content),
+    )
+  }
+
+  return { finalText, finalFinishReason }
+})
+```
+
+For **streams**, recursive `Stream` type inference is painful (each hop's
+`Stream` carries its own `R`/`E`, and `Stream.flatMap`-ing them
+sequentially across an unknown hop count fights the type system). Use a
+**queue-driven driver fiber** instead:
+
+1. Allocate a bounded `Queue` of `AiResponse.StreamPart`.
+2. Fork a driver effect that runs the hop loop: for each hop, run
+   `streamText(...).pipe(Stream.runForEach(...))`, collect parts, filter
+   out intermediate `finish: tool-calls` frames, offer the rest into the
+   queue.
+3. After the loop, `Effect.ensuring(Queue.end(queue))` closes the queue;
+   `Effect.tapCause((c) => Queue.failCause(queue, c))` propagates
+   failures.
+4. Return `Stream.fromQueue(queue)` to the SSE pipeline.
+
+Full implementation at `apps/api/src/handlers.ts:264-330`. The FE sees a
+single continuous stream with exactly one terminal `done` frame, even
+though the driver may have made N round-trips to the model under the
+hood.
+
+### Why this matters
+
+The original PR #24 plan assumed `generateText({ prompt, toolkit })`
+would auto-loop until the model was satisfied — that passing a toolkit
+meant "let the model use these tools until it has enough information to
+answer." That assumption is wrong, and the failure mode is silent: no
+error, no warning, just an assistant that announces what it's about to
+do and then hangs up before doing it. The discovery came from reading
+the `generateContent` implementation after watching the symptom; nothing
+in the public type signature of `generateText` hints that the consumer
+owns the loop.
+
+This is a foot-gun anywhere `toolkit:` is used. Any handler that wires
+tools into an Effect AI call needs an explicit hop loop, or its
+multi-step tool flows will silently degrade to one-shot announcements.
+
+### Suggested upstream fix
+
+- Add a `maxToolHops` (or `multiStep: true`) option to
+  `LanguageModel.generateText` / `streamText` that runs the loop
+  internally with a sensible default cap, matching the Vercel AI SDK's
+  `maxSteps` behavior.
+- At minimum, surface a clear docstring on `generateText` /
+  `streamText` stating "this runs one round per call; if
+  `finishReason === 'tool-calls'`, the caller must concatenate
+  `Prompt.fromResponseParts(response.content)` and call again."

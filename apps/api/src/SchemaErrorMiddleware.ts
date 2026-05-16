@@ -1,62 +1,44 @@
 import { SchemaErrorMiddleware } from "@effect-flue/shared"
 import { Effect } from "effect"
+import * as SchemaIssue from "effect/SchemaIssue"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 
-// A `PropertyKey` is `string | number | symbol` — exactly what shows up in
-// SchemaIssue Pointer `.path` arrays. Narrow at the leaf so the caller
-// gets back a clean `ReadonlyArray<PropertyKey>` without any casts.
-const isPropertyKey = (value: unknown): value is PropertyKey =>
-  typeof value === "string" ||
-  typeof value === "number" ||
-  typeof value === "symbol"
-
-const toPathArray = (value: unknown): ReadonlyArray<PropertyKey> => {
-  if (!Array.isArray(value)) return []
-  const out: Array<PropertyKey> = []
-  for (const segment of value) {
-    if (!isPropertyKey(segment)) return []
-    out.push(segment)
-  }
-  return out
-}
-
-// Walk a `SchemaIssue` tree and surface the first `Pointer`-style path it
-// can find. The tree mixes three node shapes (per
-// effect/SchemaIssue):
-//   - Pointer: own `.path: PropertyKey[]` + nested `.issue: Issue`
-//   - Composite: `.issues: Issue[]` (Struct/Tuple/Union/Refinement aggregates)
-//   - Wrapper (Filter, Encoding, AnyOf, OneOf): singular `.issue` or `.issues`
-//     with no own path. We must descend into these too, otherwise an outer
-//     Filter/Encoding wrapping a Pointer leaves `path` empty.
-// We duck-type all three (using `in` narrowing — TS keeps the value typed
-// as `object` with the probed key) so we are not coupled to specific class
-// names, which have changed across pre-release versions of effect-smol.
-const findFirstPath = (issue: unknown): ReadonlyArray<PropertyKey> => {
-  if (issue === null || typeof issue !== "object") return []
-  // Pointer-style: direct `.path` array, optionally a nested `.issue`.
-  if ("path" in issue) {
-    const path = toPathArray(issue.path)
-    if (path.length > 0) {
-      if ("issue" in issue) {
-        const nested = findFirstPath(issue.issue)
-        return nested.length > 0 ? [...path, ...nested] : path
+// Walk a `SchemaIssue.Issue` tree and surface the first `Pointer`-style path
+// it can find. We switch on `_tag` over the full union (Pointer, Composite,
+// AnyOf, Filter, Encoding, MissingKey, UnexpectedKey, InvalidType,
+// InvalidValue, Forbidden, OneOf) so TypeScript's exhaustiveness check fails
+// the build the next time a new `SchemaIssue` member is added upstream —
+// rather than silently returning `[]` the way the old duck-typed walker did.
+//
+// The annotated return type plus a `default`-less `switch` where every case
+// `return`s is what enforces exhaustiveness: an unhandled tag would leave a
+// code path with no return, which TS rejects.
+const findFirstPath = (issue: SchemaIssue.Issue): ReadonlyArray<PropertyKey> => {
+  switch (issue._tag) {
+    case "Pointer": {
+      const nested = findFirstPath(issue.issue)
+      return [...issue.path, ...nested]
+    }
+    case "Composite":
+    case "AnyOf": {
+      for (const child of issue.issues) {
+        const childPath = findFirstPath(child)
+        if (childPath.length > 0) return childPath
       }
-      return path
+      return []
     }
+    case "Filter":
+    case "Encoding":
+      return findFirstPath(issue.issue)
+    case "MissingKey":
+    case "UnexpectedKey":
+    case "InvalidType":
+    case "InvalidValue":
+    case "Forbidden":
+    case "OneOf":
+      return []
   }
-  // Composite-style: walk `.issues` and return the first non-empty path.
-  if ("issues" in issue && Array.isArray(issue.issues)) {
-    for (const child of issue.issues) {
-      const childPath = findFirstPath(child)
-      if (childPath.length > 0) return childPath
-    }
-  }
-  // Wrapper-style (Filter, Encoding, etc): descend into singular `.issue`.
-  if ("issue" in issue) {
-    return findFirstPath(issue.issue)
-  }
-  return []
 }
 
 // Live transform for the schema-error middleware. Returns a structured
