@@ -7,6 +7,7 @@ import { readdir, readFile } from "node:fs/promises"
 import * as path from "node:path"
 
 import Api from "./apps/api/src/Api.ts"
+import SandboxLive from "./apps/api/src/Sandbox.runtime.ts"
 import { Skills, UploadSkills } from "./apps/api/src/Skills.ts"
 
 const isEnoent = (e: unknown): boolean => {
@@ -88,5 +89,5 @@ export default Alchemy.Stack(
     })
     const api = yield* Api
     return { url: api.url.as<string>() }
-  }),
+  }).pipe(Effect.provide(SandboxLive)),
 )
