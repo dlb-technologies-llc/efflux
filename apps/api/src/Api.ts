@@ -75,11 +75,18 @@ export default class Api extends Cloudflare.Worker<Api>()(
                     : Cause.isDieReason(reason)
                       ? reason.defect
                       : undefined
-                  if (
-                    value !== undefined &&
-                    HttpServerRespondable.isRespondable(value)
-                  ) {
+                  if (value === undefined) continue
+                  if (HttpServerRespondable.isRespondable(value)) {
                     return HttpServerRespondable.toResponse(value)
+                  }
+                  // HttpApiBuilder calls JSON.parse synchronously when reading a
+                  // Json payload (HttpApiBuilder.ts:557 in effect-smol). A
+                  // malformed body throws SyntaxError that becomes a defect, not
+                  // a typed HttpApiSchemaError — surface as 400, not 500.
+                  if (value instanceof SyntaxError) {
+                    return Effect.succeed(
+                      HttpServerResponse.empty({ status: 400 }),
+                    )
                   }
                 }
                 return Effect.logError("Unhandled worker cause", cause).pipe(
