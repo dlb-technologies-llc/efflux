@@ -206,10 +206,20 @@ export default class Api extends Cloudflare.Worker<Api>()(
                   // HttpApiBuilder calls JSON.parse synchronously when reading a
                   // Json payload (HttpApiBuilder.ts:557 in effect-smol). A
                   // malformed body throws SyntaxError that becomes a defect, not
-                  // a typed HttpApiSchemaError — surface as 400, not 500.
+                  // a typed HttpApiSchemaError — surface as a structured 400
+                  // matching `SchemaErrorMiddlewareLive`'s shape, not an empty
+                  // 400 or a 500.
                   if (value instanceof SyntaxError) {
                     return Effect.succeed(
-                      HttpServerResponse.empty({ status: 400 }),
+                      HttpServerResponse.jsonUnsafe(
+                        {
+                          _tag: "HttpApiSchemaError",
+                          kind: "Body",
+                          message: value.message,
+                          path: [],
+                        },
+                        { status: 400 },
+                      ),
                     )
                   }
                 }
