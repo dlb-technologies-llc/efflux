@@ -12,6 +12,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
+    "@distilled.cloud/cloudflare": "^0.20.1",
     "@effect-flue/shared": "workspace:*",
     "@effect/ai-openrouter": "4.0.0-beta.66",
     "@effect/platform-bun": "4.0.0-beta.66",

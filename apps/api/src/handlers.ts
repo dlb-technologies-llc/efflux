@@ -18,6 +18,7 @@ import {
   callOpenRouter,
   streamOpenRouter,
 } from "./OpenRouterClient.ts"
+import { loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 
 export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
@@ -31,6 +32,41 @@ export class OpenRouterApiKey extends Context.Service<
   string
 >()("api/OpenRouterApiKey") {}
 
+// Compose the OpenRouter message array as
+// `[system: skill, system: role?, ...history, user]`.
+// System messages are NOT persisted to history — only user + assistant.
+const composeMessages = (input: {
+  skillBody: string
+  roleBody: string | undefined
+  history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
+  message: string
+}): ReadonlyArray<{
+  role: "system" | "user" | "assistant"
+  content: string
+}> => {
+  const systemMessages =
+    input.roleBody !== undefined
+      ? [
+          { role: "system" as const, content: input.skillBody },
+          { role: "system" as const, content: input.roleBody },
+        ]
+      : [{ role: "system" as const, content: input.skillBody }]
+  return [
+    ...systemMessages,
+    ...input.history,
+    { role: "user" as const, content: input.message },
+  ]
+}
+
+// Resolve skill + optional role bodies from R2. Default skill is `"support"`.
+// Failures surface as `AgentError` on the endpoint's typed error channel.
+const loadOverlay = (skill: string | undefined, role: string | undefined) =>
+  Effect.gen(function* () {
+    const skillBody = yield* loadSkillBody(skill ?? "support")
+    const roleBody = role !== undefined ? yield* loadRoleBody(role) : undefined
+    return { skillBody, roleBody }
+  })
+
 export const AgentHandlers = HttpApiBuilder.group(
   AgentApi,
   "agents",
@@ -43,11 +79,20 @@ export const AgentHandlers = HttpApiBuilder.group(
           const agent = agents.getByName(`${params.name}/${params.id}`)
 
           const history = yield* agent.history().pipe(Effect.orDie)
+          const { skillBody, roleBody } = yield* loadOverlay(
+            payload.skill,
+            payload.role,
+          )
 
           const result = yield* callOpenRouter(
             apiKey,
             payload.model ?? DEFAULT_MODEL,
-            [...history, { role: "user", content: payload.message }],
+            composeMessages({
+              skillBody,
+              roleBody,
+              history,
+              message: payload.message,
+            }),
           ).pipe(
             Effect.tapError((err) =>
               Effect.sync(() =>
@@ -99,6 +144,10 @@ export const AgentHandlers = HttpApiBuilder.group(
           const agent = agents.getByName(`${params.name}/${params.id}`)
 
           const history = yield* agent.history().pipe(Effect.orDie)
+          const { skillBody, roleBody } = yield* loadOverlay(
+            payload.skill,
+            payload.role,
+          )
           const userMessage = {
             role: "user" as const,
             content: payload.message,
@@ -110,7 +159,12 @@ export const AgentHandlers = HttpApiBuilder.group(
           const upstream = streamOpenRouter({
             apiKey,
             model: payload.model ?? DEFAULT_MODEL,
-            messages: [...history, userMessage],
+            messages: composeMessages({
+              skillBody,
+              roleBody,
+              history,
+              message: payload.message,
+            }),
             signal: controller.signal,
           })
 

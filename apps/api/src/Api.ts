@@ -9,6 +9,8 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import Agent from "./Agent.ts"
 import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
+import { callOpenRouter, DEFAULT_MODEL } from "./OpenRouterClient.ts"
+import { loadSkillBody, Skills, SkillsBucket } from "./Skills.ts"
 
 const requireEnv = (key: string): string => {
   const value = process.env[key]
@@ -24,6 +26,38 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
   fileResponse: () => Effect.die("HttpPlatform.fileResponse not supported"),
   fileWebResponse: () =>
     Effect.die("HttpPlatform.fileWebResponse not supported"),
+})
+
+// `WorkerEnvironment` is only available inside per-event Effects (fetch
+// dispatch + cron callback). Yielding it in the outer Worker init crashes
+// the Worker with the opaque `[object Object]` failure (see ISSUES.md).
+//
+// `requireEnv` in the deploy props is the primary guard, but defending the
+// runtime path too prevents a silent "undefined" Bearer token from ever
+// reaching OpenRouter if a binding round-trip ever drops the value.
+const unwrapApiKey = Effect.gen(function* () {
+  const env = yield* Cloudflare.WorkerEnvironment
+  const raw = env.OPENROUTER_API_KEY
+  if (raw === undefined || raw === null || raw === "") {
+    return yield* Effect.die(
+      new Error("OPENROUTER_API_KEY missing from Worker environment"),
+    )
+  }
+  if (Redacted.isRedacted(raw)) {
+    const value = Redacted.value(raw)
+    if (typeof value !== "string" || value === "") {
+      return yield* Effect.die(
+        new Error("OPENROUTER_API_KEY is empty or non-string after unwrap"),
+      )
+    }
+    return value
+  }
+  if (typeof raw !== "string") {
+    return yield* Effect.die(
+      new Error(`OPENROUTER_API_KEY has unexpected type: ${typeof raw}`),
+    )
+  }
+  return raw
 })
 
 export default class Api extends Cloudflare.Worker<Api>()(
@@ -43,6 +77,35 @@ export default class Api extends Cloudflare.Worker<Api>()(
   },
   Effect.gen(function* () {
     const agents = yield* Agent
+    // Alchemy wrapper client. Resolving its `.raw` (native R2Bucket handle)
+    // requires `WorkerEnvironment`, so we defer that to per-event Effects.
+    const skillsClient = yield* Cloudflare.R2Bucket.bind(Skills)
+
+    // Daily heartbeat cron — exercises the same skill-loading path the
+    // prompt handler uses, against the support skill.
+    yield* Cloudflare.cron("0 12 * * *").subscribe((controller) =>
+      Effect.gen(function* () {
+        const apiKey = yield* unwrapApiKey
+        const skills = yield* skillsClient.raw
+        const skillBody = yield* loadSkillBody("support").pipe(
+          Effect.provideService(SkillsBucket, skills),
+        )
+        const result = yield* callOpenRouter(apiKey, DEFAULT_MODEL, [
+          { role: "system", content: skillBody },
+          {
+            role: "user",
+            content:
+              "Daily heartbeat. Reply with one short sentence about today.",
+          },
+        ])
+        yield* Effect.log(`cron ${controller.cron}: ${result.text}`)
+      }).pipe(
+        // `tapCause` BEFORE `catchCause` is load-bearing — without it,
+        // transient OpenRouter failures vanish silently.
+        Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
+        Effect.catchCause(() => Effect.void),
+      ),
+    )
 
     return {
       fetch: HttpApiBuilder.layer(AgentApi).pipe(
@@ -51,12 +114,8 @@ export default class Api extends Cloudflare.Worker<Api>()(
         HttpRouter.toHttpEffect,
         Effect.map((handler) =>
           Effect.gen(function* () {
-            const env = yield* Cloudflare.WorkerEnvironment
-            // Worker env binding round-trips through Redacted; unwrap.
-            const rawKey = env.OPENROUTER_API_KEY
-            const apiKey = Redacted.isRedacted(rawKey)
-              ? Redacted.value(rawKey)
-              : String(rawKey)
+            const apiKey = yield* unwrapApiKey
+            const skills = yield* skillsClient.raw
             // HttpApiBuilder deliberately Effect.die's HttpApiSchemaError
             // (request-decode failures) and the encoded result of typed
             // endpoint errors. Those errors implement HttpServerRespondable
@@ -68,6 +127,7 @@ export default class Api extends Cloudflare.Worker<Api>()(
             return yield* handler.pipe(
               Effect.provideService(AgentStub, agents),
               Effect.provideService(OpenRouterApiKey, apiKey),
+              Effect.provideService(SkillsBucket, skills),
               Effect.catchCause((cause) => {
                 for (const reason of cause.reasons) {
                   const value = Cause.isFailReason(reason)
@@ -98,5 +158,12 @@ export default class Api extends Cloudflare.Worker<Api>()(
         ),
       ),
     }
-  }),
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Cloudflare.R2BucketBindingLive,
+        Cloudflare.CronEventSourceLive,
+      ),
+    ),
+  ),
 ) {}

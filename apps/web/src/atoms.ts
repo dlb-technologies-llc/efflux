@@ -24,7 +24,12 @@ export interface SessionArgs {
  */
 export const promptAtom = runtime.fn(
   Effect.fnUntraced(function*(
-    args: SessionArgs & { readonly message: string; readonly model?: string; readonly skill?: string },
+    args: SessionArgs & {
+      readonly message: string
+      readonly model?: string
+      readonly skill?: string
+      readonly role?: string
+    },
   ) {
     const client = yield* ApiClient
     // HttpApiClient encodes the payload via PromptRequest schema, which is
@@ -37,6 +42,7 @@ export const promptAtom = runtime.fn(
         message: args.message,
         ...(args.model !== undefined ? { model: args.model } : {}),
         ...(args.skill !== undefined ? { skill: args.skill } : {}),
+        ...(args.role !== undefined ? { role: args.role } : {}),
       }),
     })
   }),
@@ -166,7 +172,14 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<unkn
  * accumulated list instead of a single value.
  */
 export const streamAtom = runtime.fn(
-  (args: SessionArgs & { readonly message: string; readonly model?: string; readonly skill?: string }) =>
+  (
+    args: SessionArgs & {
+      readonly message: string
+      readonly model?: string
+      readonly skill?: string
+      readonly role?: string
+    },
+  ) =>
     Stream.fromAsyncIterable(
       (async function*() {
         const body = encodePromptRequest(
@@ -174,6 +187,7 @@ export const streamAtom = runtime.fn(
             message: args.message,
             ...(args.model !== undefined ? { model: args.model } : {}),
             ...(args.skill !== undefined ? { skill: args.skill } : {}),
+            ...(args.role !== undefined ? { role: args.role } : {}),
           }),
         )
         const response = await fetch(`/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`, {

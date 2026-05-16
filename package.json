@@ -12,7 +12,8 @@
     "deploy": "bun alchemy deploy",
     "destroy": "bun alchemy destroy",
     "tail": "bun alchemy tail",
-    "dev": "bun alchemy dev"
+    "dev": "bun alchemy dev",
+    "agent": "bun scripts/agent.ts"
   },
   "dependencies": {
     "alchemy": "2.0.0-beta.39",
