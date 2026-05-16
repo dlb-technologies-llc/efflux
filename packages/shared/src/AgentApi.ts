@@ -5,7 +5,12 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentError, NotFoundError } from "./Errors.ts"
+import {
+  AgentError,
+  NotFoundError,
+  RoleNotFoundError,
+  SkillNotFoundError,
+} from "./Errors.ts"
 import {
   HistoryResponse,
   PromptRequest,
@@ -33,7 +38,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -54,13 +59,13 @@ const stream = HttpApiEndpoint.post("stream", "/agents/:name/:id/stream", {
   success: Schema.String.pipe(
     HttpApiSchema.asText({ contentType: "text/event-stream" }),
   ),
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 const task = HttpApiEndpoint.post("task", "/tasks", {
   payload: SubagentTaskRequest,
   success: SubagentTaskResponse,
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 export const AgentGroup = HttpApiGroup.make("agents")
