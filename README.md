@@ -96,27 +96,31 @@ Each `<name>/<id>` pair routes to one `Agent` DurableObject instance with its ow
 
 ### Subagent tasks — `POST /tasks`
 
-A separate top-level endpoint runs a one-shot "subagent" prompt with its own system prompt (selected by `role`) and returns just the assistant text. It deliberately does **not** touch any `Agent` DurableObject — no history is persisted, no parent session is mutated. The URL is intentionally top-level (`/tasks`, not `/agents/<name>/<id>/task`) so the contract reflects that there is no session affinity.
+A separate top-level endpoint runs a one-shot "subagent" prompt and returns just the assistant text. It deliberately does **not** touch any `Agent` DurableObject — no history is persisted, no parent session is mutated. The URL is intentionally top-level (`/tasks`, not `/agents/<name>/<id>/task`) so the contract reflects that there is no session affinity.
 
 ```sh
-# Run a subagent with the "support" role
+# Raw passthrough — no system prompt
 curl https://<your-worker>/tasks \
-  -d '{"prompt": "Customer wants to know about refunds", "role": "support"}'
+  -d '{"prompt": "echo: hello"}'
+
+# Overlay a skill (loaded from apps/api/skills/<name>.md in R2)
+curl https://<your-worker>/tasks \
+  -d '{"prompt": "Customer wants to know about refunds", "skill": "support"}'
+
+# Overlay both a skill and a role (loaded from apps/api/roles/<name>.md)
+curl https://<your-worker>/tasks \
+  -d '{"prompt": "My login broke", "skill": "support", "role": "triager"}'
 
 # Override the model
 curl https://<your-worker>/tasks \
   -d '{
     "prompt": "Summarize the password reset flow",
-    "role": "support",
+    "skill": "support",
     "model": "openai/gpt-5.2"
   }'
-
-# Raw passthrough (no system prompt) — role is optional
-curl https://<your-worker>/tasks \
-  -d '{"prompt": "echo: hello"}'
 ```
 
-Roles are a closed `Schema.Literals` enum on the request payload — unknown role values are rejected at the HTTP boundary with a structured schema decode error. Today only `support` is registered; the canonical prompt text lives at `apps/api/skills/support.md` (reference doc), and the runtime value is inlined as `SUPPORT_PROMPT` in `apps/api/src/Subagent.ts` (alchemy's Rolldown bundler doesn't yet honor `with { type: "text" }` for `.md` imports — see the comment in `Subagent.ts`). Adding a new role means: (a) add the literal to `TaskRole` in `packages/shared/src/Schemas.ts`, (b) add the system prompt to `ROLE_REGISTRY` in `apps/api/src/Subagent.ts`, (c) add a sibling `.md` reference file alongside `support.md`. TypeScript's exhaustiveness check on `Record<TaskRole, string>` enforces (a) and (b).
+`skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce an `AgentError` ("Skill not found" / "Role not found") surfaced as a 500 JSON body. Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `UploadSkills` syncs `.md` files to R2 on every deploy whose contents hash changes.
 
 ## The chat UI
 
