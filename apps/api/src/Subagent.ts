@@ -1,44 +1,40 @@
-import { AgentError } from "@effect-flue/shared"
+/**
+ * Stateless one-shot subagent. Runs a focused prompt against OpenRouter with
+ * an optional named system prompt (role) and returns just the assistant text.
+ *
+ * Deliberately does NOT touch any DurableObject session — no history is
+ * persisted and no parent state is mutated. The HTTP endpoint lives at
+ * top-level `POST /tasks` for this reason (not per-session). See issue #4.
+ *
+ * `role` is a closed `Schema.Literals` enum (`TaskRole`) so unknown values
+ * fail at the HTTP boundary with a structured schema error, not deeper here.
+ */
+import { AgentError, type TaskRole } from "@effect-flue/shared"
 import { Effect } from "effect"
 import supportMd from "../skills/support.md" with { type: "text" }
 import { DEFAULT_MODEL, callOpenRouter } from "./OpenRouterClient.ts"
 
 const stripFrontmatter = (s: string): string => {
-  const trimmed = s.trimStart()
-  if (!trimmed.startsWith("---\n") && !trimmed.startsWith("---\r\n")) return s
-  const rest = trimmed.slice(trimmed.indexOf("\n") + 1)
-  const end = rest.search(/^---\r?\n/m)
-  if (end === -1) return s
-  return rest.slice(end + rest.slice(end).indexOf("\n") + 1).trim()
+  const match = s.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)
+  return match === null ? s.trim() : s.slice(match[0].length).trim()
 }
 
-const ROLE_REGISTRY: Record<string, string> = {
+const ROLE_REGISTRY: Record<TaskRole, string> = {
   support: stripFrontmatter(supportMd),
 }
 
 export const runSubagent = (args: {
   readonly apiKey: string
   readonly prompt: string
-  readonly role?: string
+  readonly role?: TaskRole
   readonly model?: string
 }): Effect.Effect<
   { readonly text: string; readonly model: string; readonly finishReason: string },
   AgentError
 > =>
   Effect.gen(function* () {
-    // Resolve system prompt: known role -> registered prompt; unknown role -> typed
-    // error; no role -> raw passthrough (no system message).
-    let systemPrompt: string | undefined
-    if (args.role !== undefined) {
-      const registered = ROLE_REGISTRY[args.role]
-      if (registered === undefined) {
-        return yield* Effect.fail(
-          new AgentError({ message: `Unknown role: ${args.role}` }),
-        )
-      }
-      systemPrompt = registered
-    }
-
+    const systemPrompt =
+      args.role !== undefined ? ROLE_REGISTRY[args.role] : undefined
     const messages =
       systemPrompt !== undefined
         ? [

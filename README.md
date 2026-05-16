@@ -94,6 +94,30 @@ curl -N https://<your-worker>/agents/support/user-abc/stream \
 
 Each `<name>/<id>` pair routes to one `Agent` DurableObject instance with its own history, container sandbox, and bindings.
 
+### Subagent tasks — `POST /tasks`
+
+A separate top-level endpoint runs a one-shot "subagent" prompt with its own system prompt (selected by `role`) and returns just the assistant text. It deliberately does **not** touch any `Agent` DurableObject — no history is persisted, no parent session is mutated. The URL is intentionally top-level (`/tasks`, not `/agents/<name>/<id>/task`) so the contract reflects that there is no session affinity.
+
+```sh
+# Run a subagent with the "support" role
+curl https://<your-worker>/tasks \
+  -d '{"prompt": "Customer wants to know about refunds", "role": "support"}'
+
+# Override the model
+curl https://<your-worker>/tasks \
+  -d '{
+    "prompt": "Summarize the password reset flow",
+    "role": "support",
+    "model": "openai/gpt-5.2"
+  }'
+
+# Raw passthrough (no system prompt) — role is optional
+curl https://<your-worker>/tasks \
+  -d '{"prompt": "echo: hello"}'
+```
+
+Roles are a closed `Schema.Literals` enum on the request payload — unknown role values are rejected at the HTTP boundary with a structured schema decode error. Today only `support` is registered; the prompt is loaded at build time from `apps/api/skills/support.md` via an ESM text import (single source of truth). Adding a new role means: (a) add the literal to `TaskRole` in `packages/shared/src/Schemas.ts`, (b) add the system prompt to `ROLE_REGISTRY` in `apps/api/src/Subagent.ts`. TypeScript's exhaustiveness check enforces both steps.
+
 ## The chat UI
 
 `apps/web` is a Vite + React app. It does not duplicate any type from the Worker — every request and response goes through:

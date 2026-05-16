@@ -23,10 +23,13 @@ export class HistoryResponse extends Schema.Class<HistoryResponse>("HistoryRespo
   history: Schema.Array(Message),
 }) {}
 
+export const TaskRole = Schema.Literals(["support"])
+export type TaskRole = typeof TaskRole.Type
+
 export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("SubagentTaskRequest")({
   prompt: Schema.String.check(Schema.isMaxLength(8192)),
-  role: Schema.optionalKey(Schema.String),
-  model: Schema.optionalKey(Schema.String),
+  role: Schema.optionalKey(TaskRole),
+  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
 }) {}
 
 export class SubagentTaskResponse extends Schema.Class<SubagentTaskResponse>("SubagentTaskResponse")({
