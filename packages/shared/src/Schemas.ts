@@ -37,12 +37,10 @@ export class HistoryResponse extends Schema.Class<HistoryResponse>("HistoryRespo
   history: Schema.Array(Message),
 }) {}
 
-export const TaskRole = Schema.Literals(["support"])
-export type TaskRole = typeof TaskRole.Type
-
 export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("SubagentTaskRequest")({
   prompt: Schema.String.check(Schema.isMaxLength(8192)),
-  role: Schema.optionalKey(TaskRole),
+  skill: Schema.optionalKey(SafeName),
+  role: Schema.optionalKey(SafeName),
   model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
 }) {}
 
