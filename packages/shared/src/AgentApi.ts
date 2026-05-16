@@ -10,6 +10,8 @@ import {
   HistoryResponse,
   PromptRequest,
   PromptResponse,
+  SubagentTaskRequest,
+  SubagentTaskResponse,
 } from "./Schemas.ts"
 
 // Session keys are URL path segments backed by DO ids; constrain to safe
@@ -53,10 +55,17 @@ const stream = HttpApiEndpoint.post("stream", "/agents/:name/:id/stream", {
   error: AgentError,
 })
 
+const task = HttpApiEndpoint.post("task", "/tasks", {
+  payload: SubagentTaskRequest,
+  success: SubagentTaskResponse,
+  error: AgentError,
+})
+
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
   .add(history)
   .add(reset)
   .add(stream)
+  .add(task)
 
 export class AgentApi extends HttpApi.make("agent-api").add(AgentGroup) {}

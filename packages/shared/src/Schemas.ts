@@ -23,6 +23,21 @@ export class HistoryResponse extends Schema.Class<HistoryResponse>("HistoryRespo
   history: Schema.Array(Message),
 }) {}
 
+export const TaskRole = Schema.Literals(["support"])
+export type TaskRole = typeof TaskRole.Type
+
+export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("SubagentTaskRequest")({
+  prompt: Schema.String.check(Schema.isMaxLength(8192)),
+  role: Schema.optionalKey(TaskRole),
+  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+}) {}
+
+export class SubagentTaskResponse extends Schema.Class<SubagentTaskResponse>("SubagentTaskResponse")({
+  text: Schema.String,
+  model: Schema.String,
+  finishReason: Schema.String,
+}) {}
+
 export class StreamPartTextDelta extends Schema.TaggedClass<StreamPartTextDelta>()(
   "text-delta",
   {
