@@ -116,7 +116,7 @@ curl https://<your-worker>/tasks \
   -d '{"prompt": "echo: hello"}'
 ```
 
-Roles are a closed `Schema.Literals` enum on the request payload — unknown role values are rejected at the HTTP boundary with a structured schema decode error. Today only `support` is registered; the prompt is loaded at build time from `apps/api/skills/support.md` via an ESM text import (single source of truth). Adding a new role means: (a) add the literal to `TaskRole` in `packages/shared/src/Schemas.ts`, (b) add the system prompt to `ROLE_REGISTRY` in `apps/api/src/Subagent.ts`. TypeScript's exhaustiveness check enforces both steps.
+Roles are a closed `Schema.Literals` enum on the request payload — unknown role values are rejected at the HTTP boundary with a structured schema decode error. Today only `support` is registered; the canonical prompt text lives at `apps/api/skills/support.md` (reference doc), and the runtime value is inlined as `SUPPORT_PROMPT` in `apps/api/src/Subagent.ts` (alchemy's Rolldown bundler doesn't yet honor `with { type: "text" }` for `.md` imports — see the comment in `Subagent.ts`). Adding a new role means: (a) add the literal to `TaskRole` in `packages/shared/src/Schemas.ts`, (b) add the system prompt to `ROLE_REGISTRY` in `apps/api/src/Subagent.ts`, (c) add a sibling `.md` reference file alongside `support.md`. TypeScript's exhaustiveness check on `Record<TaskRole, string>` enforces (a) and (b).
 
 ## The chat UI
 

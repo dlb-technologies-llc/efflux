@@ -8,19 +8,30 @@
  *
  * `role` is a closed `Schema.Literals` enum (`TaskRole`) so unknown values
  * fail at the HTTP boundary with a structured schema error, not deeper here.
+ *
+ * Why the prompt is inlined here rather than loaded from
+ * `apps/api/skills/support.md`: alchemy's Rolldown bundler (beta.39) does not
+ * honor the ESM `with { type: "text" }` import attribute for `.md` files. The
+ * `.md` file at `apps/api/skills/` is kept as the canonical reference (linked
+ * from the README), but the runtime value lives here. When alchemy gains a
+ * `.md`-as-text loader, switch this back to an import.
  */
 import { AgentError, type TaskRole } from "@effect-flue/shared"
 import { Effect } from "effect"
-import supportMd from "../skills/support.md" with { type: "text" }
 import { DEFAULT_MODEL, callOpenRouter } from "./OpenRouterClient.ts"
 
-const stripFrontmatter = (s: string): string => {
-  const match = s.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)
-  return match === null ? s.trim() : s.slice(match[0].length).trim()
-}
+const SUPPORT_PROMPT = `You are a customer support agent.
+
+When the customer asks a question:
+1. Search the knowledge base for relevant articles using the \`bash\` tool (e.g. \`grep -ri "<keyword>" /workspace/kb\`).
+2. Read the most relevant file(s).
+3. Write a helpful, concise response grounded in what you found.
+
+If nothing relevant turns up, say so honestly rather than guessing.
+Keep responses under 200 words.`
 
 const ROLE_REGISTRY: Record<TaskRole, string> = {
-  support: stripFrontmatter(supportMd),
+  support: SUPPORT_PROMPT,
 }
 
 export const runSubagent = (args: {
