@@ -14,7 +14,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import Agent from "./Agent.ts"
 import { DEFAULT_MODEL } from "./Defaults.ts"
-import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
+import { AgentHandlers, AgentStub } from "./handlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, Skills, SkillsBucket } from "./Skills.ts"
 
@@ -190,7 +190,6 @@ export default class Api extends Cloudflare.Worker<Api>()(
             // 500 plain-text rather than the intended 400 JSON.
             return yield* handler.pipe(
               Effect.provideService(AgentStub, agents),
-              Effect.provideService(OpenRouterApiKey, apiKey),
               Effect.provideService(SkillsBucket, skills),
               Effect.provide(aiLayer),
               Effect.catchCause((cause) => {
