@@ -1,4 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
+import type { StreamPart } from "@effect-flue/shared"
 import { Cause, Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
@@ -24,9 +25,13 @@ export function Chat({ name, id }: ChatProps) {
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
 
-  useAtomSubscribe(streamAtom, (result) => {
-    if (!AsyncResult.isSuccess(result)) return
-    const part = result.value
+  // Hold the per-emit handler in a ref so `useAtomSubscribe` sees a stable
+  // callback identity. Without this, every setStreaming/setSubmitError call
+  // re-renders, which would cause useAtomSubscribe to unsubscribe and
+  // resubscribe between commits — async deltas arriving in that window
+  // would have no subscriber attached.
+  const onPartRef = React.useRef<(part: StreamPart) => void>(() => {})
+  onPartRef.current = (part) => {
     if (part._tag === "text-delta") {
       setStreaming((prev) => prev + part.delta)
       return
@@ -34,7 +39,15 @@ export function Chat({ name, id }: ChatProps) {
     if (part._tag === "error") {
       setSubmitError(part.message)
     }
-  })
+  }
+  const onResult = React.useCallback(
+    (result: AsyncResult.AsyncResult<StreamPart, unknown>) => {
+      if (!AsyncResult.isSuccess(result)) return
+      onPartRef.current(result.value)
+    },
+    [],
+  )
+  useAtomSubscribe(streamAtom, onResult)
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()

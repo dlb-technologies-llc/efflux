@@ -8,7 +8,7 @@ import {
   SubagentTaskResponse,
 } from "@effect-flue/shared"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Context, Effect, Ref, Schema, Stream } from "effect"
+import { Cause, Context, Effect, Ref, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -104,10 +104,6 @@ export const AgentHandlers = HttpApiBuilder.group(
             content: payload.message,
           }
 
-          // 1) Persist the user message immediately — survives a fast disconnect
-          //    where no assistant tokens arrive before the client gives up.
-          yield* agent.append([userMessage]).pipe(Effect.orDie)
-
           const buffer = yield* Ref.make("")
           const controller = new AbortController()
 
@@ -120,25 +116,43 @@ export const AgentHandlers = HttpApiBuilder.group(
 
           const encodeStreamPart = Schema.encodeSync(StreamPart)
 
-          // 2) Always abort the upstream fetch when this stream ends or is
-          //    interrupted.
+          // Always abort the upstream fetch when this stream ends or is
+          // interrupted, so client disconnects don't keep OpenRouter
+          // streaming into a closed socket.
           const abortUpstream = Effect.sync(() => controller.abort())
 
-          // 3) Persist whatever assistant text accumulated. Runs in finalizer
-          //    on success AND on interrupt. Empty buffer = skip the assistant
-          //    write.
-          const persistAssistant = Effect.gen(function* () {
+          // Persist user + assistant turn as a single DO write so concurrent
+          // prompts can't scramble order (avoids the window where request B's
+          // user message could land between request A's user and assistant
+          // writes). Runs in the Stream.ensuring finalizer on BOTH success
+          // and interrupt; on a fast disconnect with empty buffer we still
+          // persist the user message (no orphan reply).
+          //
+          // We swallow append failures with a logged Cause rather than
+          // Effect.orDie — a defect inside a Stream finalizer surfaces only
+          // as an unhandled defect log, which is worse than an explicit
+          // error trail at the point of failure.
+          const persistTurn = Effect.gen(function* () {
             const text = yield* Ref.get(buffer)
-            if (text.length === 0) return
-            yield* agent
-              .append([{ role: "assistant", content: text }])
-              .pipe(Effect.orDie)
+            const turn =
+              text.length === 0
+                ? [userMessage]
+                : [userMessage, { role: "assistant" as const, content: text }]
+            yield* agent.append(turn).pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() =>
+                  console.error(
+                    "Failed to persist chat turn:",
+                    Cause.pretty(cause),
+                  ),
+                ),
+              ),
+            )
           })
 
           const sseFrames = upstream.pipe(
             // Wire-level error → in-band StreamPartError so the FE's
             // Schema.decodeUnknownEffect(StreamPart) decoder accepts it.
-            // `Stream.catch` is the v4 rename of `Stream.catchAll`.
             Stream.catch((err) =>
               Stream.succeed(
                 new StreamPartError({
@@ -160,8 +174,7 @@ export const AgentHandlers = HttpApiBuilder.group(
               }),
             ),
             Stream.encodeText,
-            // `Effect.andThen` is the v4 replacement for `Effect.zipRight`.
-            Stream.ensuring(Effect.andThen(abortUpstream, persistAssistant)),
+            Stream.ensuring(Effect.andThen(abortUpstream, persistTurn)),
           )
 
           return HttpServerResponse.stream(sseFrames, {

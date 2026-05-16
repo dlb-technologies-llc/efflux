@@ -140,12 +140,30 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<unkn
 
 /**
  * Stream atom: opens an SSE connection to `/agents/:name/:id/stream` and
- * emits each decoded `StreamPart`. The atom result accumulates the latest
- * delta (Atom stream semantics); consumers read `result.value` for the
- * current part and `result.waiting` while more is coming.
+ * emits each decoded `StreamPart`. The atom result reflects the latest
+ * delta; for token-by-token consumption, subscribe with `useAtomSubscribe`
+ * (per-emit callback). `useAtomValue` only re-reads on React's commit
+ * cycle and can coalesce multiple emits in one tick.
  *
  * Errors from `fetch`, JSON parsing, or schema validation surface as
  * stream failures - no silent drops.
+ *
+ * ⚠️ LOAD-BEARING INVARIANT — chunk size MUST be 1.
+ *
+ * `Atom.fn` over a Stream calls `setSelf(AsyncResult.success(Arr.lastNonEmpty(chunk)))`,
+ * which only publishes the LAST element of each pulled chunk. If any operator
+ * in this pipe ever batches multiple values into one chunk (e.g.
+ * `Stream.grouped`, `Stream.bufferChunks`, `Stream.debounce`, `Stream.aggregate`),
+ * the intermediate tokens will be silently dropped — the UI will see the
+ * final token of each batch and nothing else.
+ *
+ * The current pipe is safe because `Stream.fromAsyncIterable` wraps each
+ * yield in `Arr.of(value)` (a 1-element chunk) and `Stream.mapEffect`
+ * preserves chunk structure 1:1. Adding any batching/aggregation operator
+ * here will silently break token-by-token rendering. If you need batching
+ * for some unrelated reason, switch this atom to `runtime.pull` (which
+ * accumulates pulled items) and update the FE consumer to read the
+ * accumulated list instead of a single value.
  */
 export const streamAtom = runtime.fn(
   (args: SessionArgs & { readonly message: string; readonly model?: string; readonly skill?: string }) =>
