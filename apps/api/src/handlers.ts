@@ -1,36 +1,52 @@
 import {
   AgentApi,
+  AgentError,
   HistoryResponse,
   Message,
   PromptResponse,
   StreamPart,
+  StreamPartDone,
   StreamPartError,
+  StreamPartTextDelta,
+  StreamPartToolCall,
+  StreamPartToolResult,
   SubagentTaskResponse,
 } from "@effect-flue/shared"
+import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Cause, Context, Effect, Ref, Schema, Stream } from "effect"
+import {
+  Cause,
+  Context,
+  Effect,
+  Filter,
+  Layer,
+  Queue,
+  Ref,
+  Result,
+  Schema,
+  Stream,
+} from "effect"
+import * as AiError from "effect/unstable/ai/AiError"
+import {
+  LanguageModel,
+  Prompt,
+  Response as AiResponse,
+  Toolkit,
+} from "effect/unstable/ai"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type Agent from "./Agent.ts"
-import {
-  DEFAULT_MODEL,
-  callOpenRouter,
-  streamOpenRouter,
-} from "./OpenRouterClient.ts"
-import { loadRoleBody, loadSkillBody } from "./Skills.ts"
+import { DEFAULT_MODEL } from "./Defaults.ts"
+import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
+import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
 
 export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
 
 export class AgentStub extends Context.Service<AgentStub, AgentNamespace>()(
   "api/AgentStub",
 ) {}
-
-export class OpenRouterApiKey extends Context.Service<
-  OpenRouterApiKey,
-  string
->()("api/OpenRouterApiKey") {}
 
 // Compose the OpenRouter message array as
 // `[system: skill, system: role?, ...history, user]`.
@@ -67,6 +83,16 @@ const loadOverlay = (skill: string | undefined, role: string | undefined) =>
     return { skillBody, roleBody }
   })
 
+// Discriminated union of our SSE-bound StreamPart variants. Used to type
+// the post-filterMap stream so subsequent `Stream.tap`/`Stream.map`
+// operators see `_tag` for narrowing.
+type SseStreamPart =
+  | StreamPartTextDelta
+  | StreamPartToolCall
+  | StreamPartToolResult
+  | StreamPartDone
+  | StreamPartError
+
 export const AgentHandlers = HttpApiBuilder.group(
   AgentApi,
   "agents",
@@ -75,7 +101,6 @@ export const AgentHandlers = HttpApiBuilder.group(
       .handle("prompt", ({ params, payload }) =>
         Effect.gen(function* () {
           const agents = yield* AgentStub
-          const apiKey = yield* OpenRouterApiKey
           const agent = agents.getByName(`${params.name}/${params.id}`)
 
           const history = yield* agent.history().pipe(Effect.orDie)
@@ -84,36 +109,96 @@ export const AgentHandlers = HttpApiBuilder.group(
             payload.role,
           )
 
-          const result = yield* callOpenRouter(
-            apiKey,
-            payload.model ?? DEFAULT_MODEL,
-            composeMessages({
-              skillBody,
-              roleBody,
-              history,
-              message: payload.message,
-            }),
-          ).pipe(
-            Effect.tapError((err) =>
-              Effect.sync(() =>
-                console.error("OpenRouter failed:", err.message),
-              ),
+          const messages = composeMessages({
+            skillBody,
+            roleBody,
+            history,
+            message: payload.message,
+          })
+
+          // Effect AI's `generateText` runs ONE round per call: it asks the
+          // model, resolves any tool calls the model emitted, and returns
+          // the merged content array. It does NOT continue the conversation
+          // so the model can react to the tool results. We loop here until
+          // `finishReason !== "tool-calls"` or hop cap is hit.
+          const MAX_TOOL_HOPS = 8
+
+          // `Effect.tapCause` on the whole loop persists the user message
+          // when the loop fails — same intent as the streaming handler's
+          // `Stream.ensuring`. Append failures are swallowed with a logged
+          // cause so they don't shadow the original error.
+          const loop = Effect.gen(function* () {
+            let promptValue: Prompt.Prompt = Prompt.make(messages)
+            let finalText = ""
+            let finalFinishReason: AiResponse.FinishReason = "unknown"
+            let toolCallCount = 0
+
+            for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+              const call = LanguageModel.generateText({
+                prompt: promptValue,
+                toolkit: AgentToolkit,
+              })
+              const withModel =
+                payload.model !== undefined
+                  ? OpenRouterLanguageModel.withConfigOverride(call, {
+                      model: payload.model,
+                    })
+                  : call
+
+              const response = yield* withModel.pipe(
+                Effect.provide(AgentToolkitLayer),
+                Effect.catch((cause) =>
+                  Effect.fail(
+                    new AgentError({
+                      message:
+                        cause instanceof Error
+                          ? cause.message
+                          : `LanguageModel.generateText failed: ${String(cause)}`,
+                    }),
+                  ),
+                ),
+              )
+
+              toolCallCount += response.toolCalls.length
+              // Carry the latest text forward — once `finishReason` lands on
+              // a terminal state the loop exits and we persist this value.
+              finalText = response.text
+              finalFinishReason = response.finishReason
+
+              if (response.finishReason !== "tool-calls") break
+
+              // Feed the assistant tool-call message + tool-result messages
+              // back into the prompt so the next iteration lets the model
+              // see what its tool calls returned.
+              promptValue = Prompt.concat(
+                promptValue,
+                Prompt.fromResponseParts(response.content),
+              )
+            }
+
+            return { finalText, finalFinishReason, toolCallCount }
+          })
+
+          const result = yield* loop.pipe(
+            Effect.tapCause(() =>
+              agent
+                .append([{ role: "user", content: payload.message }])
+                .pipe(Effect.catchCause(() => Effect.void)),
             ),
-            Effect.orDie,
           )
 
           const messageCount = yield* agent
             .append([
               { role: "user", content: payload.message },
-              { role: "assistant", content: result.text },
+              { role: "assistant", content: result.finalText },
             ])
             .pipe(Effect.orDie)
 
           return new PromptResponse({
-            text: result.text,
-            finishReason: result.finishReason,
-            toolCallCount: 0,
-            model: result.model,
+            text: result.finalText,
+            finishReason: result.finalFinishReason,
+            toolCallCount: result.toolCallCount,
+            model: payload.model ?? DEFAULT_MODEL,
             messageCount,
           })
         }),
@@ -140,8 +225,16 @@ export const AgentHandlers = HttpApiBuilder.group(
       .handle("stream", ({ params, payload }) =>
         Effect.gen(function* () {
           const agents = yield* AgentStub
-          const apiKey = yield* OpenRouterApiKey
           const agent = agents.getByName(`${params.name}/${params.id}`)
+
+          // Capture the outer Effect's context so we can provide
+          // `LanguageModel` and `SkillsBucket` (consumed by the toolkit
+          // layer's `RIn`) into the SSE Stream. Without this, the Stream
+          // would carry those services in `R` and fail `HttpServerResponse
+          // .stream`'s `R = never` requirement.
+          const ambient = yield* Effect.context<
+            LanguageModel.LanguageModel | SkillsBucket
+          >()
 
           const history = yield* agent.history().pipe(Effect.orDie)
           const { skillBody, roleBody } = yield* loadOverlay(
@@ -152,40 +245,107 @@ export const AgentHandlers = HttpApiBuilder.group(
             role: "user" as const,
             content: payload.message,
           }
+          const messages = composeMessages({
+            skillBody,
+            roleBody,
+            history,
+            message: payload.message,
+          })
 
           const buffer = yield* Ref.make("")
-          const controller = new AbortController()
+          const toolCallCount = yield* Ref.make(0)
 
-          const upstream = streamOpenRouter({
-            apiKey,
-            model: payload.model ?? DEFAULT_MODEL,
-            messages: composeMessages({
-              skillBody,
-              roleBody,
-              history,
-              message: payload.message,
+          // Same as the prompt handler: Effect AI's `streamText` runs ONE
+          // round (model → tool calls → tool results) and ends. We loop so
+          // the model can react to the tool results, concatenating each
+          // iteration's part stream into the SSE output. Intermediate
+          // `finish: tool-calls` frames are filtered so the FE sees ONE
+          // final `done` frame at the end.
+          const MAX_TOOL_HOPS = 8
+
+          // Effect AI's `streamText` runs ONE round per call (model →
+          // resolve tool calls → end). We loop here so the model can react
+          // to its own tool results. Parts from every iteration flow into a
+          // single queue that drives the SSE pipeline below; intermediate
+          // `finish: tool-calls` frames are dropped so the FE only sees ONE
+          // `done` at the very end.
+          //
+          // A forked driver fiber owns the iteration: collect parts, decide
+          // whether to loop, and push only the parts we want to emit into
+          // the queue. `Stream.fromQueue` consumes them downstream — no
+          // recursive Stream type inference needed.
+          const loopedStream = Stream.unwrap(
+            Effect.gen(function* () {
+              const queue = yield* Queue.bounded<
+                AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>>,
+                AiError.AiError | Cause.Done
+              >(64)
+
+              const driver = Effect.gen(function* () {
+                let promptValue: Prompt.Prompt = Prompt.make(messages)
+                for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+                  const baseCall = LanguageModel.streamText({
+                    prompt: promptValue,
+                    toolkit: AgentToolkit,
+                  })
+                  const withModel =
+                    payload.model !== undefined
+                      ? baseCall.pipe(
+                          Stream.provide(
+                            Layer.succeed(OpenRouterLanguageModel.Config, {
+                              model: payload.model,
+                            }),
+                          ),
+                        )
+                      : baseCall
+
+                  const collected: Array<AiResponse.AnyPart> = []
+                  let lastFinishReason: AiResponse.FinishReason | undefined
+
+                  yield* withModel.pipe(
+                    Stream.runForEach((part) =>
+                      Effect.gen(function* () {
+                        collected.push(part)
+                        if (part.type === "finish") {
+                          lastFinishReason = part.reason
+                          // Suppress intermediate finish frames; only the
+                          // terminal finish (next branch) reaches the FE.
+                          if (part.reason === "tool-calls") return
+                        }
+                        yield* Queue.offer(queue, part)
+                      }),
+                    ),
+                  )
+
+                  if (lastFinishReason !== "tool-calls") break
+                  promptValue = Prompt.concat(
+                    promptValue,
+                    Prompt.fromResponseParts(collected),
+                  )
+                }
+              }).pipe(
+                Effect.ensuring(Queue.end(queue)),
+                Effect.tapCause((cause) => Queue.failCause(queue, cause)),
+                Effect.forkScoped,
+              )
+
+              yield* driver
+              return Stream.fromQueue(queue)
             }),
-            signal: controller.signal,
-          })
+          )
 
           const encodeStreamPart = Schema.encodeSync(StreamPart)
 
-          // Always abort the upstream fetch when this stream ends or is
-          // interrupted, so client disconnects don't keep OpenRouter
-          // streaming into a closed socket.
-          const abortUpstream = Effect.sync(() => controller.abort())
-
           // Persist user + assistant turn as a single DO write so concurrent
-          // prompts can't scramble order (avoids the window where request B's
-          // user message could land between request A's user and assistant
-          // writes). Runs in the Stream.ensuring finalizer on BOTH success
-          // and interrupt; on a fast disconnect with empty buffer we still
-          // persist the user message (no orphan reply).
+          // prompts can't scramble order. Runs in the `Stream.ensuring`
+          // finalizer on BOTH success and interrupt; on a fast disconnect
+          // with empty buffer we still persist the user message (no orphan
+          // reply).
           //
-          // We swallow append failures with a logged Cause rather than
-          // Effect.orDie — a defect inside a Stream finalizer surfaces only
-          // as an unhandled defect log, which is worse than an explicit
-          // error trail at the point of failure.
+          // Swallow append failures with a logged Cause rather than
+          // `Effect.orDie` — a defect inside a Stream finalizer surfaces
+          // only as an unhandled defect log, which is worse than an
+          // explicit error trail at the point of failure.
           const persistTurn = Effect.gen(function* () {
             const text = yield* Ref.get(buffer)
             const turn =
@@ -204,20 +364,88 @@ export const AgentHandlers = HttpApiBuilder.group(
             )
           })
 
-          const sseFrames = upstream.pipe(
-            // Wire-level error → in-band StreamPartError so the FE's
-            // Schema.decodeUnknownEffect(StreamPart) decoder accepts it.
-            Stream.catch((err) =>
+          const sseFrames = loopedStream.pipe(
+            Stream.provide(AgentToolkitLayer),
+            // Provide the ambient services consumed by the toolkit layer's
+            // `RIn` (LanguageModel + SkillsBucket). These are satisfied
+            // upstream at the Worker root (`aiLayer` + per-event
+            // `provideService(SkillsBucket, ...)`).
+            Stream.provideContext(ambient),
+            // Map each Effect AI Response.StreamPart to our SSE StreamPart.
+            // Response.StreamPart uses `type` (not `_tag`). FinishPart's
+            // reason field is `reason: FinishReason` (literal union).
+            Stream.filterMap(
+              Filter.make((part): Result.Result<SseStreamPart, unknown> => {
+                switch (part.type) {
+                  case "text-delta":
+                    return Result.succeed(
+                      new StreamPartTextDelta({ delta: part.delta }),
+                    )
+                  case "tool-call":
+                    return Result.succeed(
+                      new StreamPartToolCall({
+                        id: part.id,
+                        name: part.name,
+                        params: part.params,
+                      }),
+                    )
+                  case "tool-result":
+                    return Result.succeed(
+                      new StreamPartToolResult({
+                        id: part.id,
+                        result: part.result,
+                        isFailure: part.isFailure,
+                      }),
+                    )
+                  case "finish":
+                    return Result.succeed(
+                      new StreamPartDone({
+                        finishReason: part.reason,
+                        toolCallCount: 0,
+                      }),
+                    )
+                  default:
+                    return Result.fail(part)
+                }
+              }),
+            ),
+            Stream.tap((part) => {
+              if (part._tag === "text-delta")
+                return Ref.update(buffer, (s) => s + part.delta)
+              if (part._tag === "tool-call")
+                return Ref.update(toolCallCount, (n) => n + 1)
+              return Effect.void
+            }),
+            // Inject the live `toolCallCount` into the `done` frame. The
+            // `Stream.filterMap` above emits `done` with a placeholder 0
+            // because the Ref hasn't been read yet; here we replace it with
+            // the value accumulated by the `tap` above (which runs first for
+            // every earlier `tool-call` part).
+            Stream.mapEffect(
+              (part): Effect.Effect<SseStreamPart> =>
+                part._tag === "done"
+                  ? Ref.get(toolCallCount).pipe(
+                      Effect.map(
+                        (count) =>
+                          new StreamPartDone({
+                            finishReason: part.finishReason,
+                            toolCallCount: count,
+                          }),
+                      ),
+                    )
+                  : Effect.succeed(part),
+            ),
+            // Wire-level error AND defects → in-band StreamPartError so the
+            // FE's Schema.decodeUnknownEffect(StreamPart) decoder accepts
+            // them. `Stream.catchCause` (not `Stream.catch`) ensures a
+            // defect inside a tool handler also surfaces as an error frame
+            // instead of killing the connection mid-stream with no event.
+            Stream.catchCause((cause) =>
               Stream.succeed(
                 new StreamPartError({
-                  message: err.message ?? "stream failed",
+                  message: Cause.pretty(cause),
                 }),
               ),
-            ),
-            Stream.tap((part) =>
-              part._tag === "text-delta"
-                ? Ref.update(buffer, (s) => s + part.delta)
-                : Effect.void,
             ),
             Stream.map((part) =>
               Sse.encoder.write({
@@ -228,7 +456,7 @@ export const AgentHandlers = HttpApiBuilder.group(
               }),
             ),
             Stream.encodeText,
-            Stream.ensuring(Effect.andThen(abortUpstream, persistTurn)),
+            Stream.ensuring(persistTurn),
           )
 
           return HttpServerResponse.stream(sseFrames, {
@@ -242,9 +470,7 @@ export const AgentHandlers = HttpApiBuilder.group(
       )
       .handle("task", ({ payload }) =>
         Effect.gen(function* () {
-          const apiKey = yield* OpenRouterApiKey
           const result = yield* runSubagent({
-            apiKey,
             prompt: payload.prompt,
             ...(payload.skill !== undefined ? { skill: payload.skill } : {}),
             ...(payload.role !== undefined ? { role: payload.role } : {}),

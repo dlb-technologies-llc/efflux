@@ -1,7 +1,11 @@
 import { AgentApi } from "@effect-flue/shared"
+import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
+import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import * as Cloudflare from "alchemy/Cloudflare"
 import { Stage } from "alchemy/Stage"
 import { Cause, Effect, Layer, Option, Path, Redacted } from "effect"
+import { LanguageModel } from "effect/unstable/ai"
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as Etag from "effect/unstable/http/Etag"
 import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
@@ -9,8 +13,8 @@ import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondab
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import Agent from "./Agent.ts"
-import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
-import { callOpenRouter, DEFAULT_MODEL } from "./OpenRouterClient.ts"
+import { DEFAULT_MODEL } from "./Defaults.ts"
+import { AgentHandlers, AgentStub } from "./handlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, Skills, SkillsBucket } from "./Skills.ts"
 
@@ -118,15 +122,28 @@ export default class Api extends Cloudflare.Worker<Api>()(
           const skillBody = yield* loadSkillBody("support").pipe(
             Effect.provideService(SkillsBucket, skills),
           )
-          const result = yield* callOpenRouter(apiKey, DEFAULT_MODEL, [
-            { role: "system", content: skillBody },
-            {
-              role: "user",
-              content:
-                "Daily heartbeat. Reply with one short sentence about today.",
-            },
-          ])
-          yield* Effect.log(`cron ${controller.cron}: ${result.text}`)
+          const response = yield* LanguageModel.generateText({
+            prompt: [
+              { role: "system", content: skillBody },
+              {
+                role: "user",
+                content:
+                  "Daily heartbeat. Reply with one short sentence about today.",
+              },
+            ],
+          }).pipe(
+            // Cron runs outside the per-event handler, so build a fresh AI
+            // layer here rather than reusing the request-scoped one.
+            Effect.provide(
+              OpenRouterLanguageModel.layer({ model: DEFAULT_MODEL }).pipe(
+                Layer.provide(
+                  OpenRouterClient.layer({ apiKey: Redacted.make(apiKey) }),
+                ),
+                Layer.provide(FetchHttpClient.layer),
+              ),
+            ),
+          )
+          yield* Effect.log(`cron ${controller.cron}: ${response.text}`)
         }).pipe(
           // `tapCause` BEFORE `catchCause` is load-bearing — without it,
           // transient OpenRouter failures vanish silently.
@@ -149,6 +166,20 @@ export default class Api extends Cloudflare.Worker<Api>()(
           Effect.gen(function* () {
             const apiKey = yield* unwrapApiKey
             const skills = yield* skillsClient.raw
+            // Build AI provider stack here in per-event scope — `apiKey`
+            // was just resolved from `WorkerEnvironment`.
+            //
+            // Ordering note: this layer MUST be provided OUTSIDE any layer
+            // whose RIn includes `LanguageModel` (e.g. the upcoming
+            // AgentToolkitLayer); otherwise the requirement is unsatisfiable.
+            const aiLayer = OpenRouterLanguageModel.layer({
+              model: DEFAULT_MODEL,
+            }).pipe(
+              Layer.provide(
+                OpenRouterClient.layer({ apiKey: Redacted.make(apiKey) }),
+              ),
+              Layer.provide(FetchHttpClient.layer),
+            )
             // HttpApiBuilder deliberately Effect.die's HttpApiSchemaError
             // (request-decode failures) and the encoded result of typed
             // endpoint errors. Those errors implement HttpServerRespondable
@@ -159,8 +190,8 @@ export default class Api extends Cloudflare.Worker<Api>()(
             // 500 plain-text rather than the intended 400 JSON.
             return yield* handler.pipe(
               Effect.provideService(AgentStub, agents),
-              Effect.provideService(OpenRouterApiKey, apiKey),
               Effect.provideService(SkillsBucket, skills),
+              Effect.provide(aiLayer),
               Effect.catchCause((cause) => {
                 for (const reason of cause.reasons) {
                   const value = Cause.isFailReason(reason)
