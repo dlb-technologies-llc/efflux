@@ -18,6 +18,7 @@ import {
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
+import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
 
 // Session keys are URL path segments backed by DO ids; constrain to safe
 // characters to prevent path-traversal-like attacks via `:name` / `:id`.
@@ -75,4 +76,9 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(stream)
   .add(task)
 
-export class AgentApi extends HttpApi.make("agent-api").add(AgentGroup) {}
+// `.middleware(SchemaErrorMiddleware)` is called AFTER `.add(AgentGroup)`,
+// so per `HttpApi.middleware` semantics the middleware applies to every
+// endpoint in the previously-added groups (i.e. all of `AgentGroup`).
+export class AgentApi extends HttpApi.make("agent-api")
+  .add(AgentGroup)
+  .middleware(SchemaErrorMiddleware) {}
