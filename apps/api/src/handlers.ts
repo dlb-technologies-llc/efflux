@@ -3,12 +3,14 @@ import {
   HistoryResponse,
   Message,
   PromptResponse,
+  SubagentTaskResponse,
 } from "@effect-flue/shared"
 import * as Cloudflare from "alchemy/Cloudflare"
 import { Context, Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type Agent from "./Agent.ts"
 import { DEFAULT_MODEL, callOpenRouter } from "./OpenRouterClient.ts"
+import { runSubagent } from "./Subagent.ts"
 
 export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
 
@@ -84,5 +86,21 @@ export const AgentHandlers = HttpApiBuilder.group(
       )
       .handle("stream", () =>
         Effect.die(new Error("stream handler not implemented yet")),
+      )
+      .handle("task", ({ payload }) =>
+        Effect.gen(function* () {
+          const apiKey = yield* OpenRouterApiKey
+          const result = yield* runSubagent({
+            apiKey,
+            prompt: payload.prompt,
+            ...(payload.role !== undefined ? { role: payload.role } : {}),
+            ...(payload.model !== undefined ? { model: payload.model } : {}),
+          })
+          return new SubagentTaskResponse({
+            text: result.text,
+            model: result.model,
+            finishReason: result.finishReason,
+          })
+        }),
       ),
 )
