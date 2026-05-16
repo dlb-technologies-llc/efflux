@@ -1,4 +1,8 @@
-import { AgentError } from "@effect-flue/shared"
+import {
+  AgentError,
+  RoleNotFoundError,
+  SkillNotFoundError,
+} from "@effect-flue/shared"
 import * as r2 from "@distilled.cloud/cloudflare/r2"
 import type * as runtime from "@cloudflare/workers-types"
 import { Action } from "alchemy"
@@ -41,10 +45,10 @@ const stripFrontmatter = (text: string): string => {
   return text.slice(end + 5).trim()
 }
 
-const loadBody = (
+const loadBody = <E>(
   key: string,
-  notFoundLabel: string,
-): Effect.Effect<string, AgentError, SkillsBucket> =>
+  notFound: (key: string) => E,
+): Effect.Effect<string, E | AgentError, SkillsBucket> =>
   Effect.gen(function* () {
     const cached = bodyCache.get(key)
     if (cached !== undefined) return cached
@@ -60,11 +64,7 @@ const loadBody = (
         }),
     })
 
-    if (obj === null) {
-      return yield* Effect.fail(
-        new AgentError({ message: `${notFoundLabel} not found: ${key}` }),
-      )
-    }
+    if (obj === null) return yield* Effect.fail(notFound(key))
 
     const text = yield* Effect.tryPromise({
       try: () => obj.text(),
@@ -83,13 +83,19 @@ const loadBody = (
 
 export const loadSkillBody = (
   name: string,
-): Effect.Effect<string, AgentError, SkillsBucket> =>
-  loadBody(`skills/${name}.md`, "Skill")
+): Effect.Effect<string, SkillNotFoundError | AgentError, SkillsBucket> =>
+  loadBody(
+    `skills/${name}.md`,
+    (key) => new SkillNotFoundError({ skill: name, key }),
+  )
 
 export const loadRoleBody = (
   name: string,
-): Effect.Effect<string, AgentError, SkillsBucket> =>
-  loadBody(`roles/${name}.md`, "Role")
+): Effect.Effect<string, RoleNotFoundError | AgentError, SkillsBucket> =>
+  loadBody(
+    `roles/${name}.md`,
+    (key) => new RoleNotFoundError({ role: name, key }),
+  )
 
 // ── Deploy-time upload action ──────────────────────────────────────────────
 //

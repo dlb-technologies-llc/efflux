@@ -309,3 +309,114 @@ full DO (Container + OpenRouter + Skills + Secrets) was reverted while
 isolating the bug. Re-adding each piece must respect the rule: **plain
 objects cross the DO RPC fence; class instances live on either side, never
 in transit.**
+
+---
+
+## Alchemy registers Policies; you must also provide Live layers
+
+**TL;DR:** `Cloudflare.providers()` (wired up by `Alchemy.Stack` in
+`alchemy.run.ts`) registers `Binding.Policy` services — deploy-time metadata
+describing **how** to wire each binding kind — but it does **not** auto-merge
+the runtime `*Live` layers those bindings depend on. Every binding kind your
+Worker init effect actually uses (`Cloudflare.R2Bucket.bind`,
+`Cloudflare.cron(...).subscribe`, …) needs its corresponding `*Live` layer
+explicitly provided via `Effect.provide(Layer.mergeAll(...))` on the Worker
+init effect. Otherwise typecheck fails with a `Property
+'...BindingPolicy' is missing in type 'Context.Context<...>'` error pointing
+at a service you never imported.
+
+### Stack
+
+- `alchemy@2.0.0-beta.39`
+- `effect@4.0.0-beta.66`
+- Cloudflare Workers runtime
+
+### Symptoms
+
+- TypeScript error of the form:
+  ```
+  Property '__effect-smol/.../R2BucketBindingPolicy' is missing in type
+  'Context.Context<...>'
+  ```
+  (or `CronEventSourcePolicy`, or any other `*Policy` service) when the
+  Worker init effect calls `Cloudflare.R2Bucket.bind(<bucket>)` or
+  `Cloudflare.cron(<expr>).subscribe(<handler>)`.
+- The missing service name references a `*Policy` symbol the user never
+  directly imported. It's an internal alchemy service registered as part of
+  `Cloudflare.providers()`'s ambient context.
+- The error surfaces at typecheck — not at runtime — because the binding
+  call's `R` channel demands the `Policy` service. Without the matching
+  `*Live` layer in scope to satisfy that requirement, the Worker init
+  effect's context isn't fully discharged.
+
+### Root cause
+
+`alchemy.run.ts` constructs the deploy program with `Alchemy.Stack` and
+`Cloudflare.providers()`. That provider call registers `Binding.Policy`
+services for every supported binding kind (R2Bucket, CronEventSource,
+DurableObjectNamespace, etc.) so the deploy-side machinery knows **how** to
+wire bindings into the deployed Worker manifest.
+
+But the runtime side — the layers that actually implement the Effect-side
+binding APIs at Worker boot (`R2BucketBindingLive`, `CronEventSourceLive`,
+…) — is **not** auto-merged into the Worker init effect's context. Each
+binding kind your Worker uses requires its `*Live` layer to be explicitly
+provided. If you call `Cloudflare.R2Bucket.bind(MyBucket)` inside the Worker
+init `Effect.gen`, the binding's `R` channel includes
+`R2BucketBindingPolicy`, and without `R2BucketBindingLive` provided, the
+init effect's context is incomplete and typecheck fails.
+
+### Fix
+
+Provide every `*Live` layer your worker's bindings need on the Worker init
+effect itself, via `Effect.provide(Layer.mergeAll(...))`. From
+`apps/api/src/Api.ts:162-168`:
+
+```ts
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Cloudflare.R2BucketBindingLive,
+        Cloudflare.CronEventSourceLive,
+      ),
+    ),
+  ),
+) {}
+```
+
+Known `*Live` layers and the binding calls that require them:
+
+- `Cloudflare.R2BucketBindingLive` — required when the Worker init effect
+  uses `Cloudflare.R2Bucket.bind(<bucket>)`.
+- `Cloudflare.CronEventSourceLive` — required when the Worker init effect
+  uses `Cloudflare.cron(<expression>).subscribe(<handler>)`.
+
+This list is open-ended. Other `*Live` layers will surface as the same
+"`*Policy` missing" typecheck-error class when their corresponding binding
+kind is used (KV, D1, Queues, Durable Objects, Workflows, etc.). The fix is
+always the same shape: add the matching `*Live` to the `Layer.mergeAll(...)`
+argument.
+
+### Why this matters
+
+This is the third trap in the same family as the two issues above
+(`Cloudflare.Secret.bind()` from SecretsStore crashes Worker boot` and
+`Schema.Class cannot cross a Cloudflare Durable Object RPC boundary`):
+alchemy's API surface for Cloudflare bindings looks self-contained, but
+each binding kind has a hidden runtime dependency the user has to wire up
+by hand. The previous two issues surfaced at runtime as opaque `[object
+Object]` Worker exceptions; this one surfaces at typecheck, which is
+strictly better — but the error message points at an internal `*Policy`
+service the user never imported, which still costs time to map back to "I
+need to add `<Kind>BindingLive`."
+
+### Suggested upstream fix
+
+- `Cloudflare.providers()` (or `Alchemy.Stack`) should provide the matching
+  runtime `*Live` layers alongside each `*Policy` it registers, so a binding
+  call that typechecks at the Policy level also has its runtime context
+  satisfied automatically.
+- Failing that, the `R` channel of each `Cloudflare.<Kind>.bind` /
+  `Cloudflare.cron(...).subscribe` API should reference the `*Live` service
+  by a user-visible name with a docstring pointing at the matching `*Live`
+  layer to provide.

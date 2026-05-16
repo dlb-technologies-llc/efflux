@@ -1,6 +1,7 @@
 import { AgentApi } from "@effect-flue/shared"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Cause, Effect, Layer, Path, Redacted } from "effect"
+import { Stage } from "alchemy/Stage"
+import { Cause, Effect, Layer, Option, Path, Redacted } from "effect"
 import * as Etag from "effect/unstable/http/Etag"
 import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
@@ -10,6 +11,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import Agent from "./Agent.ts"
 import { AgentHandlers, AgentStub, OpenRouterApiKey } from "./handlers.ts"
 import { callOpenRouter, DEFAULT_MODEL } from "./OpenRouterClient.ts"
+import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, Skills, SkillsBucket } from "./Skills.ts"
 
 const requireEnv = (key: string): string => {
@@ -83,33 +85,64 @@ export default class Api extends Cloudflare.Worker<Api>()(
 
     // Daily heartbeat cron — exercises the same skill-loading path the
     // prompt handler uses, against the support skill.
-    yield* Cloudflare.cron("0 12 * * *").subscribe((controller) =>
-      Effect.gen(function* () {
-        const apiKey = yield* unwrapApiKey
-        const skills = yield* skillsClient.raw
-        const skillBody = yield* loadSkillBody("support").pipe(
-          Effect.provideService(SkillsBucket, skills),
-        )
-        const result = yield* callOpenRouter(apiKey, DEFAULT_MODEL, [
-          { role: "system", content: skillBody },
-          {
-            role: "user",
-            content:
-              "Daily heartbeat. Reply with one short sentence about today.",
-          },
-        ])
-        yield* Effect.log(`cron ${controller.cron}: ${result.text}`)
-      }).pipe(
-        // `tapCause` BEFORE `catchCause` is load-bearing — without it,
-        // transient OpenRouter failures vanish silently.
-        Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
-        Effect.catchCause(() => Effect.void),
-      ),
-    )
+    //
+    // Stage gating: `Stage` is provided by alchemy's CLI at DEPLOY time
+    // (`alchemy/Cli/commands/deploy.ts` wraps the Stack scope in
+    // `Layer.succeed(Stage, stage)`). The Worker init Effect runs in two
+    // distinct contexts:
+    //
+    //   - Deploy time: `Stage` is `Some(<--stage value>)`. We only want to
+    //     register the cron trigger on `prod` to avoid dev/staging Workers
+    //     firing real OpenRouter calls every 12 minutes.
+    //   - Worker runtime (inside Cloudflare): no Stack, no plan phase, and
+    //     `Stage` is unset → `None`. `Binding.Policy`'s runtime path treats
+    //     `cron(...).subscribe(...)` as a no-op for registration and only
+    //     wires the scheduled-event listener. The listener has to run on
+    //     every Worker (because the resource for the prod cron trigger
+    //     lives in the deployed code), so `onNone` must register too.
+    //
+    // Net effect:
+    //   - prod Worker:    cron trigger created at deploy + handler wired at runtime.
+    //   - dev/staging:    no cron trigger and the listener is harmless.
+    const stage = yield* Effect.serviceOption(Stage)
+    const shouldRegisterCron = Option.match(stage, {
+      onNone: () => true,
+      onSome: (s) => s === "prod",
+    })
+
+    if (shouldRegisterCron) {
+      yield* Cloudflare.cron("0 12 * * *").subscribe((controller) =>
+        Effect.gen(function* () {
+          const apiKey = yield* unwrapApiKey
+          const skills = yield* skillsClient.raw
+          const skillBody = yield* loadSkillBody("support").pipe(
+            Effect.provideService(SkillsBucket, skills),
+          )
+          const result = yield* callOpenRouter(apiKey, DEFAULT_MODEL, [
+            { role: "system", content: skillBody },
+            {
+              role: "user",
+              content:
+                "Daily heartbeat. Reply with one short sentence about today.",
+            },
+          ])
+          yield* Effect.log(`cron ${controller.cron}: ${result.text}`)
+        }).pipe(
+          // `tapCause` BEFORE `catchCause` is load-bearing — without it,
+          // transient OpenRouter failures vanish silently.
+          Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
+          Effect.catchCause(() => Effect.void),
+        ),
+      )
+    }
 
     return {
       fetch: HttpApiBuilder.layer(AgentApi).pipe(
         Layer.provide(AgentHandlers),
+        // Provided ahead of the platform/etag stack so the schema-error
+        // transform participates in the request pipeline composed by
+        // `HttpApiBuilder.layer` for every endpoint in `AgentApi`.
+        Layer.provide(SchemaErrorMiddlewareLive),
         Layer.provide([Etag.layer, HttpPlatformStub, Path.layer]),
         HttpRouter.toHttpEffect,
         Effect.map((handler) =>

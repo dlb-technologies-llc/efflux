@@ -13,7 +13,11 @@
  * a raw passthrough to OpenRouter (no system message), matching the prior
  * "role omitted" behavior of this endpoint.
  */
-import { AgentError } from "@effect-flue/shared"
+import {
+  AgentError,
+  RoleNotFoundError,
+  SkillNotFoundError,
+} from "@effect-flue/shared"
 import { Effect } from "effect"
 import { DEFAULT_MODEL, callOpenRouter } from "./OpenRouterClient.ts"
 import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
@@ -26,7 +30,7 @@ export const runSubagent = (args: {
   readonly model?: string
 }): Effect.Effect<
   { readonly text: string; readonly model: string; readonly finishReason: string },
-  AgentError,
+  AgentError | SkillNotFoundError | RoleNotFoundError,
   SkillsBucket
 > =>
   Effect.gen(function* () {

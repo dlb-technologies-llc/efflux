@@ -5,7 +5,12 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentError, NotFoundError } from "./Errors.ts"
+import {
+  AgentError,
+  NotFoundError,
+  RoleNotFoundError,
+  SkillNotFoundError,
+} from "./Errors.ts"
 import {
   HistoryResponse,
   PromptRequest,
@@ -13,6 +18,7 @@ import {
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
+import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
 
 // Session keys are URL path segments backed by DO ids; constrain to safe
 // characters to prevent path-traversal-like attacks via `:name` / `:id`.
@@ -33,7 +39,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -54,13 +60,13 @@ const stream = HttpApiEndpoint.post("stream", "/agents/:name/:id/stream", {
   success: Schema.String.pipe(
     HttpApiSchema.asText({ contentType: "text/event-stream" }),
   ),
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 const task = HttpApiEndpoint.post("task", "/tasks", {
   payload: SubagentTaskRequest,
   success: SubagentTaskResponse,
-  error: AgentError,
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
 export const AgentGroup = HttpApiGroup.make("agents")
@@ -70,4 +76,9 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(stream)
   .add(task)
 
-export class AgentApi extends HttpApi.make("agent-api").add(AgentGroup) {}
+// `.middleware(SchemaErrorMiddleware)` is called AFTER `.add(AgentGroup)`,
+// so per `HttpApi.middleware` semantics the middleware applies to every
+// endpoint in the previously-added groups (i.e. all of `AgentGroup`).
+export class AgentApi extends HttpApi.make("agent-api")
+  .add(AgentGroup)
+  .middleware(SchemaErrorMiddleware) {}
