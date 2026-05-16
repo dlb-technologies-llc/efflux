@@ -15,10 +15,25 @@
  * spawn further subagents — see `runSubagent` for the anti-recursion note.
  */
 import { SubagentTaskRequest } from "@effect-flue/shared"
-import { Effect, Schema } from "effect"
+import { Context, Effect, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
+
+// Per-request handle to the DO's `exec(command)` RPC. Provided in the
+// `prompt` and `stream` handlers from the resolved Agent stub.
+export class BashRunner extends Context.Service<
+  BashRunner,
+  {
+    readonly exec: (
+      command: string,
+    ) => Effect.Effect<{
+      readonly exitCode: number
+      readonly stdout: string
+      readonly stderr: string
+    }>
+  }
+>()("api/BashRunner") {}
 
 export const GetCurrentTimeTool = Tool.make("GetCurrentTime", {
   description: "Returns the current UTC date and time as an ISO 8601 string.",
@@ -42,7 +57,35 @@ export const SpawnSubagentTool = Tool.make("SpawnSubagent", {
   dependencies: [LanguageModel.LanguageModel, SkillsBucket],
 })
 
-export const AgentToolkit = Toolkit.make(GetCurrentTimeTool, SpawnSubagentTool)
+const BashParameters = Schema.Struct({
+  command: Schema.String.annotate({
+    description:
+      "Shell command to execute. Runs via `sh -c <command>` inside the sandboxed Linux container.",
+  }),
+})
+
+const BashResult = Schema.Struct({
+  exitCode: Schema.Number,
+  stdout: Schema.String,
+  stderr: Schema.String,
+})
+
+export const BashTool = Tool.make("Bash", {
+  description:
+    "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. Use this for filesystem inspection, knowledge-base searches (e.g. `grep -ri <keyword> /workspace/kb`), and other devops-style operations.",
+  parameters: BashParameters,
+  success: BashResult,
+  // Declare BashRunner so the handler's R-channel may legally reference
+  // it. Bubbles up through `AgentToolkit.toLayer(...)` as the layer's
+  // `RIn`, satisfied per-request in `handlers.ts`.
+  dependencies: [BashRunner],
+})
+
+export const AgentToolkit = Toolkit.make(
+  GetCurrentTimeTool,
+  SpawnSubagentTool,
+  BashTool,
+)
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
   GetCurrentTime: () => Effect.sync(() => new Date().toISOString()),
@@ -78,4 +121,9 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     ),
+  Bash: (params) =>
+    Effect.gen(function* () {
+      const runner = yield* BashRunner
+      return yield* runner.exec(params.command)
+    }),
 })
