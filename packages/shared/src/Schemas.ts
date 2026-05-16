@@ -68,11 +68,19 @@ export class StreamPartDone extends Schema.TaggedClass<StreamPartDone>()("done",
   toolCallCount: Schema.Number,
 }) {}
 
+export class StreamPartError extends Schema.TaggedClass<StreamPartError>()(
+  "error",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export const StreamPart = Schema.Union([
   StreamPartTextDelta,
   StreamPartToolCall,
   StreamPartToolResult,
   StreamPartDone,
+  StreamPartError,
 ])
 
 export type StreamPart = typeof StreamPart.Type

@@ -51,7 +51,9 @@ const reset = HttpApiEndpoint.delete("reset", "/agents/:name/:id", {
 const stream = HttpApiEndpoint.post("stream", "/agents/:name/:id/stream", {
   params: AgentParams,
   payload: PromptRequest,
-  success: HttpApiSchema.NoContent,
+  success: Schema.String.pipe(
+    HttpApiSchema.asText({ contentType: "text/event-stream" }),
+  ),
   error: AgentError,
 })
 

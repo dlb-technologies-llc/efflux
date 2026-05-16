@@ -1,6 +1,6 @@
 import { Message } from "@effect-flue/shared"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Schema } from "effect"
 
 const HistorySchema = Schema.Array(Message)
 
@@ -55,8 +55,6 @@ export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
           }),
 
         reset: () => state.storage.delete("history").pipe(Effect.asVoid),
-
-        streamPrompt: () => Stream.die("streaming not implemented yet"),
       }
     })
   }),
