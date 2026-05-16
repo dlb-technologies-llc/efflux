@@ -1,58 +1,52 @@
 /**
- * Stateless one-shot subagent. Runs a focused prompt against OpenRouter with
- * an optional named system prompt (role) and returns just the assistant text.
+ * Stateless one-shot subagent. Runs a focused prompt against OpenRouter,
+ * optionally overlaying a skill and/or role system prompt loaded from R2.
  *
  * Deliberately does NOT touch any DurableObject session — no history is
  * persisted and no parent state is mutated. The HTTP endpoint lives at
  * top-level `POST /tasks` for this reason (not per-session). See issue #4.
  *
- * `role` is a closed `Schema.Literals` enum (`TaskRole`) so unknown values
- * fail at the HTTP boundary with a structured schema error, not deeper here.
- *
- * Why the prompt is inlined here rather than loaded from
- * `apps/api/skills/support.md`: alchemy's Rolldown bundler (beta.39) does not
- * honor the ESM `with { type: "text" }` import attribute for `.md` files. The
- * `.md` file at `apps/api/skills/` is kept as the canonical reference (linked
- * from the README), but the runtime value lives here. When alchemy gains a
- * `.md`-as-text loader, switch this back to an import.
+ * Both `skill` and `role` are open `SafeName`-bounded strings that resolve
+ * to `skills/<name>.md` / `roles/<name>.md` in the `Skills` R2 bucket. The
+ * subagent intentionally does NOT default `skill` to `"support"` the way
+ * the prompt/stream handlers do — when neither is supplied, the request is
+ * a raw passthrough to OpenRouter (no system message), matching the prior
+ * "role omitted" behavior of this endpoint.
  */
-import { AgentError, type TaskRole } from "@effect-flue/shared"
+import { AgentError } from "@effect-flue/shared"
 import { Effect } from "effect"
 import { DEFAULT_MODEL, callOpenRouter } from "./OpenRouterClient.ts"
-
-const SUPPORT_PROMPT = `You are a customer support agent.
-
-When the customer asks a question:
-1. Search the knowledge base for relevant articles using the \`bash\` tool (e.g. \`grep -ri "<keyword>" /workspace/kb\`).
-2. Read the most relevant file(s).
-3. Write a helpful, concise response grounded in what you found.
-
-If nothing relevant turns up, say so honestly rather than guessing.
-Keep responses under 200 words.`
-
-const ROLE_REGISTRY: Record<TaskRole, string> = {
-  support: SUPPORT_PROMPT,
-}
+import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 
 export const runSubagent = (args: {
   readonly apiKey: string
   readonly prompt: string
-  readonly role?: TaskRole
+  readonly skill?: string
+  readonly role?: string
   readonly model?: string
 }): Effect.Effect<
   { readonly text: string; readonly model: string; readonly finishReason: string },
-  AgentError
+  AgentError,
+  SkillsBucket
 > =>
   Effect.gen(function* () {
-    const systemPrompt =
-      args.role !== undefined ? ROLE_REGISTRY[args.role] : undefined
-    const messages =
-      systemPrompt !== undefined
-        ? [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: args.prompt },
-          ]
-        : [{ role: "user", content: args.prompt }]
+    const skillBody =
+      args.skill !== undefined ? yield* loadSkillBody(args.skill) : undefined
+    const roleBody =
+      args.role !== undefined ? yield* loadRoleBody(args.role) : undefined
+
+    const systemMessages = [
+      ...(skillBody !== undefined
+        ? [{ role: "system" as const, content: skillBody }]
+        : []),
+      ...(roleBody !== undefined
+        ? [{ role: "system" as const, content: roleBody }]
+        : []),
+    ]
+    const messages = [
+      ...systemMessages,
+      { role: "user" as const, content: args.prompt },
+    ]
 
     const result = yield* callOpenRouter(
       args.apiKey,

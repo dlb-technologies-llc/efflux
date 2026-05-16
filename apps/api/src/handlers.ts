@@ -246,6 +246,7 @@ export const AgentHandlers = HttpApiBuilder.group(
           const result = yield* runSubagent({
             apiKey,
             prompt: payload.prompt,
+            ...(payload.skill !== undefined ? { skill: payload.skill } : {}),
             ...(payload.role !== undefined ? { role: payload.role } : {}),
             ...(payload.model !== undefined ? { model: payload.model } : {}),
           })
