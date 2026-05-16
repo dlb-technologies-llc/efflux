@@ -9,6 +9,7 @@ export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")(
   message: Schema.String,
   model: Schema.optionalKey(Schema.String),
   skill: Schema.optionalKey(Schema.String),
+  role: Schema.optionalKey(Schema.String),
 }) {}
 
 export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse")({
