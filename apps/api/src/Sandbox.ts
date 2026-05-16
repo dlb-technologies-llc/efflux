@@ -21,7 +21,18 @@ export class Sandbox extends Cloudflare.Container<
     // the class and runtime are split (per the Container Layer pattern),
     // `main` must point at the runtime file — the class file has no
     // default export.
-    main: import.meta.filename.replace(/Sandbox\.ts$/, "Sandbox.runtime.ts"),
+    //
+    // Optional chaining + fallback is load-bearing: `Stack.useSync`'s
+    // lambda also runs at Worker boot (where `import.meta.filename` is
+    // `undefined` because workerd doesn't populate it like Bun/Node).
+    // Without the `?.` the worker throws `TypeError: Cannot read
+    // properties of undefined (reading 'replace')` before any user
+    // handler runs. The fallback string is unused at Worker runtime — it
+    // only matters at deploy time, where `import.meta.filename` IS
+    // defined and `.replace` runs normally.
+    main:
+      import.meta.filename?.replace(/Sandbox\.ts$/, "Sandbox.runtime.ts") ??
+      "",
     instanceType: stack.stage === "prod" ? "standard-1" : "dev",
     observability: { logs: { enabled: true } },
   })),
