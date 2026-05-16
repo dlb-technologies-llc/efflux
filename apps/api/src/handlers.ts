@@ -313,12 +313,34 @@ export const AgentHandlers = HttpApiBuilder.group(
                 return Ref.update(toolCallCount, (n) => n + 1)
               return Effect.void
             }),
-            // Wire-level error → in-band StreamPartError so the FE's
-            // Schema.decodeUnknownEffect(StreamPart) decoder accepts it.
-            Stream.catch((err: { readonly message?: string }) =>
+            // Inject the live `toolCallCount` into the `done` frame. The
+            // `Stream.filterMap` above emits `done` with a placeholder 0
+            // because the Ref hasn't been read yet; here we replace it with
+            // the value accumulated by the `tap` above (which runs first for
+            // every earlier `tool-call` part).
+            Stream.mapEffect(
+              (part): Effect.Effect<SseStreamPart> =>
+                part._tag === "done"
+                  ? Ref.get(toolCallCount).pipe(
+                      Effect.map(
+                        (count) =>
+                          new StreamPartDone({
+                            finishReason: part.finishReason,
+                            toolCallCount: count,
+                          }),
+                      ),
+                    )
+                  : Effect.succeed(part),
+            ),
+            // Wire-level error AND defects → in-band StreamPartError so the
+            // FE's Schema.decodeUnknownEffect(StreamPart) decoder accepts
+            // them. `Stream.catchCause` (not `Stream.catch`) ensures a
+            // defect inside a tool handler also surfaces as an error frame
+            // instead of killing the connection mid-stream with no event.
+            Stream.catchCause((cause) =>
               Stream.succeed(
                 new StreamPartError({
-                  message: err.message ?? "stream failed",
+                  message: Cause.pretty(cause),
                 }),
               ),
             ),

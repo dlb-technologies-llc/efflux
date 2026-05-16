@@ -14,12 +14,7 @@
  * Subagents intentionally have no toolkit attached, so they cannot themselves
  * spawn further subagents — see `runSubagent` for the anti-recursion note.
  */
-import {
-  AgentError,
-  RoleNotFoundError,
-  SkillNotFoundError,
-  SubagentTaskRequest,
-} from "@effect-flue/shared"
+import { SubagentTaskRequest } from "@effect-flue/shared"
 import { Effect, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { SkillsBucket } from "./Skills.ts"
@@ -59,20 +54,28 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       ...(params.model !== undefined ? { model: params.model } : {}),
     }).pipe(
       Effect.map((r) => r.text),
+      // Log the typed failure so operators see it in `wrangler tail` even
+      // when the model recovers gracefully. Done BEFORE the catch so the
+      // log fires regardless of how we choose to surface the error.
+      Effect.tapErrorTag("SkillNotFoundError", (e) =>
+        Effect.logWarning(`SpawnSubagent: skill not found: ${e.skill}`),
+      ),
+      Effect.tapErrorTag("RoleNotFoundError", (e) =>
+        Effect.logWarning(`SpawnSubagent: role not found: ${e.role}`),
+      ),
+      Effect.tapErrorTag("AgentError", (e) =>
+        Effect.logWarning(`SpawnSubagent: agent error: ${e.message}`),
+      ),
       // The Tool.Failure channel is AiError | AiErrorReason by default; we
       // collapse typed Skill/Role-not-found into success-text errors so the
       // model sees the message and can retry/apologize without failing the
-      // whole loop.
-      Effect.catch(
-        (e: AgentError | SkillNotFoundError | RoleNotFoundError) => {
-          const msg =
-            e._tag === "SkillNotFoundError"
-              ? `Skill not found: ${e.skill}`
-              : e._tag === "RoleNotFoundError"
-                ? `Role not found: ${e.role}`
-                : e.message
-          return Effect.succeed(`Error: ${msg}`)
-        },
-      ),
+      // whole loop. Exhaustive over runSubagent's typed errors via catchTags.
+      Effect.catchTags({
+        SkillNotFoundError: (e) =>
+          Effect.succeed(`Error: Skill not found: ${e.skill}`),
+        RoleNotFoundError: (e) =>
+          Effect.succeed(`Error: Role not found: ${e.role}`),
+        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+      }),
     ),
 })
