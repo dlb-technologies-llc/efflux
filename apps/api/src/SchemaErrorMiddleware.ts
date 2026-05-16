@@ -22,13 +22,16 @@ const toPathArray = (value: unknown): ReadonlyArray<PropertyKey> => {
 }
 
 // Walk a `SchemaIssue` tree and surface the first `Pointer`-style path it
-// can find. Pointer issues carry a `.path: ReadonlyArray<PropertyKey>`
-// segment plus a nested `.issue` for the value at that path. Composite
-// issues (Union/Tuple/Struct/Refinement aggregates) carry `.issues: []`.
-// We duck-type both shapes (using `in` narrowing — TS keeps the value
-// typed as `object` with the probed key) so we are not coupled to
-// specific class names, which have changed across pre-release versions
-// of effect-smol.
+// can find. The tree mixes three node shapes (per
+// effect/SchemaIssue):
+//   - Pointer: own `.path: PropertyKey[]` + nested `.issue: Issue`
+//   - Composite: `.issues: Issue[]` (Struct/Tuple/Union/Refinement aggregates)
+//   - Wrapper (Filter, Encoding, AnyOf, OneOf): singular `.issue` or `.issues`
+//     with no own path. We must descend into these too, otherwise an outer
+//     Filter/Encoding wrapping a Pointer leaves `path` empty.
+// We duck-type all three (using `in` narrowing — TS keeps the value typed
+// as `object` with the probed key) so we are not coupled to specific class
+// names, which have changed across pre-release versions of effect-smol.
 const findFirstPath = (issue: unknown): ReadonlyArray<PropertyKey> => {
   if (issue === null || typeof issue !== "object") return []
   // Pointer-style: direct `.path` array, optionally a nested `.issue`.
@@ -48,6 +51,10 @@ const findFirstPath = (issue: unknown): ReadonlyArray<PropertyKey> => {
       const childPath = findFirstPath(child)
       if (childPath.length > 0) return childPath
     }
+  }
+  // Wrapper-style (Filter, Encoding, etc): descend into singular `.issue`.
+  if ("issue" in issue) {
+    return findFirstPath(issue.issue)
   }
   return []
 }
