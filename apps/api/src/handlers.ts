@@ -40,7 +40,7 @@ import type Agent from "./Agent.ts"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
-import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
+import { AgentToolkit, AgentToolkitLayer, BashRunner } from "./Tools.ts"
 
 export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
 
@@ -123,6 +123,14 @@ export const AgentHandlers = HttpApiBuilder.group(
           // `finishReason !== "tool-calls"` or hop cap is hit.
           const MAX_TOOL_HOPS = 8
 
+          // Per-request BashRunner bound to this DO instance's `agent.exec`.
+          // Provided into the toolkit pipe below to satisfy `BashTool`'s
+          // dependency on `BashRunner` without leaking it to the Worker root.
+          const bashRunner = Layer.succeed(
+            BashRunner,
+            BashRunner.of({ exec: (command) => agent.exec(command) }),
+          )
+
           // `Effect.tapCause` on the whole loop persists the user message
           // when the loop fails — same intent as the streaming handler's
           // `Stream.ensuring`. Append failures are swallowed with a logged
@@ -147,6 +155,7 @@ export const AgentHandlers = HttpApiBuilder.group(
 
               const response = yield* withModel.pipe(
                 Effect.provide(AgentToolkitLayer),
+                Effect.provide(bashRunner),
                 Effect.catch((cause) =>
                   Effect.fail(
                     new AgentError({
@@ -364,8 +373,17 @@ export const AgentHandlers = HttpApiBuilder.group(
             )
           })
 
+          // Per-request BashRunner bound to this DO instance's `agent.exec`.
+          // Provided into the toolkit pipe below to satisfy `BashTool`'s
+          // dependency on `BashRunner` without leaking it to the Worker root.
+          const bashRunner = Layer.succeed(
+            BashRunner,
+            BashRunner.of({ exec: (command) => agent.exec(command) }),
+          )
+
           const sseFrames = loopedStream.pipe(
             Stream.provide(AgentToolkitLayer),
+            Stream.provide(bashRunner),
             // Provide the ambient services consumed by the toolkit layer's
             // `RIn` (LanguageModel + SkillsBucket). These are satisfied
             // upstream at the Worker root (`aiLayer` + per-event
