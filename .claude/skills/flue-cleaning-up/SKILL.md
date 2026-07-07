@@ -32,7 +32,7 @@ Before deleting anything, show what will happen (branch to delete, plan file to 
 ### 4. Clean up
 
 - Identify the feature branch from the plan (or `gh pr view <n> --json headRefName`).
-- Switch to `main` if currently on the feature branch: `git checkout main && git pull`.
+- Switch to `main` if currently on the feature branch: `git checkout main && git pull --ff-only`.
 - Delete the local branch: `git branch -d <branch>` — only ever `-d`, never `-D`, so any unmerged work is protected by git itself.
 - Prune stale remote refs: `git fetch --prune`.
 - Archive the plan: move the plan file to `~/c0de/plans/effect-flue/done/` (create the directory if it doesn't exist).

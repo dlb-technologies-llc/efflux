@@ -56,7 +56,7 @@ Expect multiple SSE `data:` frames (`text-delta` parts) ending in a `done` frame
 ```bash
 curl -X POST <URL>/tasks \
   -H 'content-type: application/json' \
-  -d '{"prompt":"Say hello.", "skill":"<known-skill>"}'
+  -d '{"prompt":"Say hello.", "skill":"support"}'
 ```
 
 **The field is `prompt`, not `message`** — session endpoints (`/agents/:name/:id`, `/stream`) take `{message, model?, skill?, role?}`; `/tasks` takes `{prompt, model?, skill?, role?}`. Expect 200 with `text`.
