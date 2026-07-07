@@ -122,6 +122,21 @@ curl https://<your-worker>/tasks \
 
 `skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce an `AgentError` ("Skill not found" / "Role not found") surfaced as a 500 JSON body. Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `UploadSkills` syncs `.md` files to R2 on every deploy whose contents hash changes.
 
+## Working on this repo
+
+Changes flow through a plan → execute → verify → postmortem loop, driven by six skills under `.claude/skills/`:
+
+- `/flue-planning` — wave-structured implementation plan for a task.
+- `/flue-executing` — runs the plan wave-by-wave and opens the PR against `main`.
+- `/flue-creating-issues` — turns a rough problem statement into one well-formed GitHub issue.
+- `/flue-verifying` — deploy + live-worker smoke checklist; typecheck alone never counts as verified.
+- `/flue-postmortem` — pre-merge orchestration retrospective that feeds improvements back into the skills.
+- `/flue-cleaning-up` — post-merge branch deletion and plan archival.
+
+`CLAUDE.md` at the repo root holds the current commands, conventions, and a skill index; `ISSUES.md` records known landmines — read it before touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
+
+Note: the Dev and Deploy sections below still reference pnpm and predate the bun migration — the `CLAUDE.md` Commands section is current (a full README correction lands with issue #29).
+
 ## The chat UI
 
 `apps/web` is a Vite + React app. It does not duplicate any type from the Worker — every request and response goes through:
