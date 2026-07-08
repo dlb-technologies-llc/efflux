@@ -1,0 +1,10 @@
+{
+	"effect-smol": {
+		"path": "effect-smol",
+		"detect": "effect",
+		"versions": [">=4.0.0-beta.0"],
+		"pinned": "effect@4.0.0-beta.94",
+		"src": "packages/**/src/**/*.ts",
+		"test": "packages/**/test/**/*.ts"
+	}
+}

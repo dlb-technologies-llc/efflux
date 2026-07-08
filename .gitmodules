@@ -1,0 +1,4 @@
+[submodule ".claude/effect-smol"]
+	path = .claude/effect-smol
+	url = https://github.com/Effect-TS/effect-smol.git
+	shallow = true
