@@ -1,22 +1,22 @@
 # effect-flue
 
-> A deployable Cloudflare agent runtime built from Effect v4 + alchemy-effect primitives. No framework required.
+> A deployable Cloudflare agent runtime built from Effect v4 on native Workers bindings. No framework required.
 
-[Flue](https://flueframework.com) bills itself as "The Agent Harness Framework" — Claude Code, but headless and programmable. Every primitive it ships (per-session DOs, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface) is something you already have on Cloudflare + Effect. This repo proves it: a complete Support Agent with streaming chat UI, every line written in `effect`, `@effect/ai-openrouter`, `@effect/atom-react`, or `alchemy`.
+[Flue](https://flueframework.com) bills itself as "The Agent Harness Framework" — Claude Code, but headless and programmable. Every primitive it ships (per-session DOs, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface) is something you already have on Cloudflare + Effect. This repo proves it: a complete Support Agent with streaming chat UI, every line written in `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, deployed with plain `wrangler`.
 
 ## What's in here
 
 ```
-alchemy.run.ts            # Stack: Worker + DO + R2 + Container + SecretsStore
+wrangler.jsonc            # Stack: Worker + DOs (Agent, Sandbox container) + R2 + cron + assets
 apps/
-  api/                    # Cloudflare Worker (HttpApi + DurableObject + Container)
+  api/                    # Cloudflare Worker (HttpApi + DurableObjects + Container)
+    container/            # Sandbox container image (Dockerfile + server.ts)
     src/
-      Api.ts              # Worker class — composes HttpApi + serves the FE
-      Agent.ts            # DurableObjectNamespace — sessions, prompt, streamPrompt
-      handlers.ts         # HttpApi handlers (prompt, history, reset, stream)
-      Sandbox.ts          # CF Container resource + entry script
-      Skills.ts           # R2Bucket resource
-      Secrets.ts          # SecretsStore + OpenRouter key
+      index.ts            # Worker entry — composes HttpApi + serves the FE
+      Agent.ts            # Agent DurableObject — sessions, prompt, streamPrompt
+      handlers.ts         # HttpApi handlers (prompt, history, reset, stream, tasks)
+      Sandbox.ts          # Sandbox container DO (@cloudflare/containers)
+      Skills.ts           # R2 skills/roles loading
   web/                    # Vite + React FE (chat UI)
     src/
       App.tsx             # Layout + transcript
@@ -26,7 +26,9 @@ apps/
 packages/
   shared/                 # HttpApi definition, schemas, error types
     src/                  # AgentApi, Message, PromptResponse, StreamPart, ...
-pnpm-workspace.yaml
+scripts/
+  upload-skills.ts        # Syncs apps/api/{skills,roles}/*.md into R2 (predeploy)
+  agent.ts                # Live smoke CLI
 tsconfig.base.json
 ```
 
@@ -40,7 +42,7 @@ The Worker owns a single HttpApi defined in `@effect-flue/shared`. The same `Htt
 
 ```
 ┌───────────────────────┐                  ┌────────────────────────────────┐
-│   Browser (React)     │   HTTP / SSE     │   Cloudflare Worker (Api)      │
+│   Browser (React)     │   HTTP / SSE     │  Cloudflare Worker (index.ts)  │
 │                       │ ───────────────► │                                │
 │  apps/web             │                  │   HttpApiBuilder.layer(        │
 │   • atom-react Query  │                  │     AgentApi                   │
@@ -120,7 +122,7 @@ curl https://<your-worker>/tasks \
   }'
 ```
 
-`skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce a structured 404 JSON body (`SkillNotFoundError` / `RoleNotFoundError`). Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `UploadSkills` syncs `.md` files to R2 on every deploy whose contents hash changes.
+`skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce a structured 404 JSON body (`SkillNotFoundError` / `RoleNotFoundError`). Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `scripts/upload-skills.ts` (run by the `predeploy` hook) syncs `.md` files whose contents changed to R2 on every deploy.
 
 ## Working on this repo
 
@@ -135,7 +137,7 @@ Changes flow through a plan → execute → verify → postmortem loop, driven b
 
 `CLAUDE.md` at the repo root holds the current commands, conventions, and a skill index; `ISSUES.md` records known landmines — read it before touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
 
-Note: the Dev and Deploy sections below still reference pnpm and predate the bun migration — the `CLAUDE.md` Commands section is current (a full README correction lands with issue #29).
+Releases: every merge to `main` is tagged and published as a GitHub Release (semver, starting from 0.1.0).
 
 ## The chat UI
 
@@ -160,37 +162,39 @@ On the browser side the same `StreamPart` schema decodes each SSE frame. Unknown
 
 ## Dev
 
+Prerequisite: a local Docker daemon (the `Sandbox` container image builds locally for `dev` and `deploy`). Local secrets go in `.dev.vars` (copy `.dev.vars.example`).
+
 ```sh
-pnpm install
+bun install
 
 # Two terminals (no concurrent runner is wired):
-pnpm dev                                # terminal 1 — alchemy dev (Worker at :8787)
-pnpm --filter @effect-flue/web dev      # terminal 2 — Vite (FE at :5173, proxies /agents)
+bun run dev                                   # terminal 1 — wrangler dev (Worker at :8787, needs Docker)
+bun run --filter @effect-flue/web dev         # terminal 2 — Vite (FE at :5173, proxies /agents)
 
-pnpm typecheck                          # tsc --noEmit across all workspaces
-pnpm build                              # builds the FE then typechecks the Worker
+bun run typecheck                             # cf-typegen, then tsc --noEmit across the three tsconfigs
+bun run build                                 # builds the FE then typechecks the Worker
 ```
 
-`pnpm build` first runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. The Worker class in `apps/api/src/Api.ts` declares `assets: "../web/dist"`, so the same Worker serves both `/agents/*` (HttpApi) and `/` (the built FE) on deploy.
+`bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on `/agents/*` and `/tasks*`, so the same Worker serves both the HttpApi and the built FE on deploy.
 
 ## Deploy
 
 ```sh
-export OPENROUTER_API_KEY=sk-or-...
-pnpm deploy
+wrangler secret put OPENROUTER_API_KEY   # once per Worker
+bun run deploy                           # requires Docker (container image build)
 ```
 
-The `predeploy` script runs `pnpm build` first, so a stale or missing `apps/web/dist` can't ship. `alchemy deploy` reads `alchemy.run.ts` at the repo root, which yields the SecretsStore, OpenRouter key, R2 bucket, Skills, and the Worker (which itself binds the `Agents` DurableObjectNamespace and the `Sandbox` Container).
+The `predeploy` script runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale or missing `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc` at the repo root, which declares the Worker, the `Agent` and `Sandbox` DurableObjects (the latter a container built from `apps/api/container/Dockerfile`), the `SKILLS` R2 bucket, the cron trigger, and the FE assets.
 
 Useful root scripts:
 
-| Script             | What it does                                    |
-| ------------------ | ----------------------------------------------- |
-| `pnpm dev`         | `alchemy dev` — local Worker + emulated bindings |
-| `pnpm deploy`      | `alchemy deploy` (runs `predeploy` first)        |
-| `pnpm destroy`     | `alchemy destroy` — tear down the stack          |
-| `pnpm tail`        | `alchemy tail` — stream Worker logs              |
-| `pnpm typecheck`   | `pnpm -r typecheck` across every workspace      |
+| Script              | What it does                                                     |
+| ------------------- | ---------------------------------------------------------------- |
+| `bun run dev`       | `wrangler dev` — local Worker + emulated bindings (needs Docker)  |
+| `bun run deploy`    | `wrangler deploy` (runs `predeploy` first; needs Docker)          |
+| `bun run tail`      | `wrangler tail` — stream Worker logs                              |
+| `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the three tsconfigs          |
+| `bun run cf-typegen`| `wrangler types` — regenerate `worker-configuration.d.ts`         |
 
 ## The claim
 
@@ -198,25 +202,25 @@ The original Flue Support Agent example is ~30 lines. This repo is larger — bu
 
 | Flue                                 | Underlying CF primitive   | What we use                              |
 | ------------------------------------ | ------------------------- | ---------------------------------------- |
-| Persistent session by URL `<id>`     | Durable Object            | `alchemy/Cloudflare` `DurableObjectNamespace` |
-| Sandbox                              | CF Containers             | `alchemy/Cloudflare` `Container`         |
-| Skills / AGENTS.md                   | R2                        | `alchemy/Cloudflare` `R2Bucket`          |
+| Persistent session by URL `<id>`     | Durable Object            | native DO binding (`wrangler.jsonc`)     |
+| Sandbox                              | CF Containers             | `@cloudflare/containers` `Container` DO  |
+| Skills / AGENTS.md                   | R2                        | native R2 binding + `scripts/upload-skills.ts` |
 | Model + tools                        | —                         | `@effect/ai-openrouter` + `effect/unstable/ai` |
-| Webhook                              | Worker                    | `alchemy/Cloudflare` `Worker`            |
+| Webhook                              | Worker                    | plain Worker entry (`apps/api/src/index.ts`) |
 | Typed output                         | Valibot                   | `effect/Schema`                          |
-| Secrets                              | —                         | `alchemy/Cloudflare` `SecretsStore`      |
+| Secrets                              | —                         | `wrangler secret` + `.dev.vars`          |
 | Streaming                            | SSE                       | `Stream` + `HttpServerResponse.stream`   |
 | Chat UI                              | —                         | React + `@effect/atom-react` + `HttpApiClient` |
-| Deploy                               | `flue build`              | `alchemy deploy`                         |
+| Deploy                               | `flue build`              | `wrangler deploy`                        |
 
 **What you give up:** convenience and a zero-config DX. Flue does auto-wiring you have to do once here.
 
 **What you gain:**
 
-- No framework lock-in. Every line is `effect`, `@effect/ai-openrouter`, `@effect/atom-react`, or `alchemy`.
+- No framework lock-in. Every line is `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, on stock Cloudflare bindings.
 - One schema, two sides. `AgentApi` and `StreamPart` are defined once in `packages/shared` and consumed by the Worker and the FE — the typechecker enforces that they agree.
 - Full Effect composition — Layers, Fibers, structured concurrency, OpenTelemetry, retry policies, schema-validated streaming.
-- Infra-as-code in the same file tree. `alchemy.run.ts` declares the DO namespace, R2 bucket, Container app, Secrets store, and Worker.
+- Infra-as-code in the same file tree. `wrangler.jsonc` declares the DOs, R2 bucket, container image, cron, assets, and Worker.
 - Mid-stream disconnect leaves consistent state on disk, not a half-written row.
 - Testable services. Each piece is a Layer you can swap.
 

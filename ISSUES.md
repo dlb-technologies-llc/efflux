@@ -2,6 +2,8 @@
 
 ## `Cloudflare.Secret.bind()` from SecretsStore crashes Worker boot
 
+> **Historical (alchemy era).** Resolved by the wrangler migration (#29): alchemy is no longer used. Secrets are now `wrangler secret put OPENROUTER_API_KEY` (deployed) + `.dev.vars` (local).
+
 **TL;DR:** Calling `yield* Cloudflare.Secret.bind(MySecret)` at the Worker
 init phase (or the per-request fetch) makes the entire Worker throw `Error:
 "[object Object]"` on every request before any user code runs. Switch to a
@@ -106,6 +108,8 @@ below). Hours of debugging time is the cost.
 ---
 
 ## `Schema.Class` cannot cross a Cloudflare Durable Object RPC boundary
+
+> **Still active.** This constraint applies equally to native CF DO RPC (post-wrangler-migration) — `structuredClone` at the RPC fence is a Workers-runtime rule, not an alchemy one. Alchemy-specific details below (the `[object Object]` wrapping) are historical.
 
 **TL;DR:** Effect HttpApi handlers that read/write data through a DurableObject
 RPC method can't pass `Schema.Class` instances. CF Workers RPC uses
@@ -313,6 +317,8 @@ in transit.**
 ---
 
 ## Alchemy registers Policies; you must also provide Live layers
+
+> **Historical (alchemy era).** Resolved by the wrangler migration (#29): alchemy is no longer used — bindings come straight from `wrangler.jsonc`, and there is no Policy/Live layer split.
 
 **TL;DR:** `Cloudflare.providers()` (wired up by `Alchemy.Stack` in
 `alchemy.run.ts`) registers `Binding.Policy` services — deploy-time metadata

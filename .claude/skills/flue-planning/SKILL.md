@@ -13,8 +13,8 @@ This is v1 of the skill — deliberately lean. It gets sharpened by `/flue-postm
 ## Stack (fixed)
 
 - **Runtime/PM:** Bun workspaces — `apps/api` (Cloudflare Worker: HttpApi + `Agent` DO-per-session + Container sandbox), `apps/web` (Vite + React chat FE), `packages/shared` (HttpApi contract + schemas; all types flow from Effect Schemas).
-- **Verify:** `bun run typecheck` (three tsconfigs), `bun run build`. There is NO lint script and NO test script today — never plan a task around `bun run lint` or `bun run test`.
-- **Deploy:** `bun run deploy` — ALWAYS the package script, never bare `bun alchemy deploy`: only the script fires the `predeploy` build hook, so the bare form can ship a stale `apps/web/dist`. Local dev: `bun run dev`. Logs: `bun run tail`. Issue #29 will replace alchemy with wrangler — treat the repo `CLAUDE.md` "Commands" section as the command authority.
+- **Verify:** `bun run typecheck` (chains `bun run cf-typegen` first, regenerating the gitignored `worker-configuration.d.ts`, then the three tsconfigs), `bun run build`. There is NO lint script and NO test script today — never plan a task around `bun run lint` or `bun run test`.
+- **Deploy:** `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + skills upload), so the bare form can ship a stale `apps/web/dist`. Requires a local Docker daemon (container image). Local dev: `bun run dev` (also needs Docker). Logs: `bun run tail`. Treat the repo `CLAUDE.md` "Commands" section as the command authority.
 - **Live smoke CLI:** `bun scripts/agent.ts <name> <id> --message "hi" [--url <worker-url>] [--model M] [--skill S] [--role R]` (or `BASE_URL` env).
 - **Conventions:** base branch `main`; PRs that close issues use `Closes #N`; merge commits only (never rebase/squash); never `--no-verify`; no `as` casts or `!` assertions; schema-first — types flow from Effect Schemas; verification means deploy + hit the live worker, not typecheck/build alone.
 - **Plans dir:** `~/c0de/plans/effect-flue/`.
