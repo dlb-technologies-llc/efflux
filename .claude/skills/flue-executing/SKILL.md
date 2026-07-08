@@ -141,6 +141,8 @@ The pattern must be `\bas (const\b|[A-Za-z_])`, NOT `as [A-Z]` — an uppercase-
 
 Before any `git -C <WORKTREE_PATH> add -A`, scan `git -C <WORKTREE_PATH> status --porcelain` for unexpected untracked directories (embedded git repos, generated artifacts) — an embedded repo once got committed this way. Then:
 
+Immediately before every commit, confirm `git -C <WORKTREE_PATH> branch --show-current` prints the plan branch — the one-line guard against the wrong-branch trap. Then:
+
 ```bash
 git -C <WORKTREE_PATH> add -A
 git -C <WORKTREE_PATH> commit -m "feat(<plan-name>): complete wave <N>
