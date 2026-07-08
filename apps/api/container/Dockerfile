@@ -3,5 +3,7 @@ FROM oven/bun:1-slim
 WORKDIR /app
 COPY server.ts .
 
+USER bun
+
 EXPOSE 8080
 CMD ["bun", "server.ts"]

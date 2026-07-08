@@ -122,7 +122,7 @@ curl https://<your-worker>/tasks \
   }'
 ```
 
-`skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce a structured 404 JSON body (`SkillNotFoundError` / `RoleNotFoundError`). Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `scripts/upload-skills.ts` (run by the `predeploy` hook) syncs `.md` files whose contents changed to R2 on every deploy.
+`skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce a structured 404 JSON body (`SkillNotFoundError` / `RoleNotFoundError`). Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `scripts/upload-skills.ts` (run by the `predeploy` hook) uploads all `.md` files to R2 on every deploy (idempotent puts, no diffing).
 
 ## Working on this repo
 
@@ -162,7 +162,7 @@ On the browser side the same `StreamPart` schema decodes each SSE frame. Unknown
 
 ## Dev
 
-Prerequisite: a local Docker daemon (the `Sandbox` container image builds locally for `dev` and `deploy`). Local secrets go in `.dev.vars` (copy `.dev.vars.example`).
+Prerequisite: a local Docker daemon (the `Sandbox` container image builds locally for `dev` and `deploy`). Local secrets go in `.dev.vars` (copy `.dev.vars.example`) — **required before `bun run typecheck` too**: the generated `worker-configuration.d.ts` derives `Env.OPENROUTER_API_KEY` from `.dev.vars`, so a fresh clone without it fails typecheck.
 
 ```sh
 bun install

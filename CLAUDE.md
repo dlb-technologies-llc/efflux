@@ -11,7 +11,7 @@ Single source of truth — the `flue-*` skills defer here.
 - `bun run build` — FE build + API typecheck.
 - `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + `bun scripts/upload-skills.ts`). Requires a local Docker daemon (builds the container image).
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
-- Secrets: `wrangler secret put OPENROUTER_API_KEY` for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`).
+- Secrets: `wrangler secret put OPENROUTER_API_KEY` for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives `OPENROUTER_API_KEY` from it.
 - `bun scripts/agent.ts <name> <id> --message "..." [--url <worker-url>] [--model M] [--skill S] [--role R]` — live smoke CLI (`BASE_URL` env also works).
 
 ## Architecture

@@ -200,7 +200,15 @@ export default {
       return env.ASSETS.fetch(request)
     }
     webHandler ??= buildWebHandler(env)
-    return webHandler.then((handle) => handle(request))
+    return webHandler.then(
+      (handle) => handle(request),
+      (error) => {
+        // Don't poison the isolate with a cached rejected promise — a
+        // transient build failure should retry on the next request.
+        webHandler = undefined
+        throw error
+      },
+    )
   },
 
   scheduled(controller, env, ctx): void {

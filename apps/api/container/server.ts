@@ -69,6 +69,10 @@ const port = portEnv !== undefined && portEnv !== "" ? Number(portEnv) : 8080
 
 Bun.serve({
   port,
+  // Bun's default idleTimeout (~10s) would sever /exec responses for any
+  // command that runs longer than the idle window. 0 disables it; the DO
+  // fetch (and Cloudflare's own limits) bound the request instead.
+  idleTimeout: 0,
   fetch: async (request) => {
     const url = new URL(request.url)
     if (request.method === "POST" && url.pathname === "/exec") {
