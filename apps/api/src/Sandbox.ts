@@ -19,4 +19,21 @@ import { Container } from "@cloudflare/containers"
 export class Sandbox extends Container<Env> {
   defaultPort = 8080
   sleepAfter = "10m"
+
+  // Egress posture — a DELIBERATE decision, not the silent default. Internet is
+  // ENABLED: a coding sandbox legitimately needs package installs (npm/pip/apt)
+  // reaching arbitrary registries. The base class already defaults this to
+  // `true` (@cloudflare/containers@0.3.7, dist/lib/container.js:325), but we set
+  // it explicitly so the choice is visible and reviewable.
+  enableInternet = true
+
+  // A denylist (e.g. `deniedHosts` for the metadata address / link-local range)
+  // is DEFERRED, not forgotten: setting `deniedHosts` flips the base into its
+  // outbound-INTERCEPTION mode (`usingInterception = true`,
+  // dist/lib/container.js:366-368), which routes egress through a
+  // `ctx.exports.ContainerProxy` WorkerEntrypoint. Live testing showed that
+  // path destabilizes container start/exec for this Worker (the Bash tool
+  // 500s), so enabling it needs its own focused integration + verification.
+  // Tracked as a follow-up; `deniedHosts` matching is also glob-only (no CIDR),
+  // so it could never express RFC-1918 ranges anyway.
 }

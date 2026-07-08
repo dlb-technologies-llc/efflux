@@ -1,9 +1,13 @@
+import type { Message } from "@effect-flue/shared"
 import { Box, Static, Text } from "ink"
 import type { ToolEvent } from "./ToolFrame.tsx"
 import { ToolFrame } from "./ToolFrame.tsx"
 
+// Role derives from the shared Message schema — never re-list its literals.
+type Role = (typeof Message.Encoded)["role"]
+
 export type TranscriptEntry =
-  | { readonly kind: "message"; readonly role: "user" | "assistant"; readonly content: string }
+  | { readonly kind: "message"; readonly role: Role; readonly content: string }
   | { readonly kind: "tool"; readonly event: ToolEvent }
   | { readonly kind: "info"; readonly text: string }
   | { readonly kind: "error"; readonly text: string }

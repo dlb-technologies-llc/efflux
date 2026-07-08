@@ -7,28 +7,32 @@
 ## What's in here
 
 ```
-wrangler.jsonc            # Stack: Worker + DOs (Agent, Sandbox container) + R2 + cron + assets
+wrangler.jsonc            # Stack: Worker + DOs (Agent, Sandbox, Registry) + R2 (SKILLS, SESSIONS) + cron + assets
 apps/
   api/                    # Cloudflare Worker (HttpApi + DurableObjects + Container)
-    container/            # Sandbox container image (Dockerfile + server.ts)
+    container/            # Sandbox container image (Dockerfile + Effect HttpApp server.ts)
     src/
       index.ts            # Worker entry — composes HttpApi + serves the FE
-      Agent.ts            # Agent DurableObject — sessions, prompt, streamPrompt
-      handlers.ts         # HttpApi handlers (prompt, history, reset, stream, tasks)
+      Agent.ts            # Agent DurableObject — append-only event journal + sandbox exec seam
+      Registry.ts         # Registry DurableObject — session index for GET /agents
+      handlers.ts         # HttpApi handlers + the Worker-side hop-capped tool loop
       Sandbox.ts          # Sandbox container DO (@cloudflare/containers)
       Skills.ts           # R2 skills/roles loading
   web/                    # Vite + React FE (chat UI)
+  tui/                    # Ink terminal client (shares the typed client + streamAgentSse)
     src/
       App.tsx             # Layout + transcript
-      atoms.ts            # @effect/atom-react Query + Mutation atoms
+      atoms.ts            # @effect/atom-react atoms (history + streaming)
       runtime.ts          # Effect runtime + HttpApiClient
       components/         # Chat UI components
 packages/
-  shared/                 # HttpApi definition, schemas, error types
-    src/                  # AgentApi, Message, PromptResponse, StreamPart, ...
+  shared/                 # HttpApi definition, schemas, errors, journal, shared SSE Stream
+    src/                  # AgentApi, Message, PromptResponse, StreamPart, Journal, Sse, ...
 scripts/
+  lib.ts                  # Shared CLI plumbing (typed client, journal pagination, arg parse)
   upload-skills.ts        # Syncs apps/api/{skills,roles}/*.md into R2 (predeploy)
   agent.ts                # Live smoke CLI
+  verify-journal.ts       # Journal prompt-reconstructibility checker
 tsconfig.base.json
 ```
 
@@ -42,30 +46,30 @@ The Worker owns a single HttpApi defined in `@effect-flue/shared`. The same `Htt
 
 ```
 ┌───────────────────────┐                  ┌────────────────────────────────┐
-│   Browser (React)     │   HTTP / SSE     │  Cloudflare Worker (index.ts)  │
+│  Browser · TUI        │   HTTP / SSE     │  Cloudflare Worker (index.ts)  │
 │                       │ ───────────────► │                                │
-│  apps/web             │                  │   HttpApiBuilder.layer(        │
-│   • atom-react Query  │                  │     AgentApi                   │
-│   • atom-react Mutation                  │   )                            │
-│   • HttpApiClient     │                  │                                │
-│   • StreamPart decode │                  │   handlers.ts: prompt /        │
-│                       │                  │     history / reset / stream   │
-└───────────────────────┘                  └────────────┬───────────────────┘
-                                                        │
-                                                        │ DurableObjectNamespace.getByName
-                                                        ▼
-                                            ┌────────────────────────────────┐
-                                            │  Agents (DurableObject)        │
-                                            │   • history in DO storage      │
-                                            │   • prompt()  — generateText   │
-                                            │   • streamPrompt() — streamText│
-                                            └──┬──────────┬──────────┬───────┘
-                                               │          │          │
-                                       OpenRouter    R2 (skills)  Container
-                                       LanguageModel              (Sandbox)
+│  apps/web · apps/tui  │                  │  HttpApiBuilder.layer(AgentApi)│
+│   • HttpApiClient     │                  │  handlers.ts: prompt/history/  │
+│   • streamAgentSse    │                  │    reset/stream/journal/       │
+│     (shared, Stream)  │                  │    sessions/task               │
+│   • StreamPart decode │                  │  ── the hop-capped tool loop   │
+│                       │                  │     (generateText/streamText)  │
+│                       │                  │     runs HERE, not in the DO ──│
+└───────────────────────┘                  └──────┬───────────────┬─────────┘
+                                        getByName  │               │ idFromName("global")
+                                                   ▼               ▼
+                                   ┌────────────────────┐  ┌─────────────────────┐
+                                   │ Agent (DO · SQLite) │  │ Registry (DO·SQLite)│
+                                   │  • append-only      │  │  • session index    │
+                                   │    event journal    │  │    for GET /agents  │
+                                   │  • sandbox exec seam│  └─────────────────────┘
+                                   └──┬───────────────┬──┘
+                                      ▼               ▼
+                             Container (Sandbox)   R2: SKILLS (skills/roles)
+                             Bash + /workspace         SESSIONS (workspace tarballs)
 ```
 
-The FE talks to `/agents/*` over the typed client. Streaming uses `POST /agents/<name>/<id>/stream`, which returns `text/event-stream`. Inside the Worker, `LanguageModel.streamText` produces a Stream; the handler maps each frame through `StreamPart` and writes `data: <json>\n\n`. The browser decodes back into the same union and renders deltas as they arrive.
+OpenRouter's `LanguageModel` is provided at the Worker root (`aiLayer`) and consumed by the **Worker-side** loop — the `Agent` DO is now just the append-only journal plus the sandbox exec/hydrate seam; it does not drive the model. The FE talks to `/agents/*` over the typed client. Streaming uses `POST /agents/<name>/<id>/stream` (`text/event-stream`): the handler drives `LanguageModel.streamText`, journals events as they happen, and writes each `StreamPart` frame as `data: <json>\n\n`; the browser/TUI decode back into the same union via the shared `streamAgentSse` and render deltas as they arrive.
 
 ## How it's used
 
@@ -154,9 +158,9 @@ In dev, Vite's proxy forwards `/agents/*` to the local Worker at `http://localho
 
 ## Streaming
 
-The DurableObject `streamPrompt` method returns a `Stream` driven by `LanguageModel.streamText`. The Worker handler wraps that stream with `Stream.map(part => textEncoder.encode("data: " + JSON.stringify(encodeStreamPart(part)) + "\n\n"))` and hands it to `HttpServerResponse.stream`.
+The **Worker handler** (not the DO) drives the stream: a hop-capped loop runs `LanguageModel.streamText`, encodes each `StreamPart` with `Sse.encoder`, and hands the frames to `HttpServerResponse.stream`. There is no `streamPrompt` method on the `Agent` DO.
 
-The DO accumulates `text-delta` parts into a local buffer as the stream runs, and uses `Stream.ensuring` to persist whatever it has when the stream terminates — successfully or otherwise. If the client disconnects mid-stream, the assistant's partial text is saved with `finishReason: "interrupted"`, so the next `GET /agents/<name>/<id>` shows the partial reply, not nothing.
+Persistence is **write-as-it-happens**, not flush-on-finalizer: the `user-message` event is journaled before the model call and each tool/hop event is appended to the DO journal as it occurs. This is deliberate — `workerd` runs **no** disconnect callbacks (no `abort` event, no stream `cancel()`) at the current compatibility date, so a `Stream.ensuring`/`Effect.ensuring` "persist on disconnect" finalizer would silently never run (see `ISSUES.md`). On a mid-stream client drop, no finalizer fires and the turn is left with no terminal `done` event — a legitimate **parked/incomplete** state that `scripts/verify-journal.ts` reports as PARKED (stream re-attach is #49's territory). The `flushPartialHopText` finalizer in `handlers.ts` covers only mid-hop *failures* (the model API dying between deltas), which interrupt through normal Effect channels and do run finalizers.
 
 On the browser side the same `StreamPart` schema decodes each SSE frame. Unknown tags are filtered out, so a server that emits a new variant won't crash the UI — old clients just stop rendering the new frames.
 
@@ -171,7 +175,7 @@ bun install
 bun run dev                                   # terminal 1 — wrangler dev (Worker at :8787, needs Docker)
 bun run --filter @effect-flue/web dev         # terminal 2 — Vite (FE at :5173, proxies /agents)
 
-bun run typecheck                             # cf-typegen, then tsc --noEmit across the three tsconfigs
+bun run typecheck                             # cf-typegen, then tsc --noEmit across the six tsconfigs
 bun run build                                 # builds the FE then typechecks the Worker
 ```
 
@@ -186,7 +190,7 @@ wrangler secret put OPENROUTER_API_KEY   # once per Worker
 bun run deploy                           # requires Docker (container image build)
 ```
 
-The `predeploy` script runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale or missing `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc` at the repo root, which declares the Worker, the `Agent` and `Sandbox` DurableObjects (the latter a container built from `apps/api/container/Dockerfile`), the `SKILLS` R2 bucket, the cron trigger, and the FE assets.
+The `predeploy` script runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale or missing `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc` at the repo root, which declares the Worker, the `Agent`, `Sandbox`, and `Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `SKILLS` and `SESSIONS` R2 buckets, the cron trigger, and the FE assets.
 
 Useful root scripts:
 
@@ -195,7 +199,7 @@ Useful root scripts:
 | `bun run dev`       | `wrangler dev` — local Worker + emulated bindings (needs Docker)  |
 | `bun run deploy`    | `wrangler deploy` (runs `predeploy` first; needs Docker)          |
 | `bun run tail`      | `wrangler tail` — stream Worker logs                              |
-| `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the three tsconfigs          |
+| `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the six tsconfigs          |
 | `bun run cf-typegen`| `wrangler types` — regenerate `worker-configuration.d.ts`         |
 
 ## The claim

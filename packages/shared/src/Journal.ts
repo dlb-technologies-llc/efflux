@@ -1,6 +1,11 @@
 import { Schema } from "effect"
-import { Prompt } from "effect/unstable/ai"
+import { Prompt, Response as AiResponse } from "effect/unstable/ai"
 import { SafeName } from "./Schemas.ts"
+
+// seq (AUTOINCREMENT key), createdAt (epoch ms), turn/hop, and token counts
+// are all non-negative integers — a bare Schema.Number would accept NaN,
+// negatives, and floats. Applied everywhere those appear below.
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 
 /**
  * Journal event payloads — the append-only event vocabulary persisted in the
@@ -38,8 +43,8 @@ export class JournalUserMessage extends Schema.TaggedClass<JournalUserMessage>()
 export class JournalAssistantText extends Schema.TaggedClass<JournalAssistantText>()(
   "assistant-text",
   {
-    turn: Schema.Number,
-    hop: Schema.Number,
+    turn: NonNegativeInt,
+    hop: NonNegativeInt,
     text: Schema.String,
   },
 ) {}
@@ -47,8 +52,8 @@ export class JournalAssistantText extends Schema.TaggedClass<JournalAssistantTex
 export class JournalToolCall extends Schema.TaggedClass<JournalToolCall>()(
   "tool-call",
   {
-    turn: Schema.Number,
-    hop: Schema.Number,
+    turn: NonNegativeInt,
+    hop: NonNegativeInt,
     part: Prompt.ToolCallPart,
   },
 ) {}
@@ -56,8 +61,8 @@ export class JournalToolCall extends Schema.TaggedClass<JournalToolCall>()(
 export class JournalToolResult extends Schema.TaggedClass<JournalToolResult>()(
   "tool-result",
   {
-    turn: Schema.Number,
-    hop: Schema.Number,
+    turn: NonNegativeInt,
+    hop: NonNegativeInt,
     part: Prompt.ToolResultPart,
   },
 ) {}
@@ -65,34 +70,34 @@ export class JournalToolResult extends Schema.TaggedClass<JournalToolResult>()(
 export class JournalHopMessages extends Schema.TaggedClass<JournalHopMessages>()(
   "hop-messages",
   {
-    turn: Schema.Number,
-    hop: Schema.Number,
+    turn: NonNegativeInt,
+    hop: NonNegativeInt,
     messages: Schema.Array(Prompt.Message),
   },
 ) {}
 
 export class JournalUsage extends Schema.TaggedClass<JournalUsage>()("usage", {
-  turn: Schema.Number,
-  hop: Schema.Number,
+  turn: NonNegativeInt,
+  hop: NonNegativeInt,
   model: Schema.String,
-  inputTokens: Schema.optionalKey(Schema.Number),
-  outputTokens: Schema.optionalKey(Schema.Number),
-  totalTokens: Schema.optionalKey(Schema.Number),
+  inputTokens: Schema.optionalKey(NonNegativeInt),
+  outputTokens: Schema.optionalKey(NonNegativeInt),
+  totalTokens: Schema.optionalKey(NonNegativeInt),
   // USD, from OpenRouter's raw usage accounting when present (streaming
   // always requests it; non-streaming responses may omit it).
   cost: Schema.optionalKey(Schema.Number),
 }) {}
 
 export class JournalDone extends Schema.TaggedClass<JournalDone>()("done", {
-  turn: Schema.Number,
-  finishReason: Schema.String,
-  toolCallCount: Schema.Number,
+  turn: NonNegativeInt,
+  finishReason: AiResponse.FinishReason,
+  toolCallCount: NonNegativeInt,
 }) {}
 
 export class JournalErrorEvent extends Schema.TaggedClass<JournalErrorEvent>()(
   "error",
   {
-    turn: Schema.Number,
+    turn: NonNegativeInt,
     message: Schema.String,
   },
 ) {}
@@ -116,8 +121,8 @@ export type JournalEventPayload = typeof JournalEventPayload.Type
  * `createdAt` is epoch milliseconds.
  */
 export class JournalEvent extends Schema.Class<JournalEvent>("JournalEvent")({
-  seq: Schema.Number,
-  createdAt: Schema.Number,
+  seq: NonNegativeInt,
+  createdAt: NonNegativeInt,
   event: JournalEventPayload,
 }) {}
 
@@ -131,8 +136,8 @@ export class JournalResponse extends Schema.Class<JournalResponse>("JournalRespo
 export class SessionInfo extends Schema.Class<SessionInfo>("SessionInfo")({
   name: Schema.String,
   id: Schema.String,
-  createdAt: Schema.Number,
-  lastActiveAt: Schema.Number,
+  createdAt: NonNegativeInt,
+  lastActiveAt: NonNegativeInt,
 }) {}
 
 export class SessionsResponse extends Schema.Class<SessionsResponse>("SessionsResponse")({

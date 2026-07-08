@@ -23,7 +23,10 @@ export class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<t
 
 /**
  * Layer-bound runtime — exposes `runtime.fn`, `runtime.atom`, and `runtime.pull`
- * for defining atoms that consume `ApiClient` (and any other services in this
- * layer's context).
+ * for defining atoms that consume `ApiClient` OR the bare `HttpClient` (used by
+ * the streaming atom to POST and hand the response to `streamAgentSse`). Both
+ * services share the one `FetchHttpClient`.
  */
-export const runtime = Atom.runtime(ApiClient.layer)
+export const runtime = Atom.runtime(
+  Layer.mergeAll(ApiClient.layer, FetchHttpClient.layer),
+)

@@ -19,11 +19,41 @@ export class Message extends Schema.Class<Message>("Message")({
 }) {}
 
 export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")({
-  message: Schema.String,
-  model: Schema.optionalKey(Schema.String),
+  // Primary user-facing payload. Bounded like SubagentTaskRequest below: a
+  // generous message cap (long prompts are legitimate) and a tight model cap
+  // (it forwards to OpenRouter).
+  message: Schema.String.check(Schema.isMaxLength(100_000)),
+  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
   skill: Schema.optionalKey(SafeName),
   role: Schema.optionalKey(SafeName),
 }) {}
+
+/**
+ * The overlay overrides accepted alongside a prompt message — derived from
+ * `PromptRequest`'s encoded shape so the `SafeName` refinement on skill/role
+ * can never drift into a bare `string`.
+ */
+export type PromptOverrides = Pick<
+  typeof PromptRequest.Encoded,
+  "model" | "skill" | "role"
+>
+
+/**
+ * Build a `PromptRequest` class instance (a real instance is required across
+ * the DO RPC fence and by the HttpApiClient encoder — see ISSUES.md) from a
+ * message plus optional overlay overrides. Centralizes the conditional-spread
+ * construction that was previously copy-pasted across apps/web and apps/tui.
+ */
+export const makePromptRequest = (
+  message: string,
+  overrides: PromptOverrides = {},
+): PromptRequest =>
+  new PromptRequest({
+    message,
+    ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+    ...(overrides.skill !== undefined ? { skill: overrides.skill } : {}),
+    ...(overrides.role !== undefined ? { role: overrides.role } : {}),
+  })
 
 export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse")({
   text: Schema.String,

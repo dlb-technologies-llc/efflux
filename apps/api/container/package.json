@@ -1,0 +1,9 @@
+{
+  "name": "@effect-flue/container",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "effect": "4.0.0-beta.94"
+  }
+}

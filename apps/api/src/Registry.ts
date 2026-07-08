@@ -1,12 +1,10 @@
+import type { SessionInfo } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Context } from "effect"
 
-type SessionRow = {
-  name: string
-  id: string
-  createdAt: number
-  lastActiveAt: number
-}
+// Plain (RPC-safe) row shape derived from the SessionInfo schema's encoded
+// side — no hand-written parallel type to drift from the wire contract.
+type SessionRow = typeof SessionInfo.Encoded
 
 /**
  * Session registry Durable Object — a singleton (addressed via
@@ -47,12 +45,19 @@ export class Registry extends DurableObject<Env> {
     )
   }
 
-  async list(): Promise<Array<SessionRow>> {
+  async list(input?: { limit?: number }): Promise<Array<SessionRow>> {
+    // Clamp to a bounded page (default 100) so the singleton Registry DO never
+    // serializes an unbounded table across the RPC fence — mirrors the journal
+    // endpoint's 1..500 clamp. Callers that pass nothing get the first 100.
+    const requested = input?.limit ?? 100
+    const limit = Math.min(500, Math.max(1, Math.trunc(requested)))
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT name, id, created_at, last_active_at
          FROM sessions
-         ORDER BY last_active_at DESC`,
+         ORDER BY last_active_at DESC
+         LIMIT ?`,
+        limit,
       )
       .toArray()
     return rows.map((row) => ({

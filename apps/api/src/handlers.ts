@@ -71,15 +71,12 @@ export class AgentStub extends Context.Service<AgentStub, AgentNamespace>()(
   "api/AgentStub",
 ) {}
 
-// Discriminated union of our SSE-bound StreamPart variants. Used to type
-// the post-filterMap stream so subsequent `Stream.tap`/`Stream.map`
-// operators see `_tag` for narrowing.
-type SseStreamPart =
-  | StreamPartTextDelta
-  | StreamPartToolCall
-  | StreamPartToolResult
-  | StreamPartDone
-  | StreamPartError
+// The SSE-bound StreamPart union, derived directly from the shared
+// `StreamPart` schema (`typeof StreamPart.Type`) so this alias can never
+// drift from the wire contract. Its members are the same five tagged
+// classes, so `_tag` narrowing on the post-filterMap `Stream.tap`/
+// `Stream.map` operators still holds.
+type SseStreamPart = StreamPart
 
 // An SSE frame candidate: the display part plus the journal seq of the
 // event backing it (undefined for text deltas, which ride the most recent
@@ -270,6 +267,11 @@ export const AgentHandlers = HttpApiBuilder.group(
             let finalText = ""
             let finalFinishReason: AiResponse.FinishReason = "unknown"
             let toolCallCount = 0
+            // The DO fold emits an assistant message when ANY hop produced
+            // text — not only the last. Track that across all hops so the
+            // post-turn `messageCount` matches the folded history even when
+            // the final hop's text is empty (e.g. a trailing tool-only hop).
+            let anyHopText = false
 
             for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
               const call = LanguageModel.generateText({
@@ -303,12 +305,18 @@ export const AgentHandlers = HttpApiBuilder.group(
               // a terminal state the loop exits and we persist this value.
               finalText = response.text
               finalFinishReason = response.finishReason
+              anyHopText ||= response.text.length > 0
 
               const terminal = !shouldContinueToolLoop(response.finishReason)
 
               // One batched journal write per hop: granular tool events,
               // the authoritative hop-messages, display text, usage — and
-              // `done` when this hop ends the turn.
+              // `done` only when this hop ends the turn TERMINALLY. A
+              // hop-cap truncation writes NO `done` (matching the stream
+              // driver and AgentLoop's documented silent-truncation rule)
+              // — the journal then reads as parked/incomplete. The
+              // non-streaming caller still gets the last `finishReason` in
+              // the `PromptResponse`; only the journal `done` is gated.
               const hopEvents = buildHopEvents({
                 turn,
                 hop,
@@ -326,7 +334,7 @@ export const AgentHandlers = HttpApiBuilder.group(
                 parts: response.content,
               })
               if (usageEvent !== undefined) hopEvents.push(usageEvent)
-              if (terminal || hop === MAX_TOOL_HOPS - 1) {
+              if (terminal) {
                 hopEvents.push(
                   new JournalDone({
                     turn,
@@ -352,7 +360,7 @@ export const AgentHandlers = HttpApiBuilder.group(
               )
             }
 
-            return { finalText, finalFinishReason, toolCallCount }
+            return { finalText, finalFinishReason, toolCallCount, anyHopText }
           })
 
           // The user message is already journaled (turn opened above), so a
@@ -377,9 +385,12 @@ export const AgentHandlers = HttpApiBuilder.group(
 
           // Pre-journal semantics: `append` returned the post-turn history
           // length; the fold yields the same value as the turn-start fetch
-          // plus this turn's user + assistant messages.
+          // plus this turn's user message and — when ANY hop produced text —
+          // one assistant message. Using `anyHopText` (not just the final
+          // hop's text) keeps this in step with the DO fold for multi-hop
+          // turns whose last hop is text-empty.
           const messageCount =
-            history.length + (result.finalText.length > 0 ? 2 : 1)
+            history.length + (result.anyHopText ? 2 : 1)
 
           return new PromptResponse({
             text: result.finalText,
@@ -566,6 +577,18 @@ export const AgentHandlers = HttpApiBuilder.group(
                     prompt: promptValue,
                     toolkit: AgentToolkit,
                   })
+                  // Model override. The non-streaming prompt loop above uses
+                  // `OpenRouterLanguageModel.withConfigOverride`, which reads
+                  // the ambient Config and REPLACES the model; here we instead
+                  // `Stream.provide` a fresh Config. There is NO base
+                  // OpenRouter Config provided at the Worker root today
+                  // (index.ts wires `OpenRouterLanguageModel.layer({ model })`,
+                  // not a standalone Config service), so REPLACE-vs-MERGE is a
+                  // no-op — this provide sets the only Config that exists. A
+                  // real merge would have to READ the base Config, which would
+                  // add `Config` to this Stream's `R` and break the `R = never`
+                  // requirement of `HttpServerResponse.stream` below; that
+                  // merge is deferred to #42.
                   const withModel =
                     payload.model !== undefined
                       ? baseCall.pipe(

@@ -5,7 +5,7 @@ import { HttpApiMiddleware } from "effect/unstable/httpapi"
 // (in apps/api) reference the same service.
 //
 // We deliberately omit the `error:` option: `layerSchemaErrorTransform`'s
-// transform returns `Effect.succeed(HttpServerResponse.json(...))` directly,
+// transform returns `Effect.succeed(HttpServerResponse.jsonUnsafe(...))` directly,
 // so the structured 400 body is the response — not a typed error in the
 // error channel. Adding `error: CustomError` here would force the transform
 // to also accept that error type in its failure channel, which adds noise

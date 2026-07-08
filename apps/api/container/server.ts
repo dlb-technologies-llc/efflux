@@ -1,26 +1,30 @@
-// Bash sandbox HTTP server — runs INSIDE the container (plain Bun, no Effect,
-// no external deps). The Sandbox Durable Object forwards requests here on
-// port 8080.
+// Bash sandbox HTTP server — runs INSIDE the container. The socket is served
+// by Bun.serve (the CF→container boundary); everything the routes DO is Effect
+// (an HttpRouter served via toWebHandler). The exec/tar OS I/O lives in
+// Effect-wrapped boundary helpers, the same seam pattern as the Worker's
+// readBody. The Sandbox Durable Object forwards requests here on port 8080.
 //
-// Error contract (mirrors the old Sandbox.runtime.ts): nothing throws across
-// the HTTP boundary for `/exec`. Spawn failures, malformed/missing JSON
+// Error contract: nothing fails across `/exec` — spawn failures, malformed
 // bodies, and non-string commands all respond HTTP 200 with
 // `{exitCode: -1, stdout: "", stderr: <message>}`. A command that runs and
-// exits non-zero is NOT an error — its real exitCode/stdout/stderr is
-// returned.
+// exits non-zero is NOT an error. The durable-workspace routes
+// (`/status`, `/restore`, `/snapshot`, `/reset`) use real HTTP status codes.
 //
-// The durable-workspace endpoints (`/status`, `/restore`, `/snapshot`) use
-// real HTTP status codes instead — that in-band contract is exec-specific,
-// and the Agent DO seam translates their failures.
+// NOTE: this image bundles `effect` (see package.json) — a deliberate size /
+// cold-start cost so the container is an Effect app like the rest of the stack.
 
-// All commands run here, and snapshot/restore tar exactly this directory.
-// Created and chowned to `bun` in the Dockerfile; deliberately separate
-// from /app so a snapshot never captures server.ts itself.
+import { Effect, Result } from "effect"
+import * as HttpRouter from "effect/unstable/http/HttpRouter"
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
+import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
+
+// All commands run here; snapshot/restore tar exactly this directory. Created
+// and chowned to `bun` in the Dockerfile, separate from /app so a snapshot
+// never captures server.ts itself.
 const WORKSPACE = "/workspace"
 
 // In-memory hydration marker. Container death resets it — that reset IS the
-// "workspace needs restoring from R2" signal the Agent DO reads via
-// `GET /status` before every exec.
+// "workspace needs restoring from R2" signal the Agent DO reads via GET /status.
 let hydrated = false
 
 interface ExecResult {
@@ -29,150 +33,173 @@ interface ExecResult {
   readonly stderr: string
 }
 
-const execFailure = (error: unknown): ExecResult => ({
-  exitCode: -1,
-  stdout: "",
-  stderr:
-    error instanceof Error
-      ? error.message
-      : `Sandbox exec failed: ${String(error)}`,
-})
+const execFailure = (message: string): ExecResult => ({ exitCode: -1, stdout: "", stderr: message })
 
-const json = (body: ExecResult): Response =>
-  new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  })
+// Per-command wall-clock ceiling; runaways (`sleep 600`, `yes`, busy-loops) are
+// SIGTERM'd at expiry and reported in-band. Accepted gap: SIGTERM hits the `sh`
+// child, so a deliberately backgrounded grandchild (`cmd &`) can outlive it.
+const TIMEOUT_MS = 120_000
+// Hard cumulative (stdout+stderr) output ceiling, enforced by draining the
+// pipes as streams. Stops a `yes` / `cat /dev/urandom` flood from OOMing the
+// container. Safety backstop; Tools.ts applies the smaller ~30k prompt cap.
+const MAX_OUTPUT_BYTES = 1_000_000
+const TRUNCATION_MARKER = "\n[output truncated at 1MB]"
 
+// OS-process I/O boundary (Bun.spawn + Web streams). Never rejects — maps every
+// failure into the in-band ExecResult shape; wrapped in Effect by the handler.
 const runCommand = async (command: string): Promise<ExecResult> => {
-  const proc = Bun.spawn(["sh", "-c", command], {
-    cwd: WORKSPACE,
+  const proc = Bun.spawn(["sh", "-c", command], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" })
+  let timedOut = false
+  let truncated = false
+  let totalBytes = 0
+  const timer = setTimeout(() => {
+    timedOut = true
+    proc.kill()
+  }, TIMEOUT_MS)
+  const drain = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
+    const decoder = new TextDecoder()
+    const reader = stream.getReader()
+    let out = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value === undefined) continue
+      const remaining = MAX_OUTPUT_BYTES - totalBytes
+      if (remaining <= 0) {
+        truncated = true
+        proc.kill()
+        continue
+      }
+      if (value.byteLength > remaining) {
+        out += decoder.decode(value.subarray(0, remaining), { stream: true })
+        totalBytes += remaining
+        truncated = true
+        proc.kill()
+      } else {
+        out += decoder.decode(value, { stream: true })
+        totalBytes += value.byteLength
+      }
+    }
+    out += decoder.decode()
+    return out
+  }
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([proc.exited, drain(proc.stdout), drain(proc.stderr)])
+    clearTimeout(timer)
+    if (timedOut) return { exitCode: -1, stdout, stderr: "command timed out after 120s" }
+    if (truncated) return { exitCode, stdout: stdout + TRUNCATION_MARKER, stderr }
+    return { exitCode, stdout, stderr }
+  } catch (error) {
+    clearTimeout(timer)
+    return execFailure(error instanceof Error ? error.message : `Sandbox exec failed: ${String(error)}`)
+  }
+}
+
+const restoreWorkspace = async (bytes: ArrayBuffer): Promise<{ ok: true } | { error: string }> => {
+  if (bytes.byteLength === 0) return { ok: true }
+  const proc = Bun.spawn(["tar", "-xzf", "-", "-C", WORKSPACE], {
+    stdin: new Uint8Array(bytes),
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [exitCode, stdout, stderr] = await Promise.all([
+  const [exitCode, stderr] = await Promise.all([proc.exited, proc.stderr.text()])
+  return exitCode === 0 ? { ok: true } : { error: `tar extract failed (exit ${exitCode}): ${stderr}` }
+}
+
+const snapshotWorkspace = async (): Promise<{ bytes: Uint8Array } | { error: string }> => {
+  const proc = Bun.spawn(["tar", "-czf", "-", "-C", WORKSPACE, "."], { stdout: "pipe", stderr: "pipe" })
+  const [buf, exitCode, stderr] = await Promise.all([
+    new Response(proc.stdout).arrayBuffer(),
     proc.exited,
-    proc.stdout.text(),
     proc.stderr.text(),
   ])
-  return { exitCode, stdout, stderr }
+  return exitCode === 0 ? { bytes: new Uint8Array(buf) } : { error: `tar create failed (exit ${exitCode}): ${stderr}` }
 }
 
-const handleExec = async (request: Request): Promise<Response> => {
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch (error) {
-    return json(execFailure(error))
-  }
-  if (typeof body !== "object" || body === null) {
-    return json(execFailure(new Error("Request body must be a JSON object")))
-  }
-  const command: unknown = Reflect.get(body, "command")
-  if (typeof command !== "string") {
-    return json(execFailure(new Error("`command` must be a string")))
-  }
-  try {
-    return json(await runCommand(command))
-  } catch (error) {
-    return json(execFailure(error))
-  }
+// Wipe /workspace contents (dotfiles included), best-effort — backs the Agent
+// DO's reset() clean-slate contract.
+const resetWorkspace = async (): Promise<void> => {
+  await Bun.spawn(["sh", "-c", "rm -rf /workspace/* /workspace/.[!.]* 2>/dev/null || true"], {
+    cwd: WORKSPACE,
+  }).exited
 }
 
-const handleStatus = (): Response =>
-  new Response(JSON.stringify({ hydrated }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
+const handleExec = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.gen(function*() {
+    const bodyText = yield* Effect.result(request.text)
+    if (Result.isFailure(bodyText)) {
+      return yield* HttpServerResponse.json(execFailure("could not read request body"))
+    }
+    const parsed = yield* Effect.result(Effect.try(() => JSON.parse(bodyText.success)))
+    if (Result.isFailure(parsed)) {
+      return yield* HttpServerResponse.json(execFailure("request body must be JSON"))
+    }
+    const value: unknown = parsed.success
+    const command =
+      typeof value === "object" && value !== null && "command" in value && typeof value.command === "string"
+        ? value.command
+        : undefined
+    if (command === undefined) {
+      return yield* HttpServerResponse.json(execFailure("`command` must be a string"))
+    }
+    const result = yield* Effect.promise(() => runCommand(command))
+    return yield* HttpServerResponse.json(result)
   })
 
-// Body = gzipped tar of a prior workspace snapshot; empty body = "no
-// snapshot exists yet, just mark hydrated". Extraction failure leaves
-// `hydrated` false so the Agent seam retries (and never runs a command on
-// a half-restored workspace).
-const handleRestore = async (request: Request): Promise<Response> => {
-  try {
-    const bytes = await request.arrayBuffer()
-    if (bytes.byteLength > 0) {
-      const proc = Bun.spawn(["tar", "-xzf", "-", "-C", WORKSPACE], {
-        stdin: new Uint8Array(bytes),
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      const [exitCode, stderr] = await Promise.all([
-        proc.exited,
-        proc.stderr.text(),
-      ])
-      if (exitCode !== 0) {
-        return new Response(`tar extract failed (exit ${exitCode}): ${stderr}`, {
-          status: 500,
-        })
-      }
+const handleRestore = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.gen(function*() {
+    const bytes = yield* Effect.result(request.arrayBuffer)
+    if (Result.isFailure(bytes)) {
+      return HttpServerResponse.text("could not read restore body", { status: 500 })
     }
-    hydrated = true
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
+    const result = yield* Effect.promise(() => restoreWorkspace(bytes.success))
+    if ("error" in result) return HttpServerResponse.text(result.error, { status: 500 })
+    yield* Effect.sync(() => {
+      hydrated = true
     })
-  } catch (error) {
-    return new Response(
-      error instanceof Error ? error.message : String(error),
-      { status: 500 },
-    )
-  }
-}
+    return yield* HttpServerResponse.json({ ok: true })
+  })
 
-// Refuses until hydrated: a snapshot of a fresh (never-restored) container
-// must never overwrite a good R2 object.
-const handleSnapshot = async (): Promise<Response> => {
-  if (!hydrated) {
-    return new Response("workspace not hydrated; refusing to snapshot", {
-      status: 409,
-    })
-  }
-  try {
-    const proc = Bun.spawn(["tar", "-czf", "-", "-C", WORKSPACE, "."], {
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    const [bytes, exitCode, stderr] = await Promise.all([
-      new Response(proc.stdout).arrayBuffer(),
-      proc.exited,
-      proc.stderr.text(),
-    ])
-    if (exitCode !== 0) {
-      return new Response(`tar create failed (exit ${exitCode}): ${stderr}`, {
-        status: 500,
-      })
-    }
-    return new Response(bytes, {
-      status: 200,
-      headers: { "content-type": "application/octet-stream" },
-    })
-  } catch (error) {
-    return new Response(
-      error instanceof Error ? error.message : String(error),
-      { status: 500 },
-    )
-  }
-}
+// Refuses until hydrated: a snapshot of a fresh container must never overwrite
+// a good R2 object.
+const handleSnapshot = Effect.gen(function*() {
+  if (!hydrated) return HttpServerResponse.text("workspace not hydrated; refusing to snapshot", { status: 409 })
+  const result = yield* Effect.promise(() => snapshotWorkspace())
+  if ("error" in result) return HttpServerResponse.text(result.error, { status: 500 })
+  return HttpServerResponse.uint8Array(result.bytes, {
+    headers: { "content-type": "application/octet-stream" },
+  })
+})
+
+const handleReset = Effect.gen(function*() {
+  yield* Effect.promise(() => resetWorkspace())
+  yield* Effect.sync(() => {
+    hydrated = false
+  })
+  return yield* HttpServerResponse.json({ ok: true })
+})
+
+const routerLayer = HttpRouter.addAll([
+  HttpRouter.route("POST", "/exec", handleExec),
+  HttpRouter.route("GET", "/status", Effect.suspend(() => HttpServerResponse.json({ hydrated }))),
+  HttpRouter.route("POST", "/restore", handleRestore),
+  HttpRouter.route("GET", "/snapshot", handleSnapshot),
+  HttpRouter.route("POST", "/reset", handleReset),
+  HttpRouter.route("GET", "/", Effect.succeed(HttpServerResponse.text("Sandbox container (POST /exec)"))),
+])
+
+const { handler } = HttpRouter.toWebHandler(routerLayer, { disableLogger: true })
 
 const portEnv = Bun.env.PORT
 const port = portEnv !== undefined && portEnv !== "" ? Number(portEnv) : 8080
 
 Bun.serve({
   port,
-  // Bun's default idleTimeout (~10s) would sever /exec responses for any
-  // command that runs longer than the idle window. 0 disables it; the DO
-  // fetch (and Cloudflare's own limits) bound the request instead.
+  // Bun's default idleTimeout (~10s) would sever /exec for any command longer
+  // than the idle window. 0 disables it; the per-command TIMEOUT_MS in
+  // runCommand bounds a single exec (with Cloudflare's request limits behind).
   idleTimeout: 0,
-  routes: {
-    "/exec": { POST: handleExec },
-    "/status": { GET: handleStatus },
-    "/restore": { POST: handleRestore },
-    "/snapshot": { GET: handleSnapshot },
-    "/": { GET: () => new Response("Sandbox container (POST /exec)", { status: 200 }) },
-  },
-  fetch: () => new Response("Not Found", { status: 404 }),
+  fetch: (request) => handler(request),
 })
 
 console.log(`Sandbox container listening on port ${port}`)
