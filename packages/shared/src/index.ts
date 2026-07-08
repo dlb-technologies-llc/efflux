@@ -1,4 +1,5 @@
 export * from "./Schemas.ts"
+export * from "./Sse.ts"
 export * from "./Journal.ts"
 export * from "./Errors.ts"
 export * from "./AgentApi.ts"
