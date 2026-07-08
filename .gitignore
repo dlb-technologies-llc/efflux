@@ -9,3 +9,4 @@ worker-configuration.d.ts
 .astro
 *.tsbuildinfo
 .worktrees/
+.claude/worktrees/
