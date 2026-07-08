@@ -24,7 +24,8 @@ This is v1 of the skill — deliberately lean. It gets sharpened by `/flue-postm
 ## Process
 
 1. **Research.** Codebase first — copy the local convention and cite `file:line` for every pattern a task relies on. Read `ISSUES.md` for landmines touching the plan's surface. Effect v4 APIs only from source, in the authority order above.
-2. **Tracker check.** `gh issue list --state all --search "<surface>"` and `gh pr list --state all --search "<surface>"` — look for twins and in-flight work before drafting tasks.
-3. **Draft.** Use the plan template: a `# Plan:` header with `> **Status:** DRAFT` and `> **Branch:**` lines, then waves of tasks, each task with `**Files:**` and `**Acceptance:**`. No two tasks in the same wave may touch the same file. Save to `~/c0de/plans/effect-flue/<plan-name>.md`.
-4. **Devil's-advocate pass.** Spawn a critical-review agent on the draft before presenting; fold in valid findings.
-5. **Present.** Show a summary with wave/task counts and ask whether to run `/flue-executing`.
+2. **Exemplar inventory.** If the issue or user cites a template ("like <existing setup X>"), enumerate X's FULL inventory during research and list every element you're omitting in the plan for the user to see. Silent scope cuts against a named exemplar are the #1 "that's not what I asked" rework source (a releasing skill was silently dropped from the skills-suite plan this way).
+3. **Tracker check.** `gh issue list --state all --search "<surface>"` and `gh pr list --state all --search "<surface>"` — look for twins and in-flight work before drafting tasks.
+4. **Draft.** Use the plan template: a `# Plan:` header with `> **Status:** DRAFT` and `> **Branch:**` lines, then waves of tasks, each task with `**Files:**` and `**Acceptance:**`. No two tasks in the same wave may touch the same file. Save to `~/c0de/plans/effect-flue/<plan-name>.md`.
+5. **Devil's-advocate pass.** Spawn a critical-review agent on the draft before presenting; fold in valid findings.
+6. **Present.** Show a summary with wave/task counts and ask whether to run `/flue-executing`.
