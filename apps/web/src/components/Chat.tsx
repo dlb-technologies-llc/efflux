@@ -11,48 +11,58 @@ export interface ChatProps {
   readonly id: string
 }
 
+const noParts: ReadonlyArray<StreamPart> = []
+
+// The stream's error channel is a union (HttpClientError | SchemaError |
+// Sse.Retry | NoSuchElementError); not all members carry a string `message`.
+const messageOf = (error: unknown): string => {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = error.message
+    if (typeof message === "string") return message
+  }
+  return String(error)
+}
+
 export function Chat({ name, id }: ChatProps) {
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
-  const [streaming, setStreaming] = React.useState("")
+  // The streaming atom accumulates, so the whole transcript-so-far arrives in
+  // one array — no manual token concatenation.
+  const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
 
-  // `Atom.family` memoises structurally (Equal/Hash), so a fresh `{name, id}`
-  // literal returns the same atom on every render — no useMemo needed.
   const sessionAtom = historyAtom({ name, id })
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
 
-  // Hold the per-emit handler in a ref so `useAtomSubscribe` sees a stable
-  // callback identity. Without this, every setStreaming/setSubmitError call
-  // re-renders, which would cause useAtomSubscribe to unsubscribe and
-  // resubscribe between commits — async deltas arriving in that window
-  // would have no subscriber attached.
-  const onPartRef = React.useRef<(part: StreamPart) => void>(() => {})
-  onPartRef.current = (part) => {
-    if (part._tag === "text-delta") {
-      setStreaming((prev) => prev + part.delta)
-      return
-    }
-    if (part._tag === "error") {
-      setSubmitError(part.message)
-    }
-  }
+  // Stable subscriber: each success emit carries the accumulated `StreamPart[]`.
   const onResult = React.useCallback(
-    (result: AsyncResult.AsyncResult<StreamPart, unknown>) => {
-      if (!AsyncResult.isSuccess(result)) return
-      onPartRef.current(result.value)
+    (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
+      if (AsyncResult.isSuccess(result)) setParts(result.value)
     },
     [],
   )
   useAtomSubscribe(streamAtom, onResult)
 
+  // Derive the live view from the accumulated parts (Effect owns accumulation;
+  // React just renders it).
+  const streamingText = parts.reduce(
+    (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
+    "",
+  )
+  const toolParts = parts.filter(
+    (part) => part._tag === "tool-call" || part._tag === "tool-result",
+  )
+  const errorPart = parts.find((part) => part._tag === "error")
+  const streamError = errorPart !== undefined ? errorPart.message : submitError
+  const streamActive = parts.length > 0
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
-    setStreaming("")
+    setParts(noParts)
     setSubmitError(null)
     setInput("")
     setPending(true)
@@ -61,31 +71,29 @@ export function Chat({ name, id }: ChatProps) {
     Exit.match(exit, {
       onFailure: (cause) => {
         const failReason = cause.reasons.find(Cause.isFailReason)
-        setSubmitError(failReason ? failReason.error.message : "Stream failed")
+        setSubmitError(failReason ? messageOf(failReason.error) : "Stream failed")
+        // Collapse the failed turn to just the error — don't leave a stale
+        // half-streamed bubble on screen.
+        setParts(noParts)
       },
-      // Don't clear `streaming` here — the bubble would disappear for the
-      // duration of the history refetch and visually pop back. The success
-      // effect below clears `streaming` once the refreshed history actually
-      // contains the new assistant turn.
+      // Keep the streamed parts until the refreshed history contains the new
+      // assistant turn (the effect below clears them), avoiding a
+      // disappear-then-reappear flicker.
       onSuccess: () => {
         refreshHistory()
       },
     })
   }
 
-  // Clear the live-streaming buffer only AFTER the refreshed history contains
-  // the new assistant turn. Avoids the disappear-then-reappear flicker that
-  // would otherwise happen between `setStreaming("")` and the historyAtom
-  // refetch resolving.
   const previousHistoryLengthRef = React.useRef(0)
   React.useEffect(() => {
     if (!AsyncResult.isSuccess(historyResult)) return
     const length = historyResult.value.history.length
-    if (length > previousHistoryLengthRef.current && streaming.length > 0) {
-      setStreaming("")
+    if (length > previousHistoryLengthRef.current && parts.length > 0) {
+      setParts(noParts)
     }
     previousHistoryLengthRef.current = length
-  }, [historyResult, streaming.length])
+  }, [historyResult, parts.length])
 
   return (
     <main className="chat">
@@ -106,19 +114,28 @@ export function Chat({ name, id }: ChatProps) {
         },
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
-      {streaming.length > 0 ? (
+      {streamActive || pending ? (
         <div className="message message-assistant message-streaming">
           <div className="role">assistant</div>
-          {streaming}
+          {toolParts.map((part, i) =>
+            part._tag === "tool-call" ? (
+              <div key={`t-${i}`} className="tool-frame tool-running">
+                → {part.name}
+              </div>
+            ) : (
+              <div
+                key={`t-${i}`}
+                className={part._tag === "tool-result" && part.isFailure ? "tool-frame tool-failed" : "tool-frame tool-done"}
+              >
+                {part._tag === "tool-result" && part.isFailure ? "✗" : "✓"} {part.id}
+              </div>
+            )
+          )}
+          {streamingText}
           {pending ? <span className="streaming-cursor" aria-hidden /> : null}
         </div>
-      ) : pending ? (
-        <div className="message message-assistant pending">
-          <div className="role">assistant</div>
-          <span className="thinking-dots">thinking</span>
-        </div>
       ) : null}
-      {submitError !== null ? <p className="error">{submitError}</p> : null}
+      {streamError !== null ? <p className="error">{streamError}</p> : null}
       <form className="composer" onSubmit={handleSubmit}>
         <input
           type="text"
