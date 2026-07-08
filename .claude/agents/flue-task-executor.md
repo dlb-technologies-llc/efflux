@@ -46,7 +46,7 @@ All file paths provided to you are relative to WORKTREE_PATH — prepend it to e
    ```bash
    grep -vE '^\s*(import|export .* from)' <file> | grep -nE '\bas (const\b|[A-Za-z_])|[^!=]!(\.|\))'
    ```
-   Fix any hits before proceeding. Report what you caught.
+   Hits inside comments or string literals ("as long as", "known as") are false positives — read the line before "fixing" it. Fix real hits before proceeding. Report what you caught.
 5. **Report** what you completed
 
 ## Output

@@ -56,7 +56,7 @@ Lifecycle position: `/flue-postmortem` runs PRE-merge on plans with Status `PR_C
 
 - Identify the feature branch from the plan (or `gh pr view <n> --json headRefName`).
 - The `checkout --detach` above already freed the branch (git refuses to delete a branch checked out in a live worktree). Do NOT switch branches in the main checkout to do this — no `git checkout` there, ever.
-- Delete the local branch: `git branch -d <branch>` — only ever `-d`, never `-D`, so any unmerged work is protected by git itself.
+- Delete the local branch: `git branch -d <branch>` — only ever `-d`, never `-D`, so any unmerged work is protected by git itself. Ordering is load-bearing: the delete runs BEFORE `git fetch --prune` because `-d` accepts a branch as merged based on the (soon-to-be-pruned) `origin/<branch>` remote-tracking ref — local `main` is never updated by this flow (no checkout).
 - Prune stale remote refs: `git fetch --prune`.
 - Archive the plan: move the plan file to `~/c0de/plans/effect-flue/done/` (create the directory if it doesn't exist).
 
@@ -75,5 +75,5 @@ Plan: archived to ~/c0de/plans/effect-flue/done/<plan-name>.md
 
 1. Worktree already removed → skip worktree removal, still attempt branch cleanup.
 2. Branch already deleted → note it, still archive the plan.
-3. Dirty worktree + "Keep" → exit without any cleanup.
+3. Dirty worktree + "Keep" → exit without any cleanup, reporting `Worktree: kept (uncommitted changes)`.
 4. `git branch -d` refuses (unmerged) → report; never escalate to `-D` without the user's explicit say-so.
