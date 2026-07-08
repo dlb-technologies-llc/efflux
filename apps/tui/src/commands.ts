@@ -31,7 +31,9 @@ const showOrSet = (
 
 /**
  * Interpret a `/command` input line against the current overrides.
- * `/sessions` is intentionally absent — blocked on the event journal (#36).
+ * `/sessions` and `/journal` are not surfaced in the TUI yet — the server
+ * endpoints exist (GET /agents, /agents/:name/:id/journal) and scripts/agent.ts
+ * exercises them; wiring them into the TUI is future work.
  */
 export const handleCommand = (
   input: string,

@@ -1,3 +1,5 @@
+import type { StreamPart } from "@effect-flue/shared"
+import { Cause, Effect, Exit, Stream } from "effect"
 import { Box, Text, useApp } from "ink"
 import TextInput from "ink-text-input"
 import * as React from "react"
@@ -13,6 +15,16 @@ export interface AppProps {
   readonly initialOverrides: PromptOverrides
 }
 
+// The stream's error channel is a union; not every member carries a string
+// `message`.
+const messageOf = (error: unknown): string => {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = error.message
+    if (typeof message === "string") return message
+  }
+  return String(error)
+}
+
 export function App({ client, name, id, initialOverrides }: AppProps) {
   const { exit } = useApp()
   const [entries, setEntries] = React.useState<ReadonlyArray<TranscriptEntry>>([])
@@ -21,13 +33,25 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   const [streaming, setStreaming] = React.useState("")
   const [overrides, setOverrides] = React.useState<PromptOverrides>(initialOverrides)
 
+  // Skip state updates that resolve after unmount (e.g. a turn interrupted by
+  // disposing the runtime on /exit).
+  const mountedRef = React.useRef(true)
+  React.useEffect(
+    () => () => {
+      mountedRef.current = false
+      // Disposing the ManagedRuntime interrupts any in-flight turn/history
+      // fiber — real cancellation, not a set-state guard.
+      void client.runtime.dispose()
+    },
+    [client],
+  )
+
   const pushEntry = (entry: TranscriptEntry) => {
     setEntries((prev) => [...prev, entry])
   }
 
-  // Accumulate deltas in a ref so tool frames can flush the text streamed so
-  // far into a finalized entry, preserving the arrival order of frames
-  // inside one assistant turn.
+  // Accumulate deltas in a ref so a tool frame can flush the text streamed so
+  // far into a finalized entry, preserving arrival order within one turn.
   const streamRef = React.useRef("")
   const appendDelta = (delta: string) => {
     streamRef.current += delta
@@ -42,27 +66,69 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   }
 
   React.useEffect(() => {
-    let cancelled = false
-    client
-      .history(name, id)
-      .then((response) => {
-        if (cancelled) return
-        setEntries(
-          response.history.map((message) => ({
-            kind: "message",
-            role: message.role,
-            content: message.content,
-          })),
-        )
+    client.runtime.runPromiseExit(client.history(name, id)).then((result) => {
+      if (!mountedRef.current) return
+      Exit.match(result, {
+        onSuccess: (response) =>
+          setEntries(
+            response.history.map((message) => ({
+              kind: "message",
+              role: message.role,
+              content: message.content,
+            })),
+          ),
+        onFailure: () => pushEntry({ kind: "info", text: "no history for this session yet" }),
       })
-      .catch(() => {
-        if (cancelled) return
-        pushEntry({ kind: "info", text: "no history for this session yet" })
-      })
-    return () => {
-      cancelled = true
-    }
+    })
+    // History is idempotent; the runtime-dispose on unmount interrupts it.
   }, [client, name, id])
+
+  const onPart = (part: StreamPart) => {
+    switch (part._tag) {
+      case "text-delta":
+        appendDelta(part.delta)
+        return
+      case "tool-call":
+        flushStreaming()
+        pushEntry({ kind: "tool", event: part })
+        return
+      case "tool-result":
+        flushStreaming()
+        pushEntry({ kind: "tool", event: part })
+        return
+      case "done":
+        flushStreaming()
+        return
+      case "error":
+        flushStreaming()
+        pushEntry({ kind: "error", text: part.message })
+        return
+    }
+  }
+
+  const runTurn = async (message: string) => {
+    pushEntry({ kind: "message", role: "user", content: message })
+    setPending(true)
+    streamRef.current = ""
+    setStreaming("")
+    const result = await client.runtime.runPromiseExit(
+      Stream.runForEach(
+        client.streamPrompt(name, id, message, overrides),
+        (part) => Effect.sync(() => onPart(part)),
+      ),
+    )
+    if (!mountedRef.current) return
+    flushStreaming()
+    setPending(false)
+    if (Exit.isFailure(result)) {
+      const failReason = result.cause.reasons.find(Cause.isFailReason)
+      // A bare interruption (runtime disposed on /exit) has no fail reason —
+      // don't render it as an error.
+      if (failReason !== undefined) {
+        pushEntry({ kind: "error", text: `stream failed: ${messageOf(failReason.error)}` })
+      }
+    }
+  }
 
   const runSlashCommand = async (line: string) => {
     const result = handleCommand(line, overrides)
@@ -74,72 +140,27 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
       case "note":
         pushEntry({ kind: "info", text: result.note })
         return
-      case "reset":
+      case "reset": {
         setPending(true)
-        try {
-          await client.reset(name, id)
-          // Append rather than replace: <Static> is append-only (it can't
-          // unprint scrollback), and shrinking the items array would leave
-          // this confirmation below Static's internal index — never rendered.
-          pushEntry({ kind: "info", text: "session reset — server history cleared" })
-        } catch (error) {
-          pushEntry({
-            kind: "error",
-            text: `reset failed: ${error instanceof Error ? error.message : String(error)}`,
-          })
-        } finally {
-          setPending(false)
-        }
+        const exitResult = await client.runtime.runPromiseExit(client.reset(name, id))
+        if (!mountedRef.current) return
+        setPending(false)
+        Exit.match(exitResult, {
+          onSuccess: () =>
+            pushEntry({ kind: "info", text: "session reset — server history cleared" }),
+          onFailure: (cause) => {
+            const failReason = cause.reasons.find(Cause.isFailReason)
+            pushEntry({
+              kind: "error",
+              text: `reset failed: ${failReason ? messageOf(failReason.error) : "unknown error"}`,
+            })
+          },
+        })
         return
+      }
       case "exit":
         exit()
         return
-    }
-  }
-
-  const runTurn = async (message: string) => {
-    pushEntry({ kind: "message", role: "user", content: message })
-    setPending(true)
-    streamRef.current = ""
-    setStreaming("")
-    try {
-      for await (const part of client.streamPrompt(name, id, message, overrides)) {
-        switch (part._tag) {
-          case "text-delta":
-            appendDelta(part.delta)
-            break
-          case "tool-call":
-            flushStreaming()
-            pushEntry({
-              kind: "tool",
-              event: { kind: "call", id: part.id, name: part.name, params: part.params },
-            })
-            break
-          case "tool-result":
-            flushStreaming()
-            pushEntry({
-              kind: "tool",
-              event: { kind: "result", id: part.id, result: part.result, isFailure: part.isFailure },
-            })
-            break
-          case "done":
-            flushStreaming()
-            break
-          case "error":
-            flushStreaming()
-            pushEntry({ kind: "error", text: part.message })
-            break
-        }
-      }
-      flushStreaming()
-    } catch (error) {
-      flushStreaming()
-      pushEntry({
-        kind: "error",
-        text: `stream failed: ${error instanceof Error ? error.message : String(error)}`,
-      })
-    } finally {
-      setPending(false)
     }
   }
 
