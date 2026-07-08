@@ -1,17 +1,38 @@
 ---
 name: flue-releasing
-description: Tag and publish a semver GitHub Release for effect-flue after a PR to main merges, or when the user asks to cut/tag a release.
+description: Promote staging→main via a merge PR (carrying the Closes #N lines), then tag and publish a semver GitHub Release — the only path work takes into main.
 argument-hint: "[version]"
 ---
 
 # flue-releasing
 
-Purpose: every merge to `main` gets a release — a semver git tag on the merge commit plus a GitHub Release with generated notes.
+Purpose: releases are the ONLY way work reaches `main`. Feature PRs land on `staging` (with `Refs #N`); this skill opens the `staging`→`main` promotion PR (whose body carries the `Closes #N` lines so issues auto-close on release), and every merge to `main` gets a release — a semver git tag on the merge commit plus a GitHub Release with generated notes.
+
+## Step 0: Promote staging → main
+
+1. ```bash
+   git fetch origin main staging
+   git log --oneline origin/main..origin/staging
+   ```
+   Empty → nothing to release; stop. Otherwise list the staging PRs being promoted (`gh pr list --base staging --state merged` since the last release helps).
+2. Collect every issue the promoted PRs reference (`Refs #N` in their bodies) — each becomes a `Closes #N` line in the promotion PR body. This is the ONLY place `Closes #N` is used.
+3. Open and merge the promotion PR (merge commit — never rebase/squash, never `--no-verify`):
+   ```bash
+   gh pr create --base main --head staging --title "release: <X.Y.Z summary>" --body "..."
+   ```
+   Confirm with the user before merging.
+4. After the merge, sync `staging` back up to `main` so the next feature branch includes the release merge commit (fast-forward push; refuses if someone landed on staging mid-release — then merge `main` into `staging` via a PR instead):
+   ```bash
+   git fetch origin main
+   git push origin origin/main:staging
+   ```
+
+Then tag + release the new `main` merge commit (steps below).
 
 ## Versioning rules
 
 - Current version = highest existing tag: `git tag --sort=-v:refname | head -1`. If NO tags exist, start at `0.1.0`.
-- Pre-1.0 policy: `feat` merges bump MINOR; `fix`/`chore`/`docs`/`refactor` merges bump PATCH.
+- Pre-1.0 policy: if the promoted batch contains ANY `feat` PR, bump MINOR; otherwise (`fix`/`chore`/`docs`/`refactor` only) bump PATCH.
 - NEVER bump to 1.0.0 or change MAJOR unless the user explicitly says so.
 - Tag format: bare `X.Y.Z` — no `v` prefix.
 

@@ -17,10 +17,10 @@ Run every step; report a per-check pass/fail table at the end.
 ### 0. Validate the API key first
 
 ```bash
-curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep OPENROUTER_API_KEY .env | cut -d= -f2-)"
+curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep OPENROUTER_API_KEY .dev.vars | cut -d= -f2-)"
 ```
 
-Expect key metadata, not a 401 — a dead/rotated key once burned a full deploy cycle before surfacing as `InvalidKey`. If the key changed, re-run `wrangler secret put OPENROUTER_API_KEY` before deploying.
+The local file is `.dev.vars` (not `.env`). Expect key metadata, not a 401 — a dead/rotated key once burned a full deploy cycle before surfacing as `InvalidKey`. If the key changed, re-run `wrangler secret put OPENROUTER_API_KEY` before deploying. **Caveat:** local `.dev.vars` may hold a placeholder while the deployed Worker uses a real secret from `wrangler secret put` — then a 401 here is expected and NOT a failure; the deployed key is proven by the first smoke turn (step 2). Only chase this check when the smoke turn itself fails with an auth-shaped error.
 
 ### 1. Typecheck and deploy
 
@@ -34,6 +34,8 @@ If a hook/policy blocks the `deploy` package script, run its exact steps directl
 Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck) and `bun scripts/upload-skills.ts`. Bare `wrangler deploy` skips the hook and can ship a stale `apps/web/dist`. `bun run deploy` needs a local Docker daemon (it builds the Sandbox container image).
 
 Capture the worker URL from the deploy output (currently https://effect-flue.david-0e2.workers.dev). If it isn't printed, use the `[worker-url]` argument or `BASE_URL` env; if neither exists, ask the user.
+
+Concurrent sessions share this ONE worker — last deploy wins. If another session may have deployed since yours, redeploy immediately before smoking; a mid-smoke deploy by another session invalidates results (rerun the affected checks). Container-image changes roll out gradually — when the diff touches the container, probe it first (e.g. a `pwd`-style Bash-tool turn) before judging dependent checks.
 
 ### 2. Smoke a session
 
@@ -63,6 +65,8 @@ Expect multiple SSE `data:` frames (`text-delta` parts) ending in a `done` frame
 
 OPTIONAL (MANDATORY for changes touching the stream path): mid-stream disconnect probe — kill an SSE client mid-stream, then GET history and expect the partial assistant text persisted. Timing matters: kill only AFTER non-empty `text-delta` frames are flowing (reasoning models emit empty deltas for many seconds first) — a fixed short timer produces a false "nothing persisted" because there was nothing to persist yet. Ask for a long deterministic output (e.g. "a numbered list of 30 facts") and kill ~20s in.
 
+**KNOWN-FAILING (pre-existing, #54):** on client disconnect NOTHING persists — not even the user message; `wrangler tail` shows the stream request `Canceled` with no subsequent `Agent.append` and no "Failed to persist chat turn" log. Reproduced on unmodified `main` (`1b937bbb`, 2026-07-08). If the probe fails with exactly this signature, record it as pre-existing #54 in the report — do NOT redeploy `main` to re-baseline (that archaeology is already done). Any OTHER failure shape (partial persistence, error frames, stream not `Canceled`) is your change's problem. Remove this note when #54 closes.
+
 ### 5. Subagent task
 
 ```bash
@@ -91,7 +95,7 @@ bun scripts/agent.ts support smoke-<YYYYMMDD-HHMM> \
   --message "Run \`uname -a\` in your sandbox and tell me the output." --url <URL>
 ```
 
-Expect real command output in the reply. Model tool choice is nondeterministic — retry once with a more explicit instruction before declaring failure.
+Expect real command output in the reply. Pass `--model` with a capable tool-calling model (e.g. `openai/gpt-4o-mini`) — the default `tencent/hy3:free` flakes at tool choice, and a no-tool reply then looks like a code failure when it isn't. Model tool choice is still nondeterministic — retry once with a more explicit instruction (AFTER pinning the model) before declaring failure.
 
 ### 7. Cleanup
 

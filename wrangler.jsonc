@@ -30,7 +30,10 @@
       "instance_type": "standard-1"
     }
   ],
-  "r2_buckets": [{ "binding": "SKILLS", "bucket_name": "effect-flue-skills" }],
+  "r2_buckets": [
+    { "binding": "SKILLS", "bucket_name": "effect-flue-skills" },
+    { "binding": "SESSIONS", "bucket_name": "effect-flue-sessions" }
+  ],
   "triggers": { "crons": ["0 12 * * *"] },
   "observability": { "enabled": true }
 }

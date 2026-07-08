@@ -251,6 +251,20 @@ export const AgentHandlers = HttpApiBuilder.group(
           const turn = yield* openTurn(agent, payload)
           const model = payload.model ?? DEFAULT_MODEL
 
+          // Turn-end workspace snapshot (durable workspace, #37). Every
+          // exec happens inside `loop`, so an `Effect.ensuring` on it runs
+          // after the workspace is final for this turn — on success AND
+          // failure. Swallow-and-log: a snapshot failure must never shadow
+          // the response.
+          const snapshotWorkspace = Effect.promise(() =>
+            agent.snapshotIfDirty(),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Workspace snapshot failed", cause),
+            ),
+            Effect.asVoid,
+          )
+
           const loop = Effect.gen(function* () {
             let promptValue: Prompt.Prompt = Prompt.make(messages)
             let finalText = ""
@@ -346,6 +360,7 @@ export const AgentHandlers = HttpApiBuilder.group(
           // Journal failures are swallowed so they don't shadow the
           // original error.
           const result = yield* loop.pipe(
+            Effect.ensuring(snapshotWorkspace),
             Effect.tapCause((cause) =>
               Effect.promise(() =>
                 agent.appendEvents([
@@ -745,6 +760,21 @@ export const AgentHandlers = HttpApiBuilder.group(
             agent.exec(command),
           )
 
+          // Turn-end workspace snapshot (durable workspace, #37) — runs in
+          // a stream finalizer alongside the partial-text flush on normal
+          // completion and mid-hop failure (NOT on client disconnect —
+          // workerd runs no finalizers there; see ISSUES.md).
+          // Swallow-and-log: a snapshot failure must never kill the SSE
+          // stream.
+          const snapshotWorkspace = Effect.promise(() =>
+            agent.snapshotIfDirty(),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Workspace snapshot failed", cause),
+            ),
+            Effect.asVoid,
+          )
+
           const sseFrames = loopedStream.pipe(
             Stream.provide(AgentToolkitLayer),
             Stream.provide(bashRunner),
@@ -873,10 +903,8 @@ export const AgentHandlers = HttpApiBuilder.group(
               }),
             ),
             Stream.encodeText,
-            // The disconnect-path flush: response-stream finalizers are the
-            // one place the runtime guarantees to run before request
-            // teardown (same slot the pre-journal `persistTurn` used).
             Stream.ensuring(flushPartialHopText),
+            Stream.ensuring(snapshotWorkspace),
           )
 
           return HttpServerResponse.stream(sseFrames, {
