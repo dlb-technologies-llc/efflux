@@ -25,6 +25,13 @@ export { Agent } from "./Agent.ts"
 export { Registry } from "./Registry.ts"
 export { Sandbox } from "./Sandbox.ts"
 
+// ContainerProxy (a WorkerEntrypoint) is REQUIRED once the Sandbox enables
+// egress interception (it sets `deniedHosts`) — @cloudflare/containers reaches
+// it via `ctx.exports.ContainerProxy` to route the container's outbound
+// traffic, and throws "ctx.exports.ContainerProxy is undefined" on container
+// start without it. No wrangler binding/migration needed (ctx.exports self-ref).
+export { ContainerProxy } from "@cloudflare/containers"
+
 // `env.OPENROUTER_API_KEY` is a plain string binding. Guard empty/missing
 // here — throwing (a defect) with a clear message beats a silent
 // "undefined" Bearer token reaching OpenRouter.
