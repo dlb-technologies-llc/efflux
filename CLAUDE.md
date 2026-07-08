@@ -41,9 +41,9 @@ Read `ISSUES.md` at the repo root BEFORE touching Worker boot, secrets, DO RPC b
 Plans live in `~/c0de/plans/effect-flue/`; status vocabulary is `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 
 - `/flue-planning` — produce a wave-structured plan for a task; run before any nontrivial change.
-- `/flue-executing` — run a plan wave-by-wave on a feature branch and open the PR against `main`.
+- `/flue-executing` — run a plan's waves as parallel agents in an isolated worktree (`.claude/worktrees/<plan-name>`) and open the PR against `main`.
 - `/flue-creating-issues` — turn a rough problem statement into one well-formed `gh issue create`.
 - `/flue-verifying` — the deploy-and-live-smoke checklist; run before any PR with a runtime surface.
 - `/flue-postmortem` — pre-merge orchestration retrospective on a `PR_CREATED` plan; edits the `flue-*` skills.
-- `/flue-cleaning-up` — post-merge: delete the local branch and archive the plan (`POSTMORTEM_COMPLETE` plans).
+- `/flue-cleaning-up` — post-merge: remove the plan's worktree, delete the local branch, and archive the plan (`POSTMORTEM_COMPLETE` plans).
 - `/flue-releasing` — every merge to main is tagged + GitHub-released; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).

@@ -17,7 +17,7 @@ Run every step; report a per-check pass/fail table at the end.
 ### 0. Validate the API key first
 
 ```bash
-curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep OPENROUTER_API_KEY .env | cut -d= -f2-)"
+curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep OPENROUTER_API_KEY .dev.vars | cut -d= -f2-)"
 ```
 
 Expect key metadata, not a 401 — a dead/rotated key once burned a full deploy cycle before surfacing as `InvalidKey`. If the key changed, re-run `wrangler secret put OPENROUTER_API_KEY` before deploying.
