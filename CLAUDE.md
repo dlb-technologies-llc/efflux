@@ -23,7 +23,7 @@ Single source of truth — the `flue-*` skills defer here.
 - Schema-first: all types flow from Effect Schemas — no `as` casts, no `!` assertions, no parallel type definitions.
 - Verification = deploy + hit the live worker (`/flue-verifying` checklist). Typecheck/build alone NEVER counts.
 - Base branch `main`. PRs that close issues use `Closes #N`. Merge commits only — never rebase/squash. Never `--no-verify`.
-- Effect v4 beta (`4.0.0-beta.66`): never write Effect APIs from memory. Authority order: this codebase's existing usage → pinned source repos in `~/.claude/subrepos.json` (`effect-smol` covers v4 betas) → Context7 MCP.
+- Effect v4 beta (`4.0.0-beta.94`): never write Effect APIs from memory. Authority order: this codebase's existing usage → pinned source repos in `~/.claude/subrepos.json` (`effect-smol` covers v4 betas) → Context7 MCP.
 
 ## Landmines
 

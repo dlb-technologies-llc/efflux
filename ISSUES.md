@@ -445,6 +445,12 @@ tool result ever reaches the user. Tracked against PR #24 (commit
 `e243c3fb`); fix lives in `apps/api/src/handlers.ts:124-180` (prompt loop)
 and `apps/api/src/handlers.ts:264-330` (stream loop).
 
+> **Re-verified at `effect@4.0.0-beta.94` (2026-07-08, #30 bump):** still no
+> native multi-hop — `LanguageModel.generateText` resolves tool calls exactly
+> once (`LanguageModel.ts` ~:1185); no `maxSteps`-style option exists in
+> `unstable/ai`. The manual loop (now centralized via `AgentLoop.ts`) remains
+> required.
+
 ### Stack
 
 - `effect@4.0.0-beta.66`
