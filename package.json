@@ -9,14 +9,15 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "bun run cf-typegen && tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json && tsc --noEmit -p apps/api/container/tsconfig.json",
+    "typecheck": "bun run cf-typegen && tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p apps/tui/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json && tsc --noEmit -p apps/api/container/tsconfig.json",
     "build": "bun run --filter @effect-flue/web build && bun run --filter @effect-flue/api typecheck",
     "predeploy": "bun run build && bun scripts/upload-skills.ts",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "dev": "wrangler dev",
     "cf-typegen": "wrangler types",
-    "agent": "bun scripts/agent.ts"
+    "agent": "bun scripts/agent.ts",
+    "tui": "bun apps/tui/src/main.tsx"
   },
   "dependencies": {
     "effect": "4.0.0-beta.94"
