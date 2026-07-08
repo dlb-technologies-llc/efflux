@@ -154,8 +154,10 @@ for (const [turn, hops] of turns) {
     const where = `turn=${turn} hop=${hop}`
 
     // a. call/result pairing
+    let hopHasDanglingCall = false
     for (const [callId, toolName] of data.toolCallIds) {
       if (!data.toolResultIds.has(callId)) {
+        hopHasDanglingCall = true
         parked.push(
           `${where}: tool-call ${toolName} (${callId}) has no tool-result — parked/incomplete turn`,
         )
@@ -165,9 +167,22 @@ for (const [turn, hops] of turns) {
     // b. granular ↔ authoritative consistency
     if (data.toolCallIds.size > 0 || data.toolResultIds.size > 0) {
       if (data.messages === undefined) {
-        failures.push(
-          `${where}: granular tool events exist but no hop-messages event`,
-        )
+        // tool-call/tool-result are journaled inline, but hop-messages is
+        // batched only at hop end — so a parked hop (one with a dangling
+        // call) NECESSARILY lacks hop-messages. That absence is the
+        // expected shape of a parked turn, not corruption: record it as
+        // PARKED (suppressible by --allow-parked). Only a hop whose tool
+        // calls ALL resolved is genuinely corrupt when hop-messages is
+        // missing — that stays a fatal FAIL.
+        if (hopHasDanglingCall) {
+          parked.push(
+            `${where}: no hop-messages event — parked hop (batched only at hop end)`,
+          )
+        } else {
+          failures.push(
+            `${where}: granular tool events exist but no hop-messages event`,
+          )
+        }
       } else {
         const inMessages = new Set<string>()
         for (const message of data.messages) {

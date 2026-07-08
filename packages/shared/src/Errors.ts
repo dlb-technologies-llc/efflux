@@ -8,14 +8,6 @@ export class AgentError extends Schema.TaggedErrorClass<AgentError>()(
   { httpApiStatus: 500 },
 ) {}
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()(
-  "NotFoundError",
-  {
-    id: Schema.String,
-  },
-  { httpApiStatus: 404 },
-) {}
-
 export class SkillNotFoundError extends Schema.TaggedErrorClass<SkillNotFoundError>()(
   "SkillNotFoundError",
   {

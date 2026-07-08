@@ -24,8 +24,15 @@ const bodyCache = new Map<string, string>()
 const stripFrontmatter = (text: string): string => {
   if (!text.startsWith("---\n")) return text.trim()
   const end = text.indexOf("\n---\n", 4)
-  if (end === -1) return text.trim()
-  return text.slice(end + 5).trim()
+  if (end !== -1) return text.slice(end + 5).trim()
+  // Closing fence at EOF with no trailing newline (e.g. a frontmatter-only
+  // file `---\n…\n---`). Without this, `indexOf("\n---\n")` misses the
+  // closing delimiter and the whole file — YAML frontmatter included — would
+  // be returned verbatim as the system prompt. The leading `---\n` already
+  // matched, so a trailing `\n---` can only be the closing fence; everything
+  // after it (nothing) is the body.
+  if (text.endsWith("\n---")) return ""
+  return text.trim()
 }
 
 const loadBody = <E>(

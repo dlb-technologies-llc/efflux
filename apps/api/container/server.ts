@@ -44,17 +44,83 @@ const json = (body: ExecResult): Response =>
     headers: { "content-type": "application/json" },
   })
 
+// Per-command wall-clock ceiling. `sleep 600`, `while true; do :; done`, etc.
+// are SIGTERM'd at expiry and reported as an in-band failure (never thrown).
+const TIMEOUT_MS = 120_000
+// Hard cumulative (stdout + stderr) output ceiling, enforced by draining the
+// pipes as streams rather than buffering them whole. Stops a `yes` /
+// `cat /dev/urandom` flood from OOMing the container. This is the safety
+// backstop; Tools.ts applies a smaller (~30k) prompt-facing cap separately.
+const MAX_OUTPUT_BYTES = 1_000_000
+const TRUNCATION_MARKER = "\n[output truncated at 1MB]"
+
+// Accepted gap: `proc.kill()` sends SIGTERM to the `sh` child, which handles
+// the common runaways (`sleep`, `yes`, busy-loops). A command that
+// deliberately backgrounds a grandchild (`cmd &`) can outlive the kill unless
+// a fresh process group is created — out of scope here.
 const runCommand = async (command: string): Promise<ExecResult> => {
   const proc = Bun.spawn(["sh", "-c", command], {
     cwd: WORKSPACE,
     stdout: "pipe",
     stderr: "pipe",
   })
+
+  let timedOut = false
+  let truncated = false
+  // Shared across both drains: the ceiling is cumulative over stdout+stderr.
+  // Single-threaded JS means the increments below never actually interleave.
+  let totalBytes = 0
+
+  const timer = setTimeout(() => {
+    timedOut = true
+    proc.kill()
+  }, TIMEOUT_MS)
+
+  const drain = async (
+    stream: ReadableStream<Uint8Array>,
+  ): Promise<string> => {
+    const decoder = new TextDecoder()
+    const reader = stream.getReader()
+    let out = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value === undefined) continue
+      const remaining = MAX_OUTPUT_BYTES - totalBytes
+      if (remaining <= 0) {
+        // Already at the ceiling — keep reading to EOF so the killed process
+        // unblocks, but stop accumulating.
+        truncated = true
+        proc.kill()
+        continue
+      }
+      if (value.byteLength > remaining) {
+        out += decoder.decode(value.subarray(0, remaining), { stream: true })
+        totalBytes += remaining
+        truncated = true
+        proc.kill()
+      } else {
+        out += decoder.decode(value, { stream: true })
+        totalBytes += value.byteLength
+      }
+    }
+    out += decoder.decode()
+    return out
+  }
+
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
-    proc.stdout.text(),
-    proc.stderr.text(),
+    drain(proc.stdout),
+    drain(proc.stderr),
   ])
+  clearTimeout(timer)
+
+  if (timedOut) {
+    return { exitCode: -1, stdout, stderr: "command timed out after 120s" }
+  }
+  if (truncated) {
+    return { exitCode, stdout: stdout + TRUNCATION_MARKER, stderr }
+  }
   return { exitCode, stdout, stderr }
 }
 
@@ -162,8 +228,9 @@ const port = portEnv !== undefined && portEnv !== "" ? Number(portEnv) : 8080
 Bun.serve({
   port,
   // Bun's default idleTimeout (~10s) would sever /exec responses for any
-  // command that runs longer than the idle window. 0 disables it; the DO
-  // fetch (and Cloudflare's own limits) bound the request instead.
+  // command that runs longer than the idle window. 0 disables it; the
+  // per-command TIMEOUT_MS in runCommand is now what bounds how long a single
+  // exec can run (with Cloudflare's own request limits behind it).
   idleTimeout: 0,
   routes: {
     "/exec": { POST: handleExec },

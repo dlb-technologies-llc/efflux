@@ -28,18 +28,23 @@ import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 
+// The shape every exec-backed tool returns (Bash + the file/search tools).
+// Declared ABOVE `BashRunner` so `exec`'s success type derives from the schema
+// (`typeof BashResult.Type`) instead of duplicating the object shape by hand.
+const BashResult = Schema.Struct({
+  exitCode: Schema.Number,
+  stdout: Schema.String,
+  stderr: Schema.String,
+})
+
+type BashResultValue = typeof BashResult.Type
+
 // Per-request handle to the DO's `exec(command)` RPC. Provided in the
 // `prompt` and `stream` handlers from the resolved Agent stub.
 export class BashRunner extends Context.Service<
   BashRunner,
   {
-    readonly exec: (
-      command: string,
-    ) => Effect.Effect<{
-      readonly exitCode: number
-      readonly stdout: string
-      readonly stderr: string
-    }>
+    readonly exec: (command: string) => Effect.Effect<BashResultValue>
   }
 >()("api/BashRunner") {}
 
@@ -71,14 +76,6 @@ const BashParameters = Schema.Struct({
       "Shell command to execute. Runs via `sh -c <command>` inside the sandboxed Linux container.",
   }),
 })
-
-const BashResult = Schema.Struct({
-  exitCode: Schema.Number,
-  stdout: Schema.String,
-  stderr: Schema.String,
-})
-
-type BashResultValue = typeof BashResult.Type
 
 export const BashTool = Tool.make("Bash", {
   description:
@@ -287,6 +284,46 @@ export const GrepTool = Tool.make("grep", {
 /** Network read ceiling; the returned body is further capped for the prompt. */
 const MAX_FETCH_BYTES = 100_000
 
+/** How many redirect hops to follow before giving up (re-validated on each). */
+const MAX_REDIRECT_HOPS = 5
+
+/**
+ * SSRF guard. Rejects hostnames that point at the Worker's own network
+ * neighborhood: `localhost`, IP literals in private / loopback / link-local /
+ * unique-local ranges, and the `.internal` / `.local` suffixes (Cloudflare
+ * service bindings and mDNS). Applied to the initial URL and re-applied to
+ * every redirect target so a public URL cannot 302 into an internal one.
+ *
+ * NOTE: this does NOT fully prevent DNS rebinding — a public hostname whose A
+ * record resolves to a private IP still passes, because Workers exposes no
+ * resolver to check the resolved address before `fetch`. It blocks the obvious
+ * literal cases; a resolver-based check would be needed for the rest.
+ */
+const isBlockedHost = (hostname: string): boolean => {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  if (host === "" || host === "localhost") return true
+  if (host.endsWith(".internal") || host.endsWith(".local")) return true
+  // IPv6: loopback (::1), unspecified (::), link-local (fe80::/10), and
+  // unique-local (fc00::/7).
+  if (host.includes(":")) {
+    if (host === "::1" || host === "::") return true
+    if (/^fe[89ab]/.test(host)) return true
+    if (/^f[cd]/.test(host)) return true
+    return false
+  }
+  // IPv4 dotted-quad in a loopback / private / link-local / unspecified range.
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (v4 !== null) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (a === 0 || a === 10 || a === 127) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    if (a === 169 && b === 254) return true
+  }
+  return false
+}
+
 const WebFetchResult = Schema.Struct({
   status: Schema.Number,
   contentType: Schema.String,
@@ -297,7 +334,7 @@ const WebFetchResult = Schema.Struct({
 type WebFetchResultValue = typeof WebFetchResult.Type
 
 export const WebFetchTool = Tool.make("web_fetch", {
-  description: `Fetch a public http(s) URL from the Worker (GET, redirects followed, 15s timeout) and return the response body as text. The body is read up to ${MAX_FETCH_BYTES} bytes and the returned text is capped at ${MAX_TOOL_OUTPUT_CHARS} characters (truncated=true when cut). A status of 0 means the fetch itself failed (invalid URL, unsupported scheme, network error, or timeout) — the reason is in the body as "Error: ...".`,
+  description: `Fetch a public http(s) URL from the Worker (GET, up to ${MAX_REDIRECT_HOPS} redirects followed with the destination re-validated on each hop, 15s timeout) and return the response body as text. The body is read up to ${MAX_FETCH_BYTES} bytes and the returned text is capped at ${MAX_TOOL_OUTPUT_CHARS} characters (truncated=true when cut). A status of 0 means the fetch itself failed (invalid URL, unsupported scheme, blocked private/internal host, too many redirects, network error, or timeout) — the reason is in the body as "Error: ...".`,
   parameters: Schema.Struct({
     url: Schema.String.annotate({
       description: "Absolute http:// or https:// URL to fetch.",
@@ -363,20 +400,65 @@ const readBody = (
     return { text, truncated }
   })
 
+// Follow redirects manually (never `redirect: "follow"`): re-validate the host
+// of every hop so a public URL cannot 302 into an internal one, and drain each
+// intermediate 3xx body (Workers requires every response body consumed or
+// cancelled; `readBody` only runs on the final response). Recurses in the
+// Effect channel — the terminal `Response` is the success value and every
+// rejection is a typed failure the caller collapses to a model-readable
+// message; no mutable accumulator, no sentinel. The AbortSignal wiring is
+// load-bearing: without it the 15s timeout leaves the subrequest dangling.
+const followRedirects = (
+  target: URL,
+  hopsLeft: number,
+): Effect.Effect<Response, Cause.UnknownError | Error> =>
+  Effect.gen(function* () {
+    const res = yield* Effect.tryPromise((signal) =>
+      fetch(target.href, { redirect: "manual", signal }),
+    )
+    // A 3xx WITH a Location is a redirect to follow; a 3xx without (e.g. 304)
+    // is terminal and is returned as the final response.
+    const location =
+      res.status >= 300 && res.status < 400 ? res.headers.get("location") : null
+    if (location === null) return res
+    yield* Effect.promise(() => res.body?.cancel() ?? Promise.resolve())
+    if (hopsLeft === 0) {
+      return yield* Effect.fail(
+        new Error(`too many redirects (>${MAX_REDIRECT_HOPS})`),
+      )
+    }
+    const next = yield* Effect.try(() => new URL(location, target)).pipe(
+      Effect.mapError(() => new Error(`invalid redirect target: ${location}`)),
+    )
+    if (next.protocol !== "http:" && next.protocol !== "https:") {
+      return yield* Effect.fail(
+        new Error(`redirect to unsupported scheme: ${next.protocol}`),
+      )
+    }
+    if (isBlockedHost(next.hostname)) {
+      return yield* Effect.fail(
+        new Error(
+          `redirect to blocked host: ${next.hostname} (private/internal address)`,
+        ),
+      )
+    }
+    return yield* followRedirects(next, hopsLeft - 1)
+  })
+
 const runWebFetch = (url: string): Effect.Effect<WebFetchResultValue> =>
   Effect.gen(function* () {
     const parsed = yield* Effect.try(() => new URL(url))
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return webFetchError(
-        `unsupported URL scheme: ${parsed.protocol} (only http/https)`,
+      return yield* Effect.fail(
+        new Error(`unsupported URL scheme: ${parsed.protocol} (only http/https)`),
       )
     }
-    // The AbortSignal wiring is load-bearing: without it, the timeout below
-    // interrupts the effect but leaves the subrequest dangling (hanging
-    // promise noise in `wrangler tail`).
-    const response = yield* Effect.tryPromise((signal) =>
-      fetch(url, { redirect: "follow", signal }),
-    )
+    if (isBlockedHost(parsed.hostname)) {
+      return yield* Effect.fail(
+        new Error(`blocked host: ${parsed.hostname} (private/internal address)`),
+      )
+    }
+    const response = yield* followRedirects(parsed, MAX_REDIRECT_HOPS)
     const { text, truncated } = yield* readBody(response)
     const capped = text.length > MAX_TOOL_OUTPUT_CHARS
     return {
@@ -389,9 +471,9 @@ const runWebFetch = (url: string): Effect.Effect<WebFetchResultValue> =>
     }
   }).pipe(
     Effect.timeout("15 seconds"),
-    // Collapse ALL failures into a model-readable success value — same
-    // rationale as SpawnSubagent's catch-to-text below: the model should
-    // see the message and react, not fail the whole loop.
+    // Collapse ALL failures (blocked host, bad scheme, too many redirects,
+    // network error, timeout) into a model-readable success value — the model
+    // should see the message and react, not fail the whole loop.
     Effect.catchCause((cause) =>
       Effect.succeed(webFetchError(causeMessage(cause))),
     ),
@@ -443,7 +525,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     ),
-  Bash: (params) => BashRunner.use((runner) => runner.exec(params.command)),
+  Bash: (params) => execCapped(params.command),
   read_file: (params) => execCapped(`cat -- ${shellQuote(params.path)}`),
   write_file: (params) => {
     const command = bunEval(

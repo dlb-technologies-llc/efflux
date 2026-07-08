@@ -7,7 +7,6 @@ import {
 } from "effect/unstable/httpapi"
 import {
   AgentError,
-  NotFoundError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
@@ -23,7 +22,7 @@ import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
 
 // Session keys are URL path segments backed by DO ids; constrain to safe
 // characters to prevent path-traversal-like attacks via `:name` / `:id`.
-const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
 const SafeId = Schema.String.pipe(
   Schema.refine((s): s is string => SAFE_ID_PATTERN.test(s), {
     title: "SafeId",
@@ -46,7 +45,6 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
   params: AgentParams,
   success: HistoryResponse,
-  error: NotFoundError,
 })
 
 const reset = HttpApiEndpoint.delete("reset", "/agents/:name/:id", {
