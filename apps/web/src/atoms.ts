@@ -1,7 +1,5 @@
 import { PromptRequest, StreamPart } from "@effect-flue/shared"
-import { Effect as Effect } from "effect"
-import { Schema as Schema } from "effect"
-import { Stream as Stream } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
 
@@ -59,37 +57,22 @@ export const resetAtom = runtime.fn(
 )
 
 /**
- * Schema-derived decoder for the family key (a JSON-encoded `{name, id}`).
- * Re-using a real schema keeps us off `as` casts when reading the parsed key.
- */
-const SessionArgsSchema = Schema.Struct({
-  name: Schema.String,
-  id: Schema.String,
-})
-const decodeSessionArgs = Schema.decodeUnknownSync(SessionArgsSchema)
-
-/**
  * Query atom (per-session): load persisted history. Uses `Atom.family` so each
  * unique `{name, id}` key memoises to the same underlying atom and the fetch
  * fires automatically on first subscribe - no setter call needed.
  *
- * Family key is `JSON.stringify({name, id})`; `Atom.family` memoises by
- * identity, so object literals would never match across renders.
+ * `Atom.family` memoises via `MutableHashMap`, which uses Effect's structural
+ * `Equal`/`Hash` — plain `{name, id}` literals match across renders, so no
+ * string-key encoding is needed.
  */
-export const historyAtom = Atom.family((key: string) =>
+export const historyAtom = Atom.family((args: SessionArgs) =>
   runtime.atom(
     Effect.fnUntraced(function*() {
-      const args = decodeSessionArgs(JSON.parse(key))
       const client = yield* ApiClient
       return yield* client.agents.history({ params: { name: args.name, id: args.id } })
     })(),
   ),
 )
-
-/**
- * Stable string key for `historyAtom`.
- */
-export const historyKey = (args: SessionArgs): string => JSON.stringify({ name: args.name, id: args.id })
 
 /**
  * Decode a single SSE `data: <json>` event into a `StreamPart`. Decode

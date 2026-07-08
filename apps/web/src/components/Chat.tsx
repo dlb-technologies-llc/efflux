@@ -3,7 +3,7 @@ import type { StreamPart } from "@effect-flue/shared"
 import { Cause, Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { historyAtom, historyKey, streamAtom } from "../atoms.ts"
+import { historyAtom, streamAtom } from "../atoms.ts"
 import { MessageList } from "./MessageList.tsx"
 
 export interface ChatProps {
@@ -17,10 +17,9 @@ export function Chat({ name, id }: ChatProps) {
   const [pending, setPending] = React.useState(false)
   const [streaming, setStreaming] = React.useState("")
 
-  const sessionAtom = React.useMemo(
-    () => historyAtom(historyKey({ name, id })),
-    [name, id],
-  )
+  // `Atom.family` memoises structurally (Equal/Hash), so a fresh `{name, id}`
+  // literal returns the same atom on every render — no useMemo needed.
+  const sessionAtom = historyAtom({ name, id })
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })

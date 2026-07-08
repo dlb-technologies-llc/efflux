@@ -1,4 +1,4 @@
-import { Schema as Schema } from "effect"
+import { Schema } from "effect"
 
 // Shared safe-identifier pattern for URL path segments AND R2 object keys.
 // The latter use applies to `skill` and `role` below, where unconstrained

@@ -1,4 +1,10 @@
 {
   "files": [],
-  "include": []
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./apps/api" },
+    { "path": "./apps/web" },
+    { "path": "./scripts" },
+    { "path": "./apps/api/container" }
+  ]
 }

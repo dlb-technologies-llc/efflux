@@ -1,15 +1,16 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2023"],
+    // TS 6 defaults target to ES2025; pin it (and a DOM-free lib) explicitly
+    // so Workers/Bun code never sees DOM globals from the implicit full lib.
+    "target": "ES2025",
+    "lib": ["ES2025"],
+    // "Preserve" implies moduleResolution "Bundler" and esModuleInterop, so
+    // neither needs to be spelled out here.
+    "module": "Preserve",
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "noEmit": true

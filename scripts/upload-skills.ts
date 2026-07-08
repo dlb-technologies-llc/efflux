@@ -3,6 +3,7 @@
 // uploads everything. Run with --dry-run to list what would be uploaded
 // without touching R2.
 
+import { $ } from "bun"
 import { readdir } from "node:fs/promises"
 import * as path from "node:path"
 
@@ -68,11 +69,8 @@ if (dryRun) {
 
 for (const { key, file } of uploads) {
   console.log(`uploading ${BUCKET}/${key}  <-  ${file}`)
-  const proc = Bun.spawn(
-    ["bunx", "wrangler", "r2", "object", "put", `${BUCKET}/${key}`, "--file", file, "--remote"],
-    { stdout: "inherit", stderr: "inherit" },
-  )
-  const exitCode = await proc.exited
+  const { exitCode } =
+    await $`bunx wrangler r2 object put ${`${BUCKET}/${key}`} --file ${file} --remote`.nothrow()
   if (exitCode !== 0) {
     console.error(`upload of ${BUCKET}/${key} failed with exit code ${exitCode}`)
     process.exit(exitCode)
