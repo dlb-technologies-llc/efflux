@@ -7,7 +7,7 @@ A deployable Cloudflare agent runtime built from Effect v4 on native Workers bin
 Single source of truth — the `flue-*` skills defer here.
 
 - `bun install` — install (Bun workspaces).
-- `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the three tsconfigs. There is NO lint or test script today.
+- `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the six tsconfigs (`packages/shared`, `apps/api`, `apps/web`, `apps/tui`, `scripts`, `apps/api/container`). There is NO lint or test script today.
 - `bun run build` — FE build + API typecheck.
 - `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + `bun scripts/upload-skills.ts`). Requires a local Docker daemon (builds the container image).
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
@@ -16,7 +16,7 @@ Single source of truth — the `flue-*` skills defer here.
 
 ## Architecture
 
-`wrangler.jsonc` declares everything: Worker `effect-flue` (entry `apps/api/src/index.ts`), DO bindings `AGENTS` (`Agent`) + `SANDBOX` (`Sandbox`, a container class built from `apps/api/container/Dockerfile`), R2 binding `SKILLS` (bucket `effect-flue-skills`), a daily cron, and FE assets from `apps/web/dist` (`run_worker_first` on `/agents/*` and `/tasks*`). Each `/agents/<name>/<id>` session routes to its own `Agent` DurableObject, which holds history, drives the model loop, and reaches the `Sandbox` container (Bash) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). Default model is `tencent/hy3:free` (testing tier — callers pass `model` per request for anything better). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
+`wrangler.jsonc` declares everything: Worker `effect-flue` (entry `apps/api/src/index.ts`), DO bindings `AGENTS` (`Agent`) + `SANDBOX` (`Sandbox`, a container class built from `apps/api/container/Dockerfile`) + `REGISTRY` (`Registry`, the singleton session index), R2 bindings `SKILLS` (bucket `effect-flue-skills`) + `SESSIONS` (bucket `effect-flue-sessions`, per-session workspace tarballs), a daily cron, and FE assets from `apps/web/dist` (`run_worker_first` on `/agents/*` and `/tasks*`). Each `/agents/<name>/<id>` session routes to its own `Agent` DurableObject, which holds the append-only event journal (DO SQLite) and the sandbox exec/hydrate seam; the Worker handler (`handlers.ts`) — NOT the DO — drives the hop-capped model loop and reaches the `Sandbox` container (Bash) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). Default model is `tencent/hy3:free` (testing tier — callers pass `model` per request for anything better). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
 
 ## Conventions
 
