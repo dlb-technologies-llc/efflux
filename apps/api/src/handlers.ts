@@ -479,12 +479,45 @@ export const AgentHandlers = HttpApiBuilder.group(
           // journal from any frame id reproduces the folded state.
           const lastSeq = yield* Ref.make(turn)
 
-          // Partial-hop text accumulator shared with the driver finalizer:
-          // on disconnect or mid-hop failure, whatever text streamed so far
-          // is flushed as an `assistant-text` event (the pre-journal code
+          // Partial-hop text accumulator shared with the finalizers: on
+          // disconnect or mid-hop failure, whatever text streamed so far is
+          // flushed as an `assistant-text` event (the pre-journal code
           // persisted partial turns the same way).
           let pendingHopText = ""
           let currentHop = 0
+
+          // Once-only flush of the partial hop text, for MID-HOP FAILURE
+          // endings (e.g. the model API dying between deltas) — those run
+          // finalizers normally. It deliberately does NOT try to cover
+          // client disconnect: workerd fires neither `request.signal`
+          // abort nor a prompt stream cancel when the client drops
+          // (verified live — see ISSUES.md "Client disconnect mid-SSE"),
+          // so no finalizer can run there. Instead the driver simply keeps
+          // going server-side, and the inline tool-event appends + hop-end
+          // batches preserve the turn's state until the runtime reaps the
+          // context; a turn with no `done` event reads as
+          // parked/incomplete, which is the designed semantic.
+          const flushPartialHopText = Effect.suspend(() => {
+            if (pendingHopText.length === 0) return Effect.void
+            const text = pendingHopText
+            pendingHopText = ""
+            return Effect.promise(() =>
+              agent.appendEvents([
+                eventJson(
+                  new JournalAssistantText({
+                    turn,
+                    hop: currentHop,
+                    text,
+                  }),
+                ),
+              ]),
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("Failed to flush partial hop text", cause),
+              ),
+              Effect.asVoid,
+            )
+          })
 
           // Effect AI's `streamText` runs ONE round per call (model →
           // resolve tool calls → end). We loop here so the model can react
@@ -689,34 +722,10 @@ export const AgentHandlers = HttpApiBuilder.group(
                   )
                 }
               }).pipe(
-                // Flush partial hop text on disconnect/failure BEFORE the
-                // queue closes; append failures log rather than defect.
-                Effect.ensuring(
-                  Effect.suspend(() => {
-                    if (pendingHopText.length === 0) return Effect.void
-                    const text = pendingHopText
-                    pendingHopText = ""
-                    return Effect.promise(() =>
-                      agent.appendEvents([
-                        eventJson(
-                          new JournalAssistantText({
-                            turn,
-                            hop: currentHop,
-                            text,
-                          }),
-                        ),
-                      ]),
-                    ).pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logError(
-                          "Failed to flush partial hop text",
-                          cause,
-                        ),
-                      ),
-                      Effect.asVoid,
-                    )
-                  }),
-                ),
+                // Flush partial hop text on driver failure BEFORE the queue
+                // closes (the response-stream finalizer below covers the
+                // disconnect path).
+                Effect.ensuring(flushPartialHopText),
                 Effect.ensuring(Queue.end(queue)),
                 Effect.tapCause((cause) => Queue.failCause(queue, cause)),
                 Effect.forkScoped,
@@ -864,6 +873,10 @@ export const AgentHandlers = HttpApiBuilder.group(
               }),
             ),
             Stream.encodeText,
+            // The disconnect-path flush: response-stream finalizers are the
+            // one place the runtime guarantees to run before request
+            // teardown (same slot the pre-journal `persistTurn` used).
+            Stream.ensuring(flushPartialHopText),
           )
 
           return HttpServerResponse.stream(sseFrames, {
