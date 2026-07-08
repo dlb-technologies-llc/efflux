@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 // Placeholder entry — replaced by the full Ink app in a later wave.
-export {}
+import { parseCliConfig } from "./cli.ts"
 
-console.error(
-  'Usage: bun run tui <name> <id> [--url URL] [--message TEXT] [--model M] [--skill S] [--role R]',
-)
+const config = parseCliConfig(process.argv.slice(2))
+console.error(`parsed: ${JSON.stringify(config)} — interactive mode not yet implemented`)
 process.exit(1)
