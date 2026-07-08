@@ -1,12 +1,12 @@
 ---
 name: flue-executing
-description: Execute a /flue-planning plan with wave-based parallel agents in an isolated worktree, then open a PR against main.
+description: Execute a /flue-planning plan with wave-based parallel agents in an isolated worktree, then open a PR against staging.
 argument-hint: "[plan-path]"
 ---
 
 # flue-executing
 
-Execute a plan produced by `/flue-planning` with wave-based parallel agents in an isolated worktree, verify against the live worker, and open a PR against `main`. Invoking this skill IS the approval to execute — there is no separate `APPROVED` state.
+Execute a plan produced by `/flue-planning` with wave-based parallel agents in an isolated worktree, verify against the live worker, and open a PR against `staging`. Feature PRs land on `staging`; `/flue-releasing` promotes `staging` → `main` when the user cuts a release. Invoking this skill IS the approval to execute — there is no separate `APPROVED` state.
 
 This skill gets sharpened by `/flue-postmortem` findings over future PRs.
 
@@ -19,7 +19,7 @@ This skill gets sharpened by `/flue-postmortem` findings over future PRs.
 - **Install:** `bun install`.
 - **Verify:** `bun run typecheck`. There is NO lint script and NO test script today — do not attempt `bun run lint` or `bun run test`.
 - **Deploy + live verification:** via `/flue-verifying`, run FROM the worktree (`cd <WORKTREE_PATH>`). The canonical deploy is `bun run deploy` (never bare `wrangler deploy` — only the script fires the predeploy FE build + skills upload; requires Docker); if a PreToolUse hook blocks it, run its exact steps instead per the `/flue-verifying` fallback (`bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`). ⚠️ ALL sessions share ONE deployed worker — deploys race and last deploy wins; redeploy before smoking if another session may have deployed since. Treat the repo `CLAUDE.md` "Commands" section as the command authority.
-- **Base branch:** `origin/main`. **Worktree task agent:** `flue-task-executor`.
+- **Base branch:** `origin/staging` (feature PRs target `staging`; only `/flue-releasing`'s promotion PR targets `main`). **Worktree task agent:** `flue-task-executor`.
 - **Plan status vocabulary (exact):** `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 - **Conventions:** merge commits only (never rebase/squash); never `--no-verify`; no `as` casts or `!` assertions; schema-first — types flow from Effect Schemas.
 - **Effect API truth:** the pinned `.claude/effect-smol` submodule (`packages/effect/src`, incl. `unstable/http`, `unstable/httpapi`) — never from memory and never via the `effect-agent` subagent (it reads a machine-global, unpinned checkout). Scope "existing usage" greps to `apps/ packages/`; reach into `.claude/effect-smol` deliberately.
@@ -39,11 +39,11 @@ Task IDs are unique; no two tasks in the same wave touch the same file; every de
 1. Branch name from plan metadata (`> **Branch:**`); worktree name = plan name (lowercase-hyphenated).
 2. Resolve base:
    ```bash
-   git fetch origin main
+   git fetch origin staging
    ```
-   `BASE_BRANCH=origin/main`.
+   `BASE_BRANCH=origin/staging`. If `origin/staging` doesn't exist yet, bootstrap it from main — `git fetch origin main && git push origin origin/main:refs/heads/staging` — then fetch it.
 
-   **Unmerged-branch base:** if the plan's `> **Base:**` is an open PR branch (the work amends an unmerged PR), or the target files don't exist on `origin/main` yet, set `BASE_BRANCH` to that branch's ref (`git fetch origin <branch>` → `origin/<branch>`). The work then folds into the open PR: REUSE that PR's branch — `git worktree add .claude/worktrees/<plan-name> <branch>` (no `-b`; `-b` errors on an existing branch) — so Step 6 finds the existing PR instead of opening a new one. If a new branch is genuinely needed off the unmerged base, its PR targets THAT branch, never `main` (a `main`-based PR would drag in the other PR's commits). Still a worktree — never a main-copy checkout.
+   **Unmerged-branch base:** if the plan's `> **Base:**` is an open PR branch (the work amends an unmerged PR), or the target files don't exist on `origin/staging` yet, set `BASE_BRANCH` to that branch's ref (`git fetch origin <branch>` → `origin/<branch>`). The work then folds into the open PR: REUSE that PR's branch — `git worktree add .claude/worktrees/<plan-name> <branch>` (no `-b`; `-b` errors on an existing branch) — so Step 6 finds the existing PR instead of opening a new one. If a new branch is genuinely needed off the unmerged base, its PR targets THAT branch, never `staging` (a `staging`-based PR would drag in the other PR's commits). Still a worktree — never a main-copy checkout.
 3. **Stale-leftover check first:** if `.claude/worktrees/<plan-name>` already exists on disk, `git worktree add` will refuse — and `git worktree remove` can't clear it (submodule block). Confirm with the user it's a dead leftover, then `rm -rf .claude/worktrees/<plan-name> && git worktree prune` before adding.
 
    Create the worktree **from BASE_BRANCH** (never from the current branch, and never by checking out a branch in the main copy; only `git worktree add`), set HTTPS push, disable auto-gc:
@@ -164,6 +164,6 @@ If the diff has any runtime surface, run `/flue-verifying` from the worktree (`c
 1. Existing PR? `gh pr list --head <branch> --json number,url` — if found, skip to updating the plan file.
 2. No commits vs `<BASE_BRANCH>` → skip the PR and notify the user.
 3. Push from the worktree: `git -C <WORKTREE_PATH> push -u origin <branch>`.
-4. `cd <WORKTREE_PATH> && gh pr create` against `main`. The body includes `Closes #N` when the plan closes an issue. The self-contained rule extends here: no other project/client/codebase named in commit messages or the PR body.
+4. `cd <WORKTREE_PATH> && gh pr create` against `staging`. The body uses **`Refs #N`** for related issues — NEVER `Closes #N` here: issues close when `/flue-releasing`'s staging→main promotion PR (which carries the `Closes #N` lines) merges, not when the feature lands on staging. The self-contained rule extends here: no other project/client/codebase named in commit messages or the PR body.
 5. Update the plan: Status → `PR_CREATED` and record a `> **PR:** <url>` line — edit ONLY the header block with an anchored edit (status strings like `DRAFT` can legitimately appear inside task bodies; a global replace once corrupted a plan).
 6. Display the PR URL and the worktree path — the worktree stays alive until `/flue-cleaning-up` removes it post-merge.

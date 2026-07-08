@@ -22,7 +22,7 @@ Single source of truth — the `flue-*` skills defer here.
 
 - Schema-first: all types flow from Effect Schemas — no `as` casts, no `!` assertions, no parallel type definitions.
 - Verification = deploy + hit the live worker (`/flue-verifying` checklist). Typecheck/build alone NEVER counts.
-- Base branch `main`. PRs that close issues use `Closes #N`. Merge commits only — never rebase/squash. Never `--no-verify`.
+- Branch flow: feature PRs target `staging` with `Refs #N`; `/flue-releasing` promotes staging→main with a PR carrying the `Closes #N` lines (issues close on release, not on feature landing). Merge commits only — never rebase/squash. Never `--no-verify`.
 - Effect v4 beta (`4.0.0-beta.94`): never write Effect APIs from memory. Authority order: this codebase's existing usage (grep scoped to `apps/ packages/`) → the pinned `.claude/effect-smol` submodule (`packages/effect/src` — core incl. `unstable/http`, `unstable/httpapi`; init once with `git submodule update --init .claude/effect-smol`) → Context7 MCP. Read the submodule directly — do NOT spawn the `effect-agent` subagent (it reads a machine-global, unpinned checkout). The repo-local `.claude/subrepos.json` records the pin (`pinned` field) and the submodule's `src`/`test` search globs.
 - Bumping the `effect` version means bumping EVERY pin location — package.json in all workspaces, the submodule gitlink, `.claude/subrepos.json` `pinned`, and prose literals in CLAUDE.md + `.claude/skills/`:
   ```
@@ -41,9 +41,9 @@ Read `ISSUES.md` at the repo root BEFORE touching Worker boot, secrets, DO RPC b
 Plans live in `~/c0de/plans/effect-flue/`; status vocabulary is `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 
 - `/flue-planning` — produce a wave-structured plan for a task; run before any nontrivial change.
-- `/flue-executing` — run a plan's waves as parallel agents in an isolated worktree (`.claude/worktrees/<plan-name>`) and open the PR against `main`.
+- `/flue-executing` — run a plan's waves as parallel agents in an isolated worktree (`.claude/worktrees/<plan-name>`) and open the PR against `staging`.
 - `/flue-creating-issues` — turn a rough problem statement into one well-formed `gh issue create`.
 - `/flue-verifying` — the deploy-and-live-smoke checklist; run before any PR with a runtime surface.
 - `/flue-postmortem` — pre-merge orchestration retrospective on a `PR_CREATED` plan; edits the `flue-*` skills.
 - `/flue-cleaning-up` — post-merge: remove the plan's worktree, delete the local branch, and archive the plan (`POSTMORTEM_COMPLETE` plans).
-- `/flue-releasing` — every merge to main is tagged + GitHub-released; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).
+- `/flue-releasing` — promote `staging`→`main` via a merge PR carrying the `Closes #N` lines, then tag + GitHub-release the merge; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).
