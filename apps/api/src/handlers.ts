@@ -97,6 +97,20 @@ export const AgentHandlers = HttpApiBuilder.group(
             agent.exec(command),
           )
 
+          // Turn-end workspace snapshot (durable workspace, #37). Every
+          // exec happens inside `loop`, so an `Effect.ensuring` on it runs
+          // after the workspace is final for this turn — on success AND
+          // failure. Swallow-and-log: a snapshot failure must never shadow
+          // the response.
+          const snapshotWorkspace = Effect.promise(() =>
+            agent.snapshotIfDirty(),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Workspace snapshot failed", cause),
+            ),
+            Effect.asVoid,
+          )
+
           // `Effect.tapCause` on the whole loop persists the user message
           // when the loop fails — same intent as the streaming handler's
           // `Stream.ensuring`. Append failures are swallowed with a logged
@@ -155,6 +169,7 @@ export const AgentHandlers = HttpApiBuilder.group(
           })
 
           const result = yield* loop.pipe(
+            Effect.ensuring(snapshotWorkspace),
             Effect.tapCause(() =>
               Effect.promise(() =>
                 agent.append([{ role: "user", content: payload.message }]),
@@ -340,6 +355,19 @@ export const AgentHandlers = HttpApiBuilder.group(
             agent.exec(command),
           )
 
+          // Turn-end workspace snapshot (durable workspace, #37) — runs in
+          // a stream finalizer alongside `persistTurn`, on success and
+          // interrupt alike. Swallow-and-log: a snapshot failure must
+          // never kill the SSE stream.
+          const snapshotWorkspace = Effect.promise(() =>
+            agent.snapshotIfDirty(),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("Workspace snapshot failed", cause),
+            ),
+            Effect.asVoid,
+          )
+
           const sseFrames = loopedStream.pipe(
             Stream.provide(AgentToolkitLayer),
             Stream.provide(bashRunner),
@@ -434,6 +462,7 @@ export const AgentHandlers = HttpApiBuilder.group(
             ),
             Stream.encodeText,
             Stream.ensuring(persistTurn),
+            Stream.ensuring(snapshotWorkspace),
           )
 
           return HttpServerResponse.stream(sseFrames, {
