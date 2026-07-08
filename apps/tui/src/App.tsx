@@ -78,7 +78,10 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
         setPending(true)
         try {
           await client.reset(name, id)
-          setEntries([{ kind: "info", text: "session reset" }])
+          // Append rather than replace: <Static> is append-only (it can't
+          // unprint scrollback), and shrinking the items array would leave
+          // this confirmation below Static's internal index — never rendered.
+          pushEntry({ kind: "info", text: "session reset — server history cleared" })
         } catch (error) {
           pushEntry({
             kind: "error",
