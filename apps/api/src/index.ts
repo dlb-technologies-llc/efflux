@@ -14,12 +14,15 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentHandlers, AgentStub } from "./handlers.ts"
+import { RegistryStub } from "./Registry.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
 
 // Durable Object classes must be exported from the Worker entry so the
-// runtime can find them (wrangler.jsonc binds AGENTS→Agent, SANDBOX→Sandbox).
+// runtime can find them (wrangler.jsonc binds AGENTS→Agent, SANDBOX→Sandbox,
+// REGISTRY→Registry).
 export { Agent } from "./Agent.ts"
+export { Registry } from "./Registry.ts"
 export { Sandbox } from "./Sandbox.ts"
 
 // `env.OPENROUTER_API_KEY` is a plain string binding. Guard empty/missing
@@ -86,6 +89,7 @@ const buildWebHandler = (
       const services = Layer.mergeAll(
         makeAiLayer(requireApiKey(env)),
         Layer.succeed(AgentStub, env.AGENTS),
+        Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
       )
       const handler = yield* HttpRouter.toHttpEffect(routerLayer)
@@ -139,10 +143,11 @@ const buildWebHandler = (
       // handler's requirements must be named explicitly — everything is
       // erased by `context` except the per-request HttpServerRequest/Scope.
       return HttpEffect.toWebHandlerWith<
-        AgentStub | SkillsBucket | LanguageModel.LanguageModel,
+        AgentStub | RegistryStub | SkillsBucket | LanguageModel.LanguageModel,
         | HttpServerRequest.HttpServerRequest
         | Scope.Scope
         | AgentStub
+        | RegistryStub
         | SkillsBucket
         | LanguageModel.LanguageModel
       >(context)(wrapped)

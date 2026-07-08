@@ -1,5 +1,63 @@
 # Known issues
 
+## Client disconnect mid-SSE: workerd runs NO disconnect callbacks — design for it
+
+**TL;DR:** When an SSE client drops mid-stream, workerd marks the request
+`Canceled` but (at compatibility date 2026-07-01) fires **neither**
+`request.signal`'s `abort` event **nor** a prompt `cancel()` on the response
+body `ReadableStream`. Effect finalizers (`Stream.ensuring`,
+`Effect.ensuring` on forked fibers) therefore never run for the
+disconnected request — even work pre-registered via `ctx.waitUntil` can't
+help, because the JS that would resolve it never executes. Any
+"persist-on-disconnect" design that relies on a finalizer silently does
+nothing.
+
+### How it was found (2026-07-08, #36 event journal)
+
+Three designs were deployed and probed live (kill `curl` mid-stream after
+25+ non-empty `text-delta` frames, then read the journal):
+
+1. `Effect.ensuring` flush on the forked stream driver — never ran.
+2. `Stream.ensuring` flush on the response stream (the slot the pre-journal
+   `persistTurn` used) + a `ctx.waitUntil` guard promise resolved by the
+   finalizer — never ran. This also means the OLD `persistTurn` never
+   actually persisted anything on disconnect; the whole turn (user message
+   included) was silently lost pre-journal.
+3. A plain `request.source.signal.addEventListener("abort", ...)` that
+   synchronously started the DO RPC and registered it with
+   `ctx.waitUntil` — the listener never fired.
+
+`wrangler tail` shows the request as `Canceled` with no further logs in all
+three cases.
+
+### What actually happens
+
+The server-side producer just keeps running after the client is gone —
+verified live: tool-call/tool-result appends and the hop-end batch landed
+30+ seconds after the client was killed. Production stops only when the
+producer blocks on the filled response queue or the runtime reaps the
+context.
+
+### Design consequence (how the journal handles it)
+
+Don't buffer state worker-side and flush at the end — write it as it
+happens:
+
+- The `user-message` journal event is appended BEFORE the model call, so a
+  disconnected turn always exists in the journal.
+- Tool events append inline as parts arrive; hop batches append at hop end.
+  Both keep landing after disconnect for as long as the driver survives.
+- A turn with no terminal `done`/`error` event is a legitimate journal
+  state meaning "parked/incomplete" (`scripts/verify-journal.ts` reports it
+  as PARKED; stream re-attach is #49's territory).
+
+The `flushPartialHopText` finalizer in `handlers.ts` covers mid-hop
+FAILURES (e.g. the model API dying between deltas) — those interrupt the
+stream through normal Effect channels and DO run finalizers. It knowingly
+does not cover disconnects.
+
+---
+
 ## `Cloudflare.Secret.bind()` from SecretsStore crashes Worker boot
 
 > **Historical (alchemy era).** Resolved by the wrangler migration (#29): alchemy is no longer used. Secrets are now `wrangler secret put OPENROUTER_API_KEY` (deployed) + `.dev.vars` (local).
