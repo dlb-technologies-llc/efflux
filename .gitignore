@@ -8,3 +8,4 @@ dist
 worker-configuration.d.ts
 .astro
 *.tsbuildinfo
+.worktrees/
