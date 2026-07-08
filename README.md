@@ -175,6 +175,8 @@ bun run typecheck                             # cf-typegen, then tsc --noEmit ac
 bun run build                                 # builds the FE then typechecks the Worker
 ```
 
+`.claude/effect-smol` is an optional pinned Effect-source submodule for AI-assisted development — `git submodule update --init .claude/effect-smol` to populate it; it is not a build prerequisite.
+
 `bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on `/agents/*` and `/tasks*`, so the same Worker serves both the HttpApi and the built FE on deploy.
 
 ## Deploy

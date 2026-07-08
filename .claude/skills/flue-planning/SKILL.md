@@ -19,7 +19,7 @@ This is v1 of the skill — deliberately lean. It gets sharpened by `/flue-postm
 - **Conventions:** base branch `main`; PRs that close issues use `Closes #N`; merge commits only (never rebase/squash); never `--no-verify`; no `as` casts or `!` assertions; schema-first — types flow from Effect Schemas; verification means deploy + hit the live worker, not typecheck/build alone.
 - **Plans dir:** `~/c0de/plans/effect-flue/`.
 - **Landmines:** `ISSUES.md` at repo root is the authority — consult it before planning anything that touches Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
-- **Effect v4 beta (`4.0.0-beta.94`):** never specify Effect APIs from memory. Authority order: this codebase's existing usage → local pinned source repos listed in `~/.claude/subrepos.json` (the `effect-smol` entry covers v4 betas) → Context7 MCP.
+- **Effect v4 beta (`4.0.0-beta.94`):** never specify Effect APIs from memory, and never via the `effect-agent` subagent (it reads a machine-global, unpinned checkout). Authority order: this codebase's existing usage → the pinned `.claude/effect-smol` submodule (`packages/effect/src` — core incl. `unstable/http`, `unstable/httpapi`; init once with `git submodule update --init .claude/effect-smol`) → Context7 MCP. The submodule ships what the published package strips: search its `packages/**/test/**/*.ts` (globs recorded in `.claude/subrepos.json`) for real usage examples and core-team design notes when specifying an unfamiliar API. Scope "existing usage" greps to `apps/ packages/` — the submodule adds thousands of `.ts` files that would otherwise dominate results; reach into `.claude/effect-smol` deliberately, as step 2.
 
 ## Process
 
