@@ -10,7 +10,9 @@ const HistorySchema = Schema.Array(Message)
 const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
 const decodeEventPayload = Schema.decodeUnknownEffect(JournalEventPayload)
 
-type PlainMessage = { role: "user" | "assistant"; content: string }
+// Plain (RPC-safe) message shape, derived from the Message schema's encoded
+// side so it can't drift from the wire contract.
+type PlainMessage = typeof Message.Encoded
 
 // Shape of the container server's `POST /exec` response body. Validated
 // before crossing the RPC fence so a misbehaving container can never leak
@@ -247,12 +249,33 @@ export class Agent extends DurableObject<Env> {
     return out
   }
 
+  // Clean-slate reset: clears the journal, the dirty flag, the durable R2
+  // workspace snapshot, AND wipes a live container's /workspace — so a session
+  // reset to start over gets a fresh transcript AND a fresh filesystem, not a
+  // dirty one the next Bash exec re-exposes.
   async reset(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
-    // AUTOINCREMENT keeps the seq counter — ids stay monotonic across
-    // resets (Last-Event-ID safe). Also drop any legacy blob a failed seed
-    // left behind.
+    // AUTOINCREMENT keeps the seq counter — ids stay monotonic across resets
+    // (Last-Event-ID safe). Also drop any legacy blob a failed seed left, and
+    // the workspace dirty flag.
     await this.ctx.storage.delete("history")
+    await this.ctx.storage.delete(Agent.#DIRTY_KEY)
+    const name = this.ctx.id.name
+    if (name === undefined) return
+    // Delete the R2 snapshot so a later wake re-hydrates to an empty workspace.
+    await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
+    // Wipe a currently-live container too (awaited, so a hydrated container is
+    // clean now, not just after it recycles). Best-effort: on failure the R2
+    // delete above still guarantees clean-on-next-hydrate.
+    try {
+      const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
+      const response = await sandbox.fetch("http://sandbox/reset", { method: "POST" })
+      if (!response.ok) {
+        console.error(`container reset failed ${response.status}: ${await response.text()}`)
+      }
+    } catch (error) {
+      console.error("container reset failed (workspace clears on next hydrate)", error)
+    }
   }
 
   // DO-storage key for the workspace dirty flag. Storage-backed (not an

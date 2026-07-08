@@ -133,8 +133,17 @@ const buildWebHandler = (
               )
             }
           }
+          // Infra failures (e.g. a rejecting DO RPC that becomes a defect)
+          // land here. Return a STRUCTURED 500 body so clients get a parseable
+          // shape, not an empty response; the full cause is logged, and the
+          // client-facing message stays generic (no internal leak).
           return Effect.logError("Unhandled worker cause", cause).pipe(
-            Effect.as(HttpServerResponse.empty({ status: 500 })),
+            Effect.as(
+              HttpServerResponse.jsonUnsafe(
+                { _tag: "InternalError", message: "internal server error" },
+                { status: 500 },
+              ),
+            ),
           )
         }),
       )
