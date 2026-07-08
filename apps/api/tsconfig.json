@@ -4,7 +4,7 @@
     "module": "Preserve",
     "moduleResolution": "Bundler",
     "lib": ["ESNext"],
-    "types": ["bun", "@cloudflare/workers-types"],
+    "types": [],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -13,5 +13,5 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src/**/*.ts", "../../alchemy.run.ts"]
+  "include": ["src/**/*.ts", "../../worker-configuration.d.ts"]
 }

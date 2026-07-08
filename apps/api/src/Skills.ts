@@ -3,35 +3,18 @@ import {
   RoleNotFoundError,
   SkillNotFoundError,
 } from "@effect-flue/shared"
-import * as r2 from "@distilled.cloud/cloudflare/r2"
-import type * as runtime from "@cloudflare/workers-types"
-import { Action } from "alchemy"
-import * as Cloudflare from "alchemy/Cloudflare"
 import { Context, Effect } from "effect"
-import { readdir, readFile } from "node:fs/promises"
-import * as path from "node:path"
 
 /**
- * R2 bucket binding for skill + role markdown bodies.
+ * Runtime handle to the skills bucket inside the Worker.
  *
- * No explicit `name` arg — alchemy generates `${app}-${stage}-Skills` so
- * dev and prod stages don't collide on object keys.
+ * Typed as the native `R2Bucket` binding (from the generated
+ * `worker-configuration.d.ts` globals) and provided per-isolate from
+ * `env.SKILLS`, so `loadSkillBody`'s requirement is just `SkillsBucket`.
  */
-export const Skills = Cloudflare.R2Bucket("Skills")
-
-/**
- * Runtime handle to the bucket inside a worker.
- *
- * We deliberately store the *native* `R2Bucket` (workerd's binding type)
- * rather than alchemy's `R2BucketClient` wrapper. The wrapper carries
- * `WorkerEnvironment` in every method's R channel; storing the resolved
- * native handle at the per-event entry keeps `loadSkillBody`'s requirement
- * down to just `SkillsBucket`.
- */
-export class SkillsBucket extends Context.Service<
-  SkillsBucket,
-  runtime.R2Bucket
->()("api/SkillsBucket") {}
+export class SkillsBucket extends Context.Service<SkillsBucket, R2Bucket>()(
+  "api/SkillsBucket",
+) {}
 
 // Per-isolate cache. Markdown bodies don't change without a redeploy
 // (which mints a new isolate), so caching for the lifetime of the isolate
@@ -96,98 +79,3 @@ export const loadRoleBody = (
     `roles/${name}.md`,
     (key) => new RoleNotFoundError({ role: name, key }),
   )
-
-// ── Deploy-time upload action ──────────────────────────────────────────────
-//
-// Resolves CF API services once (in the init Effect), then returns a runner
-// that walks `apps/api/skills/*.md` + `apps/api/roles/*.md` and PUTs each
-// file to R2 under a stable key. The `contentsHash` input is what alchemy
-// diffs against — when it changes, the runner re-runs and re-uploads.
-
-const isEnoent = (e: unknown): boolean => {
-  if (e === null || typeof e !== "object" || !("code" in e)) return false
-  const { code } = e
-  return code === "ENOENT"
-}
-
-export const UploadSkills = Action(
-  "UploadSkills",
-  Effect.gen(function* () {
-    const putObject = yield* r2.putObject
-    const { accountId } = yield* Cloudflare.CloudflareEnvironment
-
-    const uploadDir = (
-      bucketName: string,
-      jurisdiction: "default" | "eu" | "fedramp" | undefined,
-      dir: string,
-      keyPrefix: string,
-    ) =>
-      Effect.gen(function* () {
-        const listResult = yield* Effect.tryPromise({
-          try: async (): Promise<ReadonlyArray<string> | null> => {
-            try {
-              return await readdir(dir)
-            } catch (e) {
-              if (isEnoent(e)) return null
-              throw e
-            }
-          },
-          catch: (e) =>
-            new AgentError({
-              message: `Failed to list ${dir}: ${
-                e instanceof Error ? e.message : String(e)
-              }`,
-            }),
-        })
-
-        if (listResult === null) return
-
-        for (const entry of listResult) {
-          if (!entry.endsWith(".md")) continue
-          const body = yield* Effect.tryPromise({
-            try: () => readFile(path.join(dir, entry), "utf8"),
-            catch: (e) =>
-              new AgentError({
-                message: `Failed to read ${entry}: ${
-                  e instanceof Error ? e.message : String(e)
-                }`,
-              }),
-          })
-          yield* putObject({
-            accountId,
-            bucketName,
-            objectName: `${keyPrefix}/${entry}`,
-            body,
-            contentType: "text/markdown",
-            ...(jurisdiction !== undefined
-              ? { cfR2Jurisdiction: jurisdiction }
-              : {}),
-          })
-        }
-      })
-
-    return Effect.fn("UploadSkills.run")(function* (input: {
-      contentsHash: string
-      bucketName: string
-      jurisdiction?: "default" | "eu" | "fedramp"
-      // Absolute paths resolved by `alchemy.run.ts` from `import.meta.dirname`
-      // so the upload is independent of the deploy CWD.
-      skillsDir: string
-      rolesDir: string
-    }) {
-      yield* uploadDir(
-        input.bucketName,
-        input.jurisdiction,
-        input.skillsDir,
-        "skills",
-      )
-      yield* uploadDir(
-        input.bucketName,
-        input.jurisdiction,
-        input.rolesDir,
-        "roles",
-      )
-      return { contentsHash: input.contentsHash }
-    })
-  }),
-)
