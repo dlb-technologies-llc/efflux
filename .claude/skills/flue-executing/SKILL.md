@@ -14,7 +14,7 @@ This is v1 of the skill — deliberately lean. It gets sharpened by `/flue-postm
 
 - **Install:** `bun install`.
 - **Verify:** `bun run typecheck`. There is NO lint script and NO test script today — do not attempt `bun run lint` or `bun run test`.
-- **Deploy + live verification:** via `/flue-verifying` (deploy is `bun run deploy` — always the package script, never bare `bun alchemy deploy`, so the `predeploy` build hook fires). Treat the repo `CLAUDE.md` "Commands" section as the command authority.
+- **Deploy + live verification:** via `/flue-verifying` (deploy is `bun run deploy` — always the package script, never bare `wrangler deploy`, so predeploy builds the FE and uploads skills; requires Docker). Treat the repo `CLAUDE.md` "Commands" section as the command authority.
 - **Base branch:** `origin/main`.
 - **Plan status vocabulary (exact):** `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 - **Conventions:** merge commits only (never rebase/squash); never `--no-verify`; no `as` casts or `!` assertions; schema-first — types flow from Effect Schemas.

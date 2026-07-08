@@ -10,7 +10,7 @@ import { Atom as Atom } from "effect/unstable/reactivity"
  *
  * `baseUrl: window.location.origin` resolves to the Worker in production
  * (same Worker serves both `/` and `/agents/*`) and to Vite's dev server in
- * development — Vite's proxy forwards `/agents/*` to the local alchemy dev
+ * development — Vite's proxy forwards `/agents/*` to the local `wrangler dev`
  * Worker on port 8787 (see `vite.config.ts`).
  */
 export class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(

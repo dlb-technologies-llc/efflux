@@ -1,20 +1,22 @@
 # effect-flue
 
-A deployable Cloudflare agent runtime built from Effect v4 + alchemy primitives — no framework required.
+A deployable Cloudflare agent runtime built from Effect v4 on native Workers bindings (`wrangler.jsonc`) — no framework required.
 
 ## Commands
 
-Single source of truth — the `flue-*` skills defer here. **These change when issue #29 (drop alchemy for wrangler) lands — update this section first.**
+Single source of truth — the `flue-*` skills defer here.
 
 - `bun install` — install (Bun workspaces).
-- `bun run typecheck` — `tsc --noEmit` across the three tsconfigs. There is NO lint or test script today.
+- `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the three tsconfigs. There is NO lint or test script today.
 - `bun run build` — FE build + API typecheck.
-- `bun run deploy` / `bun run dev` / `bun run tail` — ALWAYS the package scripts, never bare `bun alchemy …`: only the script fires the `predeploy` hook that builds the FE, so the bare form can ship a stale `apps/web/dist`.
+- `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + `bun scripts/upload-skills.ts`). Requires a local Docker daemon (builds the container image).
+- `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
+- Secrets: `wrangler secret put OPENROUTER_API_KEY` for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives `OPENROUTER_API_KEY` from it.
 - `bun scripts/agent.ts <name> <id> --message "..." [--url <worker-url>] [--model M] [--skill S] [--role R]` — live smoke CLI (`BASE_URL` env also works).
 
 ## Architecture
 
-The Worker (`apps/api`) routes each `/agents/<name>/<id>` session to its own `Agent` DurableObject, which holds history, drives the model loop, and reaches a Container (Bash sandbox) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
+`wrangler.jsonc` declares everything: Worker `effect-flue` (entry `apps/api/src/index.ts`), DO bindings `AGENTS` (`Agent`) + `SANDBOX` (`Sandbox`, a container class built from `apps/api/container/Dockerfile`), R2 binding `SKILLS` (bucket `effect-flue-skills`), a daily cron, and FE assets from `apps/web/dist` (`run_worker_first` on `/agents/*` and `/tasks*`). Each `/agents/<name>/<id>` session routes to its own `Agent` DurableObject, which holds history, drives the model loop, and reaches the `Sandbox` container (Bash) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). Default model is `tencent/hy3:free` (testing tier — callers pass `model` per request for anything better). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
 
 ## Conventions
 
@@ -37,3 +39,4 @@ Plans live in `~/c0de/plans/effect-flue/`; status vocabulary is `DRAFT → IN_PR
 - `/flue-verifying` — the deploy-and-live-smoke checklist; run before any PR with a runtime surface.
 - `/flue-postmortem` — pre-merge orchestration retrospective on a `PR_CREATED` plan; edits the `flue-*` skills.
 - `/flue-cleaning-up` — post-merge: delete the local branch and archive the plan (`POSTMORTEM_COMPLETE` plans).
+- `/flue-releasing` — every merge to main is tagged + GitHub-released; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).

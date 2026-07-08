@@ -21,9 +21,9 @@ bun run typecheck
 bun run deploy
 ```
 
-Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck). Bare `bun alchemy deploy` skips the hook and can ship a stale `apps/web/dist`.
+Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck) and `bun scripts/upload-skills.ts`. Bare `wrangler deploy` skips the hook and can ship a stale `apps/web/dist`. `bun run deploy` needs a local Docker daemon (it builds the Sandbox container image).
 
-Capture the worker URL from the deploy output. If it isn't printed, use the `[worker-url]` argument or `BASE_URL` env; if neither exists, ask the user.
+Capture the worker URL from the deploy output (currently https://effect-flue.david-0e2.workers.dev). If it isn't printed, use the `[worker-url]` argument or `BASE_URL` env; if neither exists, ask the user.
 
 ### 2. Smoke a session
 
@@ -50,6 +50,8 @@ curl -N -X POST <URL>/agents/support/smoke-<YYYYMMDD-HHMM>/stream \
 ```
 
 Expect multiple SSE `data:` frames (`text-delta` parts) ending in a `done` frame.
+
+OPTIONAL (only for changes touching the stream path): mid-stream disconnect probe — kill an SSE client mid-stream, then GET history and expect the partial assistant text persisted.
 
 ### 5. Subagent task
 

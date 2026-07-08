@@ -1,79 +1,113 @@
 import { Message } from "@effect-flue/shared"
-import * as Cloudflare from "alchemy/Cloudflare"
-import { Effect, Schema } from "effect"
-import { Sandbox } from "./Sandbox.ts"
+import { DurableObject } from "cloudflare:workers"
+import { Effect, Result, Schema } from "effect"
 
 const HistorySchema = Schema.Array(Message)
 
+const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
+const encodeHistory = Schema.encodeEffect(HistorySchema)
+
 type PlainMessage = { role: "user" | "assistant"; content: string }
+
+// Shape of the container server's `POST /exec` response body. Validated
+// before crossing the RPC fence so a misbehaving container can never leak
+// an arbitrary object into the `Bash` tool's typed contract.
+const ExecResultSchema = Schema.Struct({
+  exitCode: Schema.Number,
+  stdout: Schema.String,
+  stderr: Schema.String,
+})
+
+type ExecResult = (typeof ExecResultSchema)["Type"]
+
+const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
 
 /**
  * Storage + sandbox Durable Object.
  *
- * Holds the persistent message history for one agent session and binds the
- * sandbox Container that backs the `Bash` tool. The DO RPC boundary requires
- * `structuredClone`-able values, so every method accepts and returns plain
- * objects (no `Schema.Class` instances). See ISSUES.md.
+ * Holds the persistent message history for one agent session and reaches
+ * the sandbox Container that backs the `Bash` tool. The DO RPC boundary
+ * requires `structuredClone`-able values, so every method accepts and
+ * returns plain objects (no `Schema.Class` instances). See ISSUES.md.
  */
-export default class Agent extends Cloudflare.DurableObjectNamespace<Agent>()(
-  "Agents",
-  Effect.gen(function* () {
-    // OUTER init — only the `Sandbox` class is referenced. The `.make()`
-    // runtime lives in `Sandbox.runtime.ts` and is tree-shaken out of
-    // this DO's bundle.
-    const sandbox = yield* Cloudflare.Container.bind(Sandbox)
+export class Agent extends DurableObject<Env> {
+  // Decode failures die (defect) — history corruption is a bug, not a
+  // typed error the caller can recover from. Matches the previous
+  // `Effect.orDie` semantics: the rejection crosses RPC as a thrown error
+  // and the handler-side `Effect.promise` wrapper turns it into a defect.
+  #loadHistory(): Promise<ReadonlyArray<Message>> {
+    return this.ctx.storage.get("history").then((raw) =>
+      raw === undefined
+        ? Promise.resolve<ReadonlyArray<Message>>([])
+        : Effect.runPromise(decodeHistory(raw).pipe(Effect.orDie)),
+    )
+  }
 
-    // @effect-diagnostics-next-line returnEffectInGen:off
-    return Effect.gen(function* () {
-      const state = yield* Cloudflare.DurableObjectState
+  async history(): Promise<Array<PlainMessage>> {
+    const msgs = await this.#loadHistory()
+    return msgs.map((m) => ({ role: m.role, content: m.content }))
+  }
 
-      // INNER per-instance — start the container and grab a typed handle.
-      // `Cloudflare.start` calls `ensureRunning` lazily; the container
-      // boots on first `exec`.
-      const container = yield* Cloudflare.start(sandbox)
+  async append(msgs: ReadonlyArray<PlainMessage>): Promise<number> {
+    const existing = await this.#loadHistory()
+    const updated: ReadonlyArray<Message> = [
+      ...existing,
+      ...msgs.map((m) => new Message({ role: m.role, content: m.content })),
+    ]
+    const encoded = await Effect.runPromise(
+      encodeHistory(updated).pipe(Effect.orDie),
+    )
+    await this.ctx.storage.put("history", encoded)
+    return updated.length
+  }
 
-      const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
-      const encodeHistory = Schema.encodeEffect(HistorySchema)
+  async reset(): Promise<void> {
+    await this.ctx.storage.delete("history")
+  }
 
-      const loadHistoryRaw = state.storage.get<unknown>("history").pipe(
-        Effect.flatMap((raw) =>
-          raw === undefined
-            ? Effect.succeed<ReadonlyArray<Message>>([])
-            : decodeHistory(raw),
-        ),
-        Effect.orDie,
-      )
-
-      const toPlain = (
-        msgs: ReadonlyArray<Message>,
-      ): ReadonlyArray<PlainMessage> =>
-        msgs.map((m) => ({ role: m.role, content: m.content }))
-
-      return {
-        history: () => loadHistoryRaw.pipe(Effect.map(toPlain)),
-
-        append: (msgs: ReadonlyArray<PlainMessage>) =>
-          Effect.gen(function* () {
-            const existing = yield* loadHistoryRaw
-            const updated: ReadonlyArray<Message> = [
-              ...existing,
-              ...msgs.map(
-                (m) => new Message({ role: m.role, content: m.content }),
-              ),
-            ]
-            const encoded = yield* encodeHistory(updated).pipe(Effect.orDie)
-            yield* state.storage.put("history", encoded)
-            return updated.length
-          }),
-
-        reset: () => state.storage.delete("history").pipe(Effect.asVoid),
-
-        // `container.exec` already returns a plain `{exitCode, stdout,
-        // stderr}` object because the runtime catches PlatformError into
-        // an inline error result (see Sandbox.runtime.ts). No class
-        // instances cross the RPC fence.
-        exec: (command: string) => container.exec(command),
+  // Spawn-level failures (container unreachable, malformed response, bad
+  // status) never throw across RPC — they map to `{exitCode: -1, stdout:
+  // "", stderr: <why>}` so the `Bash` tool reports them in-band.
+  async exec(command: string): Promise<ExecResult> {
+    try {
+      const name = this.ctx.id.name
+      if (name === undefined) {
+        throw new Error(
+          "Agent DO id has no name — sandbox exec requires a getByName-derived id",
+        )
       }
-    })
-  }),
-) {}
+      // One sandbox container per agent session: derive the Sandbox DO id
+      // from this Agent's own name so `agents/<name>/<id>` always lands on
+      // the same container.
+      const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
+      const response = await sandbox.fetch("http://sandbox/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command }),
+      })
+      const text = await response.text()
+      if (!response.ok) {
+        return {
+          exitCode: -1,
+          stdout: "",
+          stderr: `sandbox responded ${response.status}: ${text}`,
+        }
+      }
+      const decoded = decodeExecResult(JSON.parse(text))
+      if (Result.isFailure(decoded)) {
+        return {
+          exitCode: -1,
+          stdout: "",
+          stderr: `sandbox returned malformed exec result: ${text}`,
+        }
+      }
+      return decoded.success
+    } catch (e) {
+      return {
+        exitCode: -1,
+        stdout: "",
+        stderr: e instanceof Error ? e.message : String(e),
+      }
+    }
+  }
+}

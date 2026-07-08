@@ -13,7 +13,6 @@ import {
   SubagentTaskResponse,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import * as Cloudflare from "alchemy/Cloudflare"
 import {
   Cause,
   Context,
@@ -36,13 +35,16 @@ import {
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import type Agent from "./Agent.ts"
+import type { Agent } from "./Agent.ts"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 import { AgentToolkit, AgentToolkitLayer, BashRunner } from "./Tools.ts"
 
-export type AgentNamespace = Cloudflare.DurableObjectNamespace<Agent>
+// Native DO namespace binding (global type from worker-configuration.d.ts).
+// The `Agent` generic gives `getByName(...)` a typed RPC stub whose methods
+// return `Promise`s — call sites wrap them in `Effect.promise` below.
+export type AgentNamespace = DurableObjectNamespace<Agent>
 
 export class AgentStub extends Context.Service<AgentStub, AgentNamespace>()(
   "api/AgentStub",
@@ -103,7 +105,7 @@ export const AgentHandlers = HttpApiBuilder.group(
           const agents = yield* AgentStub
           const agent = agents.getByName(`${params.name}/${params.id}`)
 
-          const history = yield* agent.history().pipe(Effect.orDie)
+          const history = yield* Effect.promise(() => agent.history())
           const { skillBody, roleBody } = yield* loadOverlay(
             payload.skill,
             payload.role,
@@ -128,7 +130,9 @@ export const AgentHandlers = HttpApiBuilder.group(
           // dependency on `BashRunner` without leaking it to the Worker root.
           const bashRunner = Layer.succeed(
             BashRunner,
-            BashRunner.of({ exec: (command) => agent.exec(command) }),
+            BashRunner.of({
+              exec: (command) => Effect.promise(() => agent.exec(command)),
+            }),
           )
 
           // `Effect.tapCause` on the whole loop persists the user message
@@ -190,18 +194,18 @@ export const AgentHandlers = HttpApiBuilder.group(
 
           const result = yield* loop.pipe(
             Effect.tapCause(() =>
-              agent
-                .append([{ role: "user", content: payload.message }])
-                .pipe(Effect.catchCause(() => Effect.void)),
+              Effect.promise(() =>
+                agent.append([{ role: "user", content: payload.message }]),
+              ).pipe(Effect.catchCause(() => Effect.void)),
             ),
           )
 
-          const messageCount = yield* agent
-            .append([
+          const messageCount = yield* Effect.promise(() =>
+            agent.append([
               { role: "user", content: payload.message },
               { role: "assistant", content: result.finalText },
-            ])
-            .pipe(Effect.orDie)
+            ]),
+          )
 
           return new PromptResponse({
             text: result.finalText,
@@ -216,7 +220,7 @@ export const AgentHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const agents = yield* AgentStub
           const agent = agents.getByName(`${params.name}/${params.id}`)
-          const history = yield* agent.history().pipe(Effect.orDie)
+          const history = yield* Effect.promise(() => agent.history())
           return new HistoryResponse({
             history: history.map(
               (m) => new Message({ role: m.role, content: m.content }),
@@ -228,7 +232,7 @@ export const AgentHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const agents = yield* AgentStub
           const agent = agents.getByName(`${params.name}/${params.id}`)
-          yield* agent.reset().pipe(Effect.orDie)
+          yield* Effect.promise(() => agent.reset())
         }),
       )
       .handle("stream", ({ params, payload }) =>
@@ -245,7 +249,7 @@ export const AgentHandlers = HttpApiBuilder.group(
             LanguageModel.LanguageModel | SkillsBucket
           >()
 
-          const history = yield* agent.history().pipe(Effect.orDie)
+          const history = yield* Effect.promise(() => agent.history())
           const { skillBody, roleBody } = yield* loadOverlay(
             payload.skill,
             payload.role,
@@ -361,7 +365,7 @@ export const AgentHandlers = HttpApiBuilder.group(
               text.length === 0
                 ? [userMessage]
                 : [userMessage, { role: "assistant" as const, content: text }]
-            yield* agent.append(turn).pipe(
+            yield* Effect.promise(() => agent.append(turn)).pipe(
               Effect.catchCause((cause) =>
                 Effect.sync(() =>
                   console.error(
@@ -378,7 +382,9 @@ export const AgentHandlers = HttpApiBuilder.group(
           // dependency on `BashRunner` without leaking it to the Worker root.
           const bashRunner = Layer.succeed(
             BashRunner,
-            BashRunner.of({ exec: (command) => agent.exec(command) }),
+            BashRunner.of({
+              exec: (command) => Effect.promise(() => agent.exec(command)),
+            }),
           )
 
           const sseFrames = loopedStream.pipe(

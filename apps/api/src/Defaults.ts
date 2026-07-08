@@ -1,1 +1,1 @@
-export const DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+export const DEFAULT_MODEL = "tencent/hy3:free"
