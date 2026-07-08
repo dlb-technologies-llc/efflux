@@ -121,9 +121,5 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     ),
-  Bash: (params) =>
-    Effect.gen(function* () {
-      const runner = yield* BashRunner
-      return yield* runner.exec(params.command)
-    }),
+  Bash: (params) => BashRunner.use((runner) => runner.exec(params.command)),
 })

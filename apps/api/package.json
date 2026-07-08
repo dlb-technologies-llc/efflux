@@ -8,12 +8,12 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/containers": "^0.0.28",
+    "@cloudflare/containers": "^0.3.7",
     "@effect-flue/shared": "workspace:*",
-    "@effect/ai-openrouter": "4.0.0-beta.66",
-    "effect": "4.0.0-beta.66"
+    "@effect/ai-openrouter": "4.0.0-beta.94",
+    "effect": "4.0.0-beta.94"
   },
   "devDependencies": {
-    "typescript": "^5.6.0"
+    "typescript": "^6.0.3"
   }
 }

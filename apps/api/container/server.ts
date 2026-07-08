@@ -37,8 +37,8 @@ const runCommand = async (command: string): Promise<ExecResult> => {
   })
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    proc.stdout.text(),
+    proc.stderr.text(),
   ])
   return { exitCode, stdout, stderr }
 }
@@ -73,16 +73,11 @@ Bun.serve({
   // command that runs longer than the idle window. 0 disables it; the DO
   // fetch (and Cloudflare's own limits) bound the request instead.
   idleTimeout: 0,
-  fetch: async (request) => {
-    const url = new URL(request.url)
-    if (request.method === "POST" && url.pathname === "/exec") {
-      return handleExec(request)
-    }
-    if (request.method === "GET" && url.pathname === "/") {
-      return new Response("Sandbox container (POST /exec)", { status: 200 })
-    }
-    return new Response("Not Found", { status: 404 })
+  routes: {
+    "/exec": { POST: handleExec },
+    "/": { GET: () => new Response("Sandbox container (POST /exec)", { status: 200 }) },
   },
+  fetch: () => new Response("Not Found", { status: 404 }),
 })
 
 console.log(`Sandbox container listening on port ${port}`)

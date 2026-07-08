@@ -36,10 +36,17 @@ import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { Agent } from "./Agent.ts"
+import {
+  MAX_TOOL_HOPS,
+  composeMessages,
+  loadOverlay,
+  makeBashRunnerLayer,
+  shouldContinueToolLoop,
+} from "./AgentLoop.ts"
 import { DEFAULT_MODEL } from "./Defaults.ts"
-import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
+import type { SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
-import { AgentToolkit, AgentToolkitLayer, BashRunner } from "./Tools.ts"
+import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
 
 // Native DO namespace binding (global type from worker-configuration.d.ts).
 // The `Agent` generic gives `getByName(...)` a typed RPC stub whose methods
@@ -49,41 +56,6 @@ export type AgentNamespace = DurableObjectNamespace<Agent>
 export class AgentStub extends Context.Service<AgentStub, AgentNamespace>()(
   "api/AgentStub",
 ) {}
-
-// Compose the OpenRouter message array as
-// `[system: skill, system: role?, ...history, user]`.
-// System messages are NOT persisted to history — only user + assistant.
-const composeMessages = (input: {
-  skillBody: string
-  roleBody: string | undefined
-  history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
-  message: string
-}): ReadonlyArray<{
-  role: "system" | "user" | "assistant"
-  content: string
-}> => {
-  const systemMessages =
-    input.roleBody !== undefined
-      ? [
-          { role: "system" as const, content: input.skillBody },
-          { role: "system" as const, content: input.roleBody },
-        ]
-      : [{ role: "system" as const, content: input.skillBody }]
-  return [
-    ...systemMessages,
-    ...input.history,
-    { role: "user" as const, content: input.message },
-  ]
-}
-
-// Resolve skill + optional role bodies from R2. Default skill is `"support"`.
-// Failures surface as `AgentError` on the endpoint's typed error channel.
-const loadOverlay = (skill: string | undefined, role: string | undefined) =>
-  Effect.gen(function* () {
-    const skillBody = yield* loadSkillBody(skill ?? "support")
-    const roleBody = role !== undefined ? yield* loadRoleBody(role) : undefined
-    return { skillBody, roleBody }
-  })
 
 // Discriminated union of our SSE-bound StreamPart variants. Used to type
 // the post-filterMap stream so subsequent `Stream.tap`/`Stream.map`
@@ -118,21 +90,11 @@ export const AgentHandlers = HttpApiBuilder.group(
             message: payload.message,
           })
 
-          // Effect AI's `generateText` runs ONE round per call: it asks the
-          // model, resolves any tool calls the model emitted, and returns
-          // the merged content array. It does NOT continue the conversation
-          // so the model can react to the tool results. We loop here until
-          // `finishReason !== "tool-calls"` or hop cap is hit.
-          const MAX_TOOL_HOPS = 8
-
           // Per-request BashRunner bound to this DO instance's `agent.exec`.
           // Provided into the toolkit pipe below to satisfy `BashTool`'s
           // dependency on `BashRunner` without leaking it to the Worker root.
-          const bashRunner = Layer.succeed(
-            BashRunner,
-            BashRunner.of({
-              exec: (command) => Effect.promise(() => agent.exec(command)),
-            }),
+          const bashRunner = makeBashRunnerLayer((command) =>
+            agent.exec(command),
           )
 
           // `Effect.tapCause` on the whole loop persists the user message
@@ -178,7 +140,7 @@ export const AgentHandlers = HttpApiBuilder.group(
               finalText = response.text
               finalFinishReason = response.finishReason
 
-              if (response.finishReason !== "tool-calls") break
+              if (!shouldContinueToolLoop(response.finishReason)) break
 
               // Feed the assistant tool-call message + tool-result messages
               // back into the prompt so the next iteration lets the model
@@ -254,8 +216,8 @@ export const AgentHandlers = HttpApiBuilder.group(
             payload.skill,
             payload.role,
           )
-          const userMessage = {
-            role: "user" as const,
+          const userMessage: { role: "user"; content: string } = {
+            role: "user",
             content: payload.message,
           }
           const messages = composeMessages({
@@ -267,14 +229,6 @@ export const AgentHandlers = HttpApiBuilder.group(
 
           const buffer = yield* Ref.make("")
           const toolCallCount = yield* Ref.make(0)
-
-          // Same as the prompt handler: Effect AI's `streamText` runs ONE
-          // round (model → tool calls → tool results) and ends. We loop so
-          // the model can react to the tool results, concatenating each
-          // iteration's part stream into the SSE output. Intermediate
-          // `finish: tool-calls` frames are filtered so the FE sees ONE
-          // final `done` frame at the end.
-          const MAX_TOOL_HOPS = 8
 
           // Effect AI's `streamText` runs ONE round per call (model →
           // resolve tool calls → end). We loop here so the model can react
@@ -323,14 +277,18 @@ export const AgentHandlers = HttpApiBuilder.group(
                           lastFinishReason = part.reason
                           // Suppress intermediate finish frames; only the
                           // terminal finish (next branch) reaches the FE.
-                          if (part.reason === "tool-calls") return
+                          if (shouldContinueToolLoop(part.reason)) return
                         }
                         yield* Queue.offer(queue, part)
                       }),
                     ),
                   )
 
-                  if (lastFinishReason !== "tool-calls") break
+                  if (
+                    lastFinishReason === undefined ||
+                    !shouldContinueToolLoop(lastFinishReason)
+                  )
+                    break
                   promptValue = Prompt.concat(
                     promptValue,
                     Prompt.fromResponseParts(collected),
@@ -361,18 +319,16 @@ export const AgentHandlers = HttpApiBuilder.group(
           // explicit error trail at the point of failure.
           const persistTurn = Effect.gen(function* () {
             const text = yield* Ref.get(buffer)
-            const turn =
+            const turn: Array<{
+              role: "user" | "assistant"
+              content: string
+            }> =
               text.length === 0
                 ? [userMessage]
-                : [userMessage, { role: "assistant" as const, content: text }]
+                : [userMessage, { role: "assistant", content: text }]
             yield* Effect.promise(() => agent.append(turn)).pipe(
               Effect.catchCause((cause) =>
-                Effect.sync(() =>
-                  console.error(
-                    "Failed to persist chat turn:",
-                    Cause.pretty(cause),
-                  ),
-                ),
+                Effect.logError("Failed to persist chat turn", cause),
               ),
             )
           })
@@ -380,11 +336,8 @@ export const AgentHandlers = HttpApiBuilder.group(
           // Per-request BashRunner bound to this DO instance's `agent.exec`.
           // Provided into the toolkit pipe below to satisfy `BashTool`'s
           // dependency on `BashRunner` without leaking it to the Worker root.
-          const bashRunner = Layer.succeed(
-            BashRunner,
-            BashRunner.of({
-              exec: (command) => Effect.promise(() => agent.exec(command)),
-            }),
+          const bashRunner = makeBashRunnerLayer((command) =>
+            agent.exec(command),
           )
 
           const sseFrames = loopedStream.pipe(

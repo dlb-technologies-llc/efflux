@@ -28,12 +28,12 @@ import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 // generateText. Subagents therefore cannot themselves call tools
 // (including `spawn_subagent`). Do not add a `toolkit` parameter here
 // without designing depth tracking first. See SpawnSubagentTool.ts.
-export const runSubagent = (args: {
+export const runSubagent = Effect.fn("runSubagent")(function* (args: {
   readonly prompt: string
   readonly skill?: string
   readonly role?: string
   readonly model?: string
-}): Effect.Effect<
+}): Effect.fn.Return<
   {
     readonly text: string
     readonly model: string
@@ -41,48 +41,47 @@ export const runSubagent = (args: {
   },
   AgentError | SkillNotFoundError | RoleNotFoundError,
   LanguageModel.LanguageModel | SkillsBucket
-> =>
-  Effect.gen(function* () {
-    const skillBody =
-      args.skill !== undefined ? yield* loadSkillBody(args.skill) : undefined
-    const roleBody =
-      args.role !== undefined ? yield* loadRoleBody(args.role) : undefined
+> {
+  const skillBody =
+    args.skill !== undefined ? yield* loadSkillBody(args.skill) : undefined
+  const roleBody =
+    args.role !== undefined ? yield* loadRoleBody(args.role) : undefined
 
-    const messages: Array<{ role: "system" | "user"; content: string }> = []
-    if (skillBody !== undefined) {
-      messages.push({ role: "system", content: skillBody })
-    }
-    if (roleBody !== undefined) {
-      messages.push({ role: "system", content: roleBody })
-    }
-    messages.push({ role: "user", content: args.prompt })
+  const messages: Array<{ role: "system" | "user"; content: string }> = []
+  if (skillBody !== undefined) {
+    messages.push({ role: "system", content: skillBody })
+  }
+  if (roleBody !== undefined) {
+    messages.push({ role: "system", content: roleBody })
+  }
+  messages.push({ role: "user", content: args.prompt })
 
-    const call = LanguageModel.generateText({ prompt: messages })
-    // Per-call model override via OpenRouter's Config service. When the
-    // caller didn't supply `model`, fall back to the layer's default.
-    const withModel =
-      args.model !== undefined
-        ? OpenRouterLanguageModel.withConfigOverride(call, {
-            model: args.model,
-          })
-        : call
+  const call = LanguageModel.generateText({ prompt: messages })
+  // Per-call model override via OpenRouter's Config service. When the
+  // caller didn't supply `model`, fall back to the layer's default.
+  const withModel =
+    args.model !== undefined
+      ? OpenRouterLanguageModel.withConfigOverride(call, {
+          model: args.model,
+        })
+      : call
 
-    const response = yield* withModel.pipe(
-      Effect.catch((cause) =>
-        Effect.fail(
-          new AgentError({
-            message:
-              cause instanceof Error
-                ? cause.message
-                : `runSubagent failed: ${String(cause)}`,
-          }),
-        ),
+  const response = yield* withModel.pipe(
+    Effect.catch((cause) =>
+      Effect.fail(
+        new AgentError({
+          message:
+            cause instanceof Error
+              ? cause.message
+              : `runSubagent failed: ${String(cause)}`,
+        }),
       ),
-    )
+    ),
+  )
 
-    return {
-      text: response.text,
-      model: args.model ?? DEFAULT_MODEL,
-      finishReason: response.finishReason,
-    }
-  })
+  return {
+    text: response.text,
+    model: args.model ?? DEFAULT_MODEL,
+    finishReason: response.finishReason,
+  }
+})

@@ -163,8 +163,8 @@ const isApiPath = (pathname: string): boolean =>
 // Daily heartbeat cron — exercises the same skill-loading path the prompt
 // handler uses, against the support skill. The trigger is registered
 // top-level in wrangler.jsonc.
-const cronEffect = (controller: ScheduledController, env: Env) =>
-  Effect.gen(function* () {
+const cronEffect = Effect.fn("cronHeartbeat")(
+  function* (controller: ScheduledController, env: Env) {
     const apiKey = requireApiKey(env)
     const skillBody = yield* loadSkillBody("support").pipe(
       Effect.provideService(SkillsBucket, env.SKILLS),
@@ -183,12 +183,15 @@ const cronEffect = (controller: ScheduledController, env: Env) =>
       Effect.provide(makeAiLayer(apiKey)),
     )
     yield* Effect.log(`cron ${controller.cron}: ${response.text}`)
-  }).pipe(
-    // `tapCause` BEFORE `catchCause` is load-bearing — without it,
-    // transient OpenRouter failures vanish silently.
-    Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
-    Effect.catchCause(() => Effect.void),
-  )
+  },
+  // `tapCause` BEFORE `catchCause` is load-bearing — without it,
+  // transient OpenRouter failures vanish silently.
+  (effect) =>
+    effect.pipe(
+      Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
+      Effect.catchCause(() => Effect.void),
+    ),
+)
 
 export default {
   fetch(request, env, _ctx): Promise<Response> {
