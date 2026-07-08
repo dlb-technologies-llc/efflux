@@ -11,6 +11,7 @@ import {
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
+import { JournalResponse, SessionsResponse } from "./Journal.ts"
 import {
   HistoryResponse,
   PromptRequest,
@@ -69,12 +70,32 @@ const task = HttpApiEndpoint.post("task", "/tasks", {
   error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
+// Paginated read of the session's append-only event journal. `after` is an
+// exclusive seq cursor (feed the previous page's `nextAfter` back in);
+// `limit` is clamped server-side to 1..500 (default 100).
+const journal = HttpApiEndpoint.get("journal", "/agents/:name/:id/journal", {
+  params: AgentParams,
+  query: {
+    after: Schema.optionalKey(Schema.NumberFromString),
+    limit: Schema.optionalKey(Schema.NumberFromString),
+  },
+  success: JournalResponse,
+})
+
+// Session registry: every session that has ever received a user message,
+// most recently active first.
+const sessions = HttpApiEndpoint.get("sessions", "/agents", {
+  success: SessionsResponse,
+})
+
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
   .add(history)
   .add(reset)
   .add(stream)
   .add(task)
+  .add(journal)
+  .add(sessions)
 
 // `.middleware(SchemaErrorMiddleware)` is called AFTER `.add(AgentGroup)`,
 // so per `HttpApi.middleware` semantics the middleware applies to every

@@ -247,41 +247,6 @@ export class Agent extends DurableObject<Env> {
     return out
   }
 
-  /**
-   * Compatibility shim for the pre-journal handlers: writes plain
-   * user/assistant messages as journal events and returns the folded
-   * message count. Removed once the handlers journal events directly.
-   */
-  async append(msgs: ReadonlyArray<PlainMessage>): Promise<number> {
-    const now = Date.now()
-    let lastTurn = 0
-    let sawUserMessage = false
-    for (const message of msgs) {
-      if (message.role === "user") {
-        lastTurn = this.#insert(
-          now,
-          "user-message",
-          JSON.stringify({ _tag: "user-message", content: message.content }),
-        )
-        sawUserMessage = true
-      } else {
-        this.#insert(
-          now,
-          "assistant-text",
-          JSON.stringify({
-            _tag: "assistant-text",
-            turn: lastTurn,
-            hop: 0,
-            text: message.content,
-          }),
-        )
-      }
-    }
-    if (sawUserMessage) await this.#registerSession(now)
-    const history = await this.history()
-    return history.length
-  }
-
   async reset(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
     // AUTOINCREMENT keeps the seq counter — ids stay monotonic across
