@@ -64,18 +64,20 @@ const loadBody = <E>(
     return body
   })
 
-export const loadSkillBody = (
+export const loadSkillBody = Effect.fn("loadSkillBody")(function* (
   name: string,
-): Effect.Effect<string, SkillNotFoundError | AgentError, SkillsBucket> =>
-  loadBody(
+): Effect.fn.Return<string, SkillNotFoundError | AgentError, SkillsBucket> {
+  return yield* loadBody(
     `skills/${name}.md`,
     (key) => new SkillNotFoundError({ skill: name, key }),
   )
+})
 
-export const loadRoleBody = (
+export const loadRoleBody = Effect.fn("loadRoleBody")(function* (
   name: string,
-): Effect.Effect<string, RoleNotFoundError | AgentError, SkillsBucket> =>
-  loadBody(
+): Effect.fn.Return<string, RoleNotFoundError | AgentError, SkillsBucket> {
+  return yield* loadBody(
     `roles/${name}.md`,
     (key) => new RoleNotFoundError({ role: name, key }),
   )
+})
