@@ -63,6 +63,8 @@ Expect multiple SSE `data:` frames (`text-delta` parts) ending in a `done` frame
 
 OPTIONAL (MANDATORY for changes touching the stream path): mid-stream disconnect probe — kill an SSE client mid-stream, then GET history and expect the partial assistant text persisted. Timing matters: kill only AFTER non-empty `text-delta` frames are flowing (reasoning models emit empty deltas for many seconds first) — a fixed short timer produces a false "nothing persisted" because there was nothing to persist yet. Ask for a long deterministic output (e.g. "a numbered list of 30 facts") and kill ~20s in.
 
+**KNOWN-FAILING (pre-existing, #54):** on client disconnect NOTHING persists — not even the user message; `wrangler tail` shows the stream request `Canceled` with no subsequent `Agent.append` and no "Failed to persist chat turn" log. Reproduced on unmodified `main` (`1b937bbb`, 2026-07-08). If the probe fails with exactly this signature, record it as pre-existing #54 in the report — do NOT redeploy `main` to re-baseline (that archaeology is already done). Any OTHER failure shape (partial persistence, error frames, stream not `Canceled`) is your change's problem. Remove this note when #54 closes.
+
 ### 5. Subagent task
 
 ```bash
@@ -91,7 +93,7 @@ bun scripts/agent.ts support smoke-<YYYYMMDD-HHMM> \
   --message "Run \`uname -a\` in your sandbox and tell me the output." --url <URL>
 ```
 
-Expect real command output in the reply. Model tool choice is nondeterministic — retry once with a more explicit instruction before declaring failure.
+Expect real command output in the reply. Pass `--model` with a capable tool-calling model (e.g. `openai/gpt-4o-mini`) — the default `tencent/hy3:free` flakes at tool choice, and a no-tool reply then looks like a code failure when it isn't. Model tool choice is still nondeterministic — retry once with a more explicit instruction (AFTER pinning the model) before declaring failure.
 
 ### 7. Cleanup
 
