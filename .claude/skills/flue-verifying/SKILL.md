@@ -14,12 +14,22 @@ There are no lint or test scripts in this repo — the live checklist below is t
 
 Run every step; report a per-check pass/fail table at the end.
 
+### 0. Validate the API key first
+
+```bash
+curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep OPENROUTER_API_KEY .env | cut -d= -f2-)"
+```
+
+Expect key metadata, not a 401 — a dead/rotated key once burned a full deploy cycle before surfacing as `InvalidKey`. If the key changed, re-run `wrangler secret put OPENROUTER_API_KEY` before deploying.
+
 ### 1. Typecheck and deploy
 
 ```bash
 bun run typecheck
 bun run deploy
 ```
+
+If a hook/policy blocks the `deploy` package script, run its exact steps directly instead: `bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`.
 
 Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck) and `bun scripts/upload-skills.ts`. Bare `wrangler deploy` skips the hook and can ship a stale `apps/web/dist`. `bun run deploy` needs a local Docker daemon (it builds the Sandbox container image).
 
@@ -51,7 +61,7 @@ curl -N -X POST <URL>/agents/support/smoke-<YYYYMMDD-HHMM>/stream \
 
 Expect multiple SSE `data:` frames (`text-delta` parts) ending in a `done` frame.
 
-OPTIONAL (only for changes touching the stream path): mid-stream disconnect probe — kill an SSE client mid-stream, then GET history and expect the partial assistant text persisted.
+OPTIONAL (MANDATORY for changes touching the stream path): mid-stream disconnect probe — kill an SSE client mid-stream, then GET history and expect the partial assistant text persisted. Timing matters: kill only AFTER non-empty `text-delta` frames are flowing (reasoning models emit empty deltas for many seconds first) — a fixed short timer produces a false "nothing persisted" because there was nothing to persist yet. Ask for a long deterministic output (e.g. "a numbered list of 30 facts") and kill ~20s in.
 
 ### 5. Subagent task
 

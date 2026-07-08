@@ -57,7 +57,7 @@ Notes are auto-generated from PRs since the previous tag.
 
 ## Catch-up (multiple untagged merges)
 
-If several merges landed on `main` untagged, tag only the current HEAD of main with ONE release covering all of them. The bump is the highest type in the batch: any `feat` → MINOR, else PATCH. Don't retro-tag intermediate commits.
+Every commit to `main` gets its OWN release — including backfill. If several merges landed untagged, tag EACH untagged first-parent commit individually, oldest → newest (`git rev-list --reverse --first-parent <last-tag>..origin/main`), bumping per that commit's type (feat → MINOR, else PATCH), pushing tags one at a time, then `gh release create` for each oldest → newest so generated notes diff against the previous tag. Never collapse a batch into one catch-up release. (Established when the pre-release history was backfilled as 0.1.0–0.13.0, one release per commit.)
 
 ---
 
