@@ -21,6 +21,7 @@ import { AgentStub } from "./AgentStub.ts"
 import { resolveConfig } from "./Defaults.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
+import type { KnowledgeSearch } from "./Knowledge.ts"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
 import { RegistryStub } from "./Registry.ts"
 import { buildSessionToolkit } from "./SessionToolkit.ts"
@@ -167,7 +168,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
-        const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
+        const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const resolved = yield* loadResolvedConfig(agent)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
@@ -195,7 +196,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
-        const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
+        const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const approved = payload.approved ?? true
 
         const res = yield* Effect.promise(async () =>

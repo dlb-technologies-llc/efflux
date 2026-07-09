@@ -13,6 +13,7 @@ Single source of truth — the `flue-*` skills defer here.
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
 - Secrets: `wrangler secret put OPENROUTER_API_KEY` for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives `OPENROUTER_API_KEY` from it.
 - `bun scripts/agent.ts <name> <id> --message "..." [--url <worker-url>] [--model M] [--skill S] [--role R]` — live smoke CLI (`BASE_URL` env also works).
+- `bun run openai-smoke <name> <id> [--url <worker-url>]` — stock OpenAI-SDK smoke: configures the session (`openai/gpt-4o-mini`, `Bash:allow`), then drives a tool-using conversation (non-stream + stream) through the `/v1` facade and confirms the session in `GET /v1/models`.
 
 ## Architecture
 

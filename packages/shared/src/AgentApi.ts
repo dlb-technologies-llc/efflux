@@ -14,11 +14,19 @@ import {
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
+import { ToolsResponse } from "./Meta.ts"
+import {
+  KnowledgeItemResponse,
+  KnowledgeListResponse,
+  PutKnowledgeRequest,
+} from "./Knowledge.ts"
 import {
   ApprovalDecision,
   HistoryResponse,
   PromptRequest,
   PromptResponse,
+  SafeId,
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
@@ -28,15 +36,6 @@ import {
   SkillContentResponse,
   SkillListResponse,
 } from "./Skills.ts"
-
-const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
-/** Safe identifier for `:name` / `:id` path segments backed by DO ids — constrains characters to prevent path-traversal-style attacks. */
-const SafeId = Schema.String.pipe(
-  Schema.refine((s): s is string => SAFE_ID_PATTERN.test(s), {
-    title: "SafeId",
-    description: "alphanumeric, hyphen, underscore; 1-128 chars",
-  }),
-)
 
 const AgentParams = Schema.Struct({
   name: SafeId,
@@ -157,12 +156,39 @@ const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
   error: [AgentError, SkillNotFoundError],
 })
 
+/** Static toolkit inventory for the Tools panel — no params, no declared errors. */
+const tools = HttpApiEndpoint.get("tools", "/meta/tools", {
+  success: ToolsResponse,
+})
+
+/** Meta/introspection endpoints. */
+export const MetaGroup = HttpApiGroup.make("meta").add(tools)
+
 /** All skill CRUD endpoints grouped. */
 export const SkillsGroup = HttpApiGroup.make("skills")
   .add(listSkills)
   .add(getSkill)
   .add(putSkill)
   .add(deleteSkill)
+
+/** Every knowledge item with status, for polling until `completed`. */
+const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
+  success: KnowledgeListResponse,
+  error: AgentError,
+})
+
+/** Upsert a knowledge document's text by name. */
+const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
+  params: Schema.Struct({ name: SafeId }),
+  payload: PutKnowledgeRequest,
+  success: KnowledgeItemResponse,
+  error: AgentError,
+})
+
+/** All knowledge endpoints grouped. */
+export const KnowledgeGroup = HttpApiGroup.make("knowledge")
+  .add(listKnowledge)
+  .add(putKnowledge)
 
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
@@ -177,8 +203,30 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(getConfig)
   .add(putConfig)
 
+/** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
+const chatCompletions = HttpApiEndpoint.post("chatCompletions", "/v1/chat/completions", {
+  payload: ChatCompletionRequest,
+  success: Schema.String.pipe(
+    HttpApiSchema.asText({ contentType: "text/event-stream" }),
+  ),
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+})
+
+/** OpenAI-compatible model list — every registered session as `agent:<name>:<id>`. */
+const listModels = HttpApiEndpoint.get("listModels", "/v1/models", {
+  success: ModelsResponse,
+})
+
+/** OpenAI-compatible facade endpoints grouped. */
+export const V1Group = HttpApiGroup.make("v1")
+  .add(chatCompletions)
+  .add(listModels)
+
 /** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
+  .add(V1Group)
+  .add(KnowledgeGroup)
+  .add(MetaGroup)
   .middleware(SchemaErrorMiddleware) {}

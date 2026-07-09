@@ -11,6 +11,7 @@ import {
 } from "@effect-flue/shared"
 import { Cause, Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
+import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { isBlockedHost } from "./Ssrf.ts"
 import { runSubagent } from "./Subagent.ts"
@@ -313,6 +314,20 @@ export const WebFetchTool = Tool.make("web_fetch", {
   needsApproval: needsApprovalFor("web_fetch"),
 })
 
+/** Default passage count for search_knowledge; bounds tool output fed back into the prompt. */
+const DEFAULT_KNOWLEDGE_RESULTS = 5
+
+export const SearchKnowledgeTool = Tool.make("search_knowledge", {
+  description:
+    "Search the workspace knowledge base (indexed documents) for passages relevant to a query. Returns the top matching passages with their source filename and relevance score, or 'No relevant knowledge found.' Ground answers in these passages instead of guessing. Indexing is asynchronous — a just-uploaded document may not be searchable immediately.",
+  parameters: Schema.Struct({
+    query: Schema.String.annotate({ description: "Natural-language search query." }),
+  }),
+  success: Schema.String,
+  dependencies: [KnowledgeSearch],
+  needsApproval: needsApprovalFor("search_knowledge"),
+})
+
 const webFetchError = (message: string): WebFetchResultValue => ({
   status: 0,
   contentType: "",
@@ -444,6 +459,7 @@ export const AgentToolkit = Toolkit.make(
   GlobTool,
   GrepTool,
   WebFetchTool,
+  SearchKnowledgeTool,
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
@@ -558,5 +574,15 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       return resolveRule(rules, "web_fetch") === "deny"
         ? webFetchError("denied by session policy")
         : yield* runWebFetch(params.url)
+    }),
+  search_knowledge: (params) =>
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
+      return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
+        Effect.map(capText),
+        Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
+        Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
+      )
     }),
 })

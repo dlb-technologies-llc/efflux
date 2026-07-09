@@ -25,6 +25,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
+import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { ApprovalRules } from "./Tools.ts"
@@ -37,7 +38,7 @@ type FramedPart = { sse: SseStreamPart; seq: number | undefined }
 
 interface RunStreamingTurnInput {
   agent: ReturnType<AgentNamespace["getByName"]>
-  ambient: Context.Context<LanguageModel.LanguageModel | SkillsBucket>
+  ambient: Context.Context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>
   turn: number
   startHop: number
   initialPrompt: Prompt.Prompt

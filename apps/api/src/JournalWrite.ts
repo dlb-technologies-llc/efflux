@@ -1,5 +1,7 @@
 import {
   AgentError,
+  JournalAssistantText,
+  JournalDone,
   JournalEventPayload,
   JournalHopMessages,
   JournalToolCall,
@@ -142,4 +144,39 @@ export const openTurn = (
       })
     }
     return turn
+  })
+
+/**
+ * One batched hop-end journal write shared by every turn driver: granular tool
+ * events + authoritative `hop-messages` + display text + usage, and `done` only
+ * when supplied (a terminal, non-parked finish).
+ */
+export const journalHopBatch = (input: {
+  agent: ReturnType<AgentNamespace["getByName"]>
+  turn: number
+  hop: number
+  model: string
+  parts: ReadonlyArray<AiResponse.AnyPart>
+  text: string
+  done?: { finishReason: AiResponse.FinishReason; toolCallCount: number }
+}) =>
+  Effect.gen(function* () {
+    const events = buildHopEvents({ turn: input.turn, hop: input.hop, parts: input.parts })
+    if (input.text.length > 0) {
+      events.push(new JournalAssistantText({ turn: input.turn, hop: input.hop, text: input.text }))
+    }
+    const usage = buildUsageEvent({ turn: input.turn, hop: input.hop, model: input.model, parts: input.parts })
+    if (usage !== undefined) events.push(usage)
+    if (input.done !== undefined) {
+      events.push(
+        new JournalDone({
+          turn: input.turn,
+          finishReason: input.done.finishReason,
+          toolCallCount: input.done.toolCallCount,
+        }),
+      )
+    }
+    if (events.length > 0) {
+      yield* Effect.promise(() => input.agent.appendEvents(events.map(eventJson)))
+    }
   })

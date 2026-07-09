@@ -123,7 +123,7 @@ sibling agents share this worktree. Do NOT run `bun run typecheck` or deploy —
 cd <WORKTREE_PATH> && bun run typecheck
 ```
 
-Fix failures before moving on.
+Fix failures before moving on. A wave boundary should be typecheck-clean by construction — `/flue-planning` co-locates an interface with its consumers in one wave precisely so no boundary is left red; a failure here is a real defect, not an expected structural gap.
 
 **4b. Post-wave compliance check** — sub-agent self-audits are unreliable; grep the wave's changed `.ts`/`.tsx` files centrally:
 
