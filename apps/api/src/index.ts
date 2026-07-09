@@ -16,6 +16,7 @@ import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
 import { RegistryStub } from "./Registry.ts"
+import { SkillHandlers } from "./SkillHandlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
 
@@ -50,6 +51,7 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 /** Env-independent layer stack, built once per isolate; env-dependent services are provided later from the first request. */
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
+  Layer.provide(SkillHandlers),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
     Etag.layer,
@@ -126,11 +128,14 @@ const buildWebHandler = (
 /** Per-isolate handler cache; env is stable for the isolate's lifetime, so build once on the first API request. */
 let webHandler: Promise<(request: Request) => Promise<Response>> | undefined
 
+/** MUST stay in exact lockstep with `assets.run_worker_first` in wrangler.jsonc — a path missing there is served the SPA before `fetch` runs. */
 const isApiPath = (pathname: string): boolean =>
   pathname === "/agents" ||
   pathname.startsWith("/agents/") ||
   pathname === "/tasks" ||
-  pathname.startsWith("/tasks/")
+  pathname.startsWith("/tasks/") ||
+  pathname === "/skills" ||
+  pathname.startsWith("/skills/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(
