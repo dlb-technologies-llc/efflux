@@ -37,6 +37,8 @@ Capture the worker URL from the deploy output (currently https://effect-flue.dav
 
 Concurrent sessions share this ONE worker — last deploy wins. If another session may have deployed since yours, redeploy immediately before smoking; a mid-smoke deploy by another session invalidates results (rerun the affected checks). Container-image changes roll out gradually — when the diff touches the container, probe it first (e.g. a `pwd`-style Bash-tool turn) before judging dependent checks.
 
+**New-route changes:** if the diff adds a path to `run_worker_first` (wrangler.jsonc) or `isApiPath` (index.ts), the asset-routing config can lag ONE deploy — a GET to the new path returns the SPA `index.html` (200, `content-type: text/html`) and a non-GET 405s from the asset handler, even when the Worker code is correct. Redeploy once and re-probe the **exact new path**; the route is verified only when it returns the Worker's JSON, not SPA HTML. (Seen #41: `GET /skills` served the SPA after the first deploy; a second deploy fixed it.)
+
 ### 2. Smoke a session
 
 ```bash

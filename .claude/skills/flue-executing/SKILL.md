@@ -125,6 +125,8 @@ cd <WORKTREE_PATH> && bun run typecheck
 
 Fix failures before moving on.
 
+**Expected-red windows (contract-first ordering).** If the plan header declares an `> **Expected-red:**` typecheck error (a group/endpoint registered in an early wave whose handlers are wired in a later wave), match it EXACTLY — same `file:line` + message — and treat only that one error as tolerated for the intervening waves; ANY other error is a real failure to fix now. The tree MUST be fully green by the declared wiring wave; if it is not, stop and investigate. Commit these intervening waves with a message line noting the expected-until-wave-N error so the red typecheck isn't mistaken for a broken commit.
+
 **4b. Post-wave compliance check** — sub-agent self-audits are unreliable; grep the wave's changed `.ts`/`.tsx` files centrally:
 
 ```bash
