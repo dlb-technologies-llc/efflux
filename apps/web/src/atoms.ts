@@ -1,20 +1,11 @@
-import { makePromptRequest, PromptRequest, StreamPart, streamAgentSse } from "@effect-flue/shared"
+import { ApprovalDecision, makePromptRequest, PromptRequest, StreamPart, streamAgentSse } from "@effect-flue/shared"
 import { Effect, Schema, Stream } from "effect"
 import { HttpBody, HttpClient } from "effect/unstable/http"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
+import type { SessionArgs } from "./session.ts"
 
 const encodePromptRequest = Schema.encodeSync(PromptRequest)
-
-/**
- * Arguments shared by every per-session atom.
- *
- * `name` + `id` form the Durable-Object-backed session key on the Worker.
- */
-export interface SessionArgs {
-  readonly name: string
-  readonly id: string
-}
 
 /**
  * Query atom (per-session): load persisted history. `Atom.family` memoises via
@@ -62,6 +53,33 @@ export const streamAtom = runtime.fn(
           JSON.stringify(encodePromptRequest(makePromptRequest(args.message, args))),
           "application/json",
         )
+        return streamAgentSse(client.post(url, { body }), StreamPart).pipe(
+          Stream.scan(noParts, (parts, part) => [...parts, part]),
+        )
+      }),
+    ),
+)
+
+const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)
+
+/** POST an approval decision to /approve/:eventId and emit the continuation turn as an accumulated StreamPart[] — symmetric with streamAtom (same SSE transport, same Stream.scan accumulator). */
+export const approveStreamAtom = runtime.fn(
+  (
+    args: SessionArgs & {
+      readonly eventId: number
+      readonly approved: boolean
+      readonly reason?: string
+    },
+  ) =>
+    Stream.unwrap(
+      Effect.gen(function*() {
+        const client = yield* HttpClient.HttpClient
+        const url = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/approve/${args.eventId}`
+        const decision = new ApprovalDecision({
+          approved: args.approved,
+          ...(args.reason !== undefined ? { reason: args.reason } : {}),
+        })
+        const body = HttpBody.text(JSON.stringify(encodeApprovalDecision(decision)), "application/json")
         return streamAgentSse(client.post(url, { body }), StreamPart).pipe(
           Stream.scan(noParts, (parts, part) => [...parts, part]),
         )

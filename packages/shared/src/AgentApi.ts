@@ -14,6 +14,7 @@ import {
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { ToolsResponse } from "./Meta.ts"
 import {
   ApprovalDecision,
   HistoryResponse,
@@ -157,6 +158,14 @@ const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
   error: [AgentError, SkillNotFoundError],
 })
 
+/** Static toolkit inventory for the Tools panel — no params, no declared errors. */
+const tools = HttpApiEndpoint.get("tools", "/meta/tools", {
+  success: ToolsResponse,
+})
+
+/** Meta/introspection endpoints. */
+export const MetaGroup = HttpApiGroup.make("meta").add(tools)
+
 /** All skill CRUD endpoints grouped. */
 export const SkillsGroup = HttpApiGroup.make("skills")
   .add(listSkills)
@@ -181,4 +190,5 @@ export const AgentGroup = HttpApiGroup.make("agents")
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
+  .add(MetaGroup)
   .middleware(SchemaErrorMiddleware) {}

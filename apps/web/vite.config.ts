@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     proxy: {
       "/agents": "http://localhost:8787",
+      "/skills": "http://localhost:8787",
+      "/tasks": "http://localhost:8787",
+      "/meta": "http://localhost:8787",
     },
   },
 })
