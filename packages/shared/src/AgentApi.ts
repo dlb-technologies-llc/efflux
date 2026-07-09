@@ -22,6 +22,11 @@ import {
   SubagentTaskResponse,
 } from "./Schemas.ts"
 import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
+import {
+  PutSkillRequest,
+  SkillContentResponse,
+  SkillListResponse,
+} from "./Skills.ts"
 
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
 /** Safe identifier for `:name` / `:id` path segments backed by DO ids — constrains characters to prevent path-traversal-style attacks. */
@@ -110,6 +115,41 @@ const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
 })
 
+/** Every skill in R2, name plus description. */
+const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
+  success: SkillListResponse,
+  error: AgentError,
+})
+
+/** One skill's full markdown by name. */
+const getSkill = HttpApiEndpoint.get("getSkill", "/skills/:name", {
+  params: Schema.Struct({ name: SafeId }),
+  success: SkillContentResponse,
+  error: [AgentError, SkillNotFoundError],
+})
+
+/** Upsert a skill's markdown by name. */
+const putSkill = HttpApiEndpoint.put("putSkill", "/skills/:name", {
+  params: Schema.Struct({ name: SafeId }),
+  payload: PutSkillRequest,
+  success: SkillContentResponse,
+  error: AgentError,
+})
+
+/** Remove a skill by name. */
+const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
+  params: Schema.Struct({ name: SafeId }),
+  success: Schema.Void,
+  error: [AgentError, SkillNotFoundError],
+})
+
+/** All skill CRUD endpoints grouped. */
+export const SkillsGroup = HttpApiGroup.make("skills")
+  .add(listSkills)
+  .add(getSkill)
+  .add(putSkill)
+  .add(deleteSkill)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -124,4 +164,5 @@ export const AgentGroup = HttpApiGroup.make("agents")
 /** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
+  .add(SkillsGroup)
   .middleware(SchemaErrorMiddleware) {}
