@@ -15,6 +15,11 @@ import {
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
 import {
+  KnowledgeItemResponse,
+  KnowledgeListResponse,
+  PutKnowledgeRequest,
+} from "./Knowledge.ts"
+import {
   ApprovalDecision,
   HistoryResponse,
   PromptRequest,
@@ -164,6 +169,25 @@ export const SkillsGroup = HttpApiGroup.make("skills")
   .add(putSkill)
   .add(deleteSkill)
 
+/** Every knowledge item with status, for polling until `completed`. */
+const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
+  success: KnowledgeListResponse,
+  error: AgentError,
+})
+
+/** Upsert a knowledge document's text by name. */
+const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
+  params: Schema.Struct({ name: SafeId }),
+  payload: PutKnowledgeRequest,
+  success: KnowledgeItemResponse,
+  error: AgentError,
+})
+
+/** All knowledge endpoints grouped. */
+export const KnowledgeGroup = HttpApiGroup.make("knowledge")
+  .add(listKnowledge)
+  .add(putKnowledge)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -181,4 +205,5 @@ export const AgentGroup = HttpApiGroup.make("agents")
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
+  .add(KnowledgeGroup)
   .middleware(SchemaErrorMiddleware) {}

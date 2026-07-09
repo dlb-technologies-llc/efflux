@@ -12,6 +12,7 @@ import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/a
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildHopEvents, buildUsageEvent, eventJson } from "./JournalWrite.ts"
+import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 
@@ -50,7 +51,7 @@ interface RunPromptTurnInput {
  */
 export const runPromptTurn = (
   input: RunPromptTurnInput,
-): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket> => {
+): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
   const { agent, initialPrompt, model, payloadModel, rules, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
