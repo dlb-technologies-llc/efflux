@@ -19,6 +19,15 @@ export const resolveRule = (
   name: string,
 ): typeof ToolRule.Type => rules[name] ?? "allow"
 
+/** One external MCP server the session may pull tools from. v1: public servers only, no auth headers (see #46 follow-up). */
+export const McpServerConfig = Schema.Struct({
+  name: SafeName,
+  url: Schema.String.check(Schema.isMaxLength(2048)),
+})
+
+/** Decoded shape of `McpServerConfig`. */
+export type McpServer = typeof McpServerConfig.Type
+
 /** Partial session config overrides; PUT replaces the stored overrides wholesale, unset fields fall back to Defaults. */
 export const AgentConfig = Schema.Struct({
   defaultModel: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
@@ -27,6 +36,7 @@ export const AgentConfig = Schema.Struct({
   compactionThreshold: Schema.optionalKey(
     Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   ),
+  mcpServers: Schema.optionalKey(Schema.Array(McpServerConfig)),
 })
 
 /** Effective session config after Defaults fallback — the GET/PUT `/config` response. */
@@ -35,6 +45,7 @@ export const ResolvedConfig = Schema.Struct({
   rules: ToolRulesMap,
   ttlSeconds: Schema.Number,
   compactionThreshold: Schema.Number,
+  mcpServers: Schema.Array(McpServerConfig),
 })
 
 /** Decoded shape of `ResolvedConfig` — the fully-populated effective session config. */

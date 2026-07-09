@@ -15,4 +15,5 @@ export const resolveConfig = (stored: typeof AgentConfig.Type): ResolvedConfigTy
   rules: { ...DEFAULT_TOOL_RULES, ...(stored.rules ?? {}) },
   ttlSeconds: stored.ttlSeconds ?? DEFAULT_TTL_SECONDS,
   compactionThreshold: stored.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
+  mcpServers: stored.mcpServers ?? [],
 })
