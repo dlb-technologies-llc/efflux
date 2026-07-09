@@ -137,6 +137,8 @@ grep -vE '^\s*(import|export .* from)' <file> | grep -nE '\bas (const\b|[A-Za-z_
 
 The pattern must be `\bas (const\b|[A-Za-z_])`, NOT `as [A-Z]` — an uppercase-only pattern misses `as const` and lowercase casts. Hits inside comments or string literals ("as long as", "known as") are false positives — read the line before "fixing" it. Also grep each task's own `**Do not:**` bullets (the backticked code shapes) across the files that task changed. On a real hit: fix it, re-run typecheck. If unfixable, `AskUserQuestion`: proceed / abort.
 
+Also reject prose `//` comments — house style is JSDoc-on-declarations only (`grep -nE '(^\s*//)|([^:"/]//)' <file> | grep -vE 'https?://|#!/'`). Any hit outside a string/URL/shebang converts to a concise JSDoc on the enclosing declaration or gets deleted. (A comment-heavy PR once needed a full app-wide comment strip after the fact.)
+
 **5. Commit the wave:**
 
 Before any `git -C <WORKTREE_PATH> add -A`, scan `git -C <WORKTREE_PATH> status --porcelain` for unexpected untracked directories (embedded git repos, generated artifacts) — an embedded repo once got committed this way. Then:
@@ -156,6 +158,8 @@ Conventional-commit message; never `--no-verify`. Behavior-critical refactors ge
 If a task agent fails: capture its output, `AskUserQuestion`: "Retry task" / "Skip task" / "Abort".
 
 ### Step 5: Verify before the PR
+
+**Quality gate (before the PR):** run `/code-review` on the full branch diff and address real findings. Typecheck and the compliance greps catch style, not efficiency, oversized files, or error-masking — this gate exists because this suite's approvals PR shipped, then needed three rework commits (an O(n) scan that should've been one SQL query, a 1196-line handler, and a caught-and-remapped error) that a review pass flags.
 
 If the diff has any runtime surface, run `/flue-verifying` from the worktree (`cd <WORKTREE_PATH>` — deploy + live-worker checks, e.g. `bun scripts/agent.ts <name> <id> --message "hi" --url <worker-url>`). Markdown/docs-only diffs may skip deploy. Remember: ALL sessions share the single live worker — deploys race (last deploy wins), so don't overlap another plan's deploy, and redeploy before smoking if another session may have deployed since.
 
