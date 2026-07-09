@@ -15,8 +15,7 @@ export interface AppProps {
   readonly initialOverrides: PromptOverrides
 }
 
-// The stream's error channel is a union; not every member carries a string
-// `message`.
+/** Extract a string `message` from the stream's union error channel (not every member carries one). */
 const messageOf = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = error.message
@@ -25,6 +24,7 @@ const messageOf = (error: unknown): string => {
   return String(error)
 }
 
+/** Interactive Ink chat: streams turns, handles slash commands, renders the transcript. */
 export function App({ client, name, id, initialOverrides }: AppProps) {
   const { exit } = useApp()
   const [entries, setEntries] = React.useState<ReadonlyArray<TranscriptEntry>>([])
@@ -33,14 +33,10 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   const [streaming, setStreaming] = React.useState("")
   const [overrides, setOverrides] = React.useState<PromptOverrides>(initialOverrides)
 
-  // Skip state updates that resolve after unmount (e.g. a turn interrupted by
-  // disposing the runtime on /exit).
   const mountedRef = React.useRef(true)
   React.useEffect(
     () => () => {
       mountedRef.current = false
-      // Disposing the ManagedRuntime interrupts any in-flight turn/history
-      // fiber — real cancellation, not a set-state guard.
       void client.runtime.dispose()
     },
     [client],
@@ -50,8 +46,6 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
     setEntries((prev) => [...prev, entry])
   }
 
-  // Accumulate deltas in a ref so a tool frame can flush the text streamed so
-  // far into a finalized entry, preserving arrival order within one turn.
   const streamRef = React.useRef("")
   const appendDelta = (delta: string) => {
     streamRef.current += delta
@@ -80,7 +74,6 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
         onFailure: () => pushEntry({ kind: "info", text: "no history for this session yet" }),
       })
     })
-    // History is idempotent; the runtime-dispose on unmount interrupts it.
   }, [client, name, id])
 
   const onPart = (part: StreamPart) => {
@@ -122,8 +115,6 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
     setPending(false)
     if (Exit.isFailure(result)) {
       const failReason = result.cause.reasons.find(Cause.isFailReason)
-      // A bare interruption (runtime disposed on /exit) has no fail reason —
-      // don't render it as an error.
       if (failReason !== undefined) {
         pushEntry({ kind: "error", text: `stream failed: ${messageOf(failReason.error)}` })
       }

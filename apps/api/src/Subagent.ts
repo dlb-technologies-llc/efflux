@@ -1,17 +1,8 @@
 /**
- * Stateless one-shot subagent. Runs a focused prompt against OpenRouter,
- * optionally overlaying a skill and/or role system prompt loaded from R2.
- *
- * Deliberately does NOT touch any DurableObject session — no history is
- * persisted and no parent state is mutated. The HTTP endpoint lives at
- * top-level `POST /tasks` for this reason (not per-session). See issue #4.
- *
- * Both `skill` and `role` are open `SafeName`-bounded strings that resolve
- * to `skills/<name>.md` / `roles/<name>.md` in the `Skills` R2 bucket. The
- * subagent intentionally does NOT default `skill` to `"support"` the way
- * the prompt/stream handlers do — when neither is supplied, the request is
- * a raw passthrough to OpenRouter (no system message), matching the prior
- * "role omitted" behavior of this endpoint.
+ * Stateless one-shot subagent: run a focused prompt against OpenRouter, optionally
+ * overlaying a skill/role system prompt from R2. Touches no DurableObject session
+ * (lives at top-level `POST /tasks`). With neither skill nor role, it's a raw
+ * passthrough to OpenRouter (no system message).
  */
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import {
@@ -24,10 +15,7 @@ import { LanguageModel } from "effect/unstable/ai"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 
-// Anti-recursion cap: this function does NOT pass a `toolkit` to
-// generateText. Subagents therefore cannot themselves call tools
-// (including `spawn_subagent`). Do not add a `toolkit` parameter here
-// without designing depth tracking first. See SpawnSubagentTool.ts.
+/** Run a focused subtask. Anti-recursion: passes NO toolkit to generateText, so subagents cannot call tools (incl. spawn_subagent) — don't add a toolkit param without designing depth tracking first. */
 export const runSubagent = Effect.fn("runSubagent")(function* (args: {
   readonly prompt: string
   readonly skill?: string
@@ -57,8 +45,6 @@ export const runSubagent = Effect.fn("runSubagent")(function* (args: {
   messages.push({ role: "user", content: args.prompt })
 
   const call = LanguageModel.generateText({ prompt: messages })
-  // Per-call model override via OpenRouter's Config service. When the
-  // caller didn't supply `model`, fall back to the layer's default.
   const withModel =
     args.model !== undefined
       ? OpenRouterLanguageModel.withConfigOverride(call, {

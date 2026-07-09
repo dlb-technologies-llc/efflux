@@ -17,10 +17,6 @@ const overrides: PromptOverrides = {
 }
 
 if (config.message !== undefined) {
-  // One-shot mode: stream a single turn to stdout without mounting Ink — safe
-  // under non-TTY stdin, and the autonomous smoke path. The turn runs through
-  // the client runtime as an Effect stream; the process edge (stdout, exit
-  // code) is the boundary.
   let sawDone = false
   let exitCode = 0
   const onPart = (part: StreamPart) => {
@@ -63,8 +59,6 @@ if (config.message !== undefined) {
     console.error(`\n[stream failed] ${message}`)
     exitCode = 1
   }
-  // A stream that ends without a `done` part (network drop, worker timeout)
-  // must not pass as a successful smoke.
   if (!sawDone) exitCode = 1
   process.exit(exitCode)
 }

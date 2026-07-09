@@ -30,10 +30,7 @@ import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
 /** The SSE-bound StreamPart union, kept in lockstep with the wire contract. */
 type SseStreamPart = StreamPart
 
-/**
- * An SSE frame candidate: the display part plus the journal seq of the event
- * backing it (undefined for text deltas, which ride the most recent seq).
- */
+/** An SSE frame candidate: the display part plus the journal seq backing it (undefined for text deltas, which ride the most recent seq). */
 type FramedPart = { sse: SseStreamPart; seq: number | undefined }
 
 interface RunStreamingTurnInput {
@@ -47,32 +44,18 @@ interface RunStreamingTurnInput {
 }
 
 /**
- * The streaming-turn driver shared by `stream` (a fresh turn, `startHop` 0) and
- * `approve` (a continuation of a parked turn, `startHop` = maxHop + 1). It owns
- * the forked queue driver, per-hop journaling, and the SSE pipeline, so both
- * entry points produce byte-identical frames for non-approval turns.
- *
- * Effect AI's `streamText` runs one round per call, so the driver loops until a
- * terminal finish or the hop cap; intermediate `finish: tool-calls` frames are
- * suppressed so the client sees exactly one `done`.
- *
- * A `tool-approval-request` part PARKS the turn: it is journaled, an
- * `approval-request` frame is emitted, and the turn ends with no `done`. The
- * request is offered from within a tool fiber and the model's finish is
- * deferred until tool fibers drain, so the driver always sees the park before
- * the finish — suppressing it needs no locking.
- *
- * On client disconnect workerd runs no finalizers (see ISSUES.md); the inline
- * appends and hop-end batches persist the turn regardless, and a turn with no
- * `done` reads as parked/incomplete.
+ * The streaming-turn driver shared by `stream` (fresh turn, `startHop` 0) and `approve`
+ * (continuation of a parked turn). Owns the forked queue driver, per-hop journaling, and the
+ * SSE pipeline, looping until a terminal finish or the hop cap with intermediate finishes
+ * suppressed. A `tool-approval-request` PARKS the turn (journaled, `approval-request` emitted,
+ * no `done`). On client disconnect workerd runs no finalizers (see ISSUES.md) — the inline
+ * appends and hop-end batches persist the turn regardless.
  */
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): HttpServerResponse.HttpServerResponse => {
   const { agent, ambient, initialPrompt, model, payloadModel, startHop, turn } = input
 
-  // Shared with the finalizers: partial hop text flushed as an `assistant-text`
-  // event on mid-hop failure (not disconnect — workerd runs no finalizers).
   let pendingHopText = ""
   let currentHop = startHop
 
@@ -90,23 +73,16 @@ export const runStreamingTurn = (
 
   const encodeStreamPart = Schema.encodeSync(StreamPart)
 
-  // Per-request BashRunner bound to this DO's `exec`, satisfying `BashTool`'s
-  // dependency without leaking it to the Worker root.
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
 
-  // Turn-end workspace snapshot (#37). Swallow-and-log: a snapshot failure must
-  // never kill the SSE stream.
   const snapshotWorkspace = Effect.promise(() => agent.snapshotIfDirty()).pipe(
     Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
     Effect.asVoid,
   )
 
-  // Refs live in the response stream's scope so this stays a pure function.
   const sseFrames = Stream.unwrap(
     Effect.gen(function* () {
       const toolCallCount = yield* Ref.make(0)
-      // Frames without a backing event ride the most recent journaled seq, so
-      // replaying from any frame id reproduces the folded state.
       const lastSeq = yield* Ref.make(turn)
 
       const loopedStream = Stream.unwrap(
@@ -130,10 +106,6 @@ export const runStreamingTurn = (
                 prompt: promptValue,
                 toolkit: AgentToolkit,
               })
-              // Model override via a fresh Config. There is no base Config at
-              // the Worker root, so this REPLACE is a no-op; a real merge would
-              // add `Config` to the Stream's `R` and break the `R = never`
-              // requirement below (deferred to #42).
               const withModel =
                 payloadModel !== undefined
                   ? baseCall.pipe(
@@ -156,9 +128,6 @@ export const runStreamingTurn = (
                         return
                       }
                       case "finish": {
-                        // Held back: intermediate finishes are dropped, and the
-                        // terminal finish is offered after the hop batch so its
-                        // frame carries the `done` event's seq.
                         lastFinishReason = part.reason
                         finishPart = part
                         return
@@ -202,8 +171,6 @@ export const runStreamingTurn = (
                         return
                       }
                       case "tool-result": {
-                        // Preliminary results stream to the client but are never
-                        // journaled — matches `Prompt.fromResponseParts`.
                         if (part.preliminary === true) {
                           yield* Queue.offer(queue, { part, seq: undefined })
                           return
@@ -235,14 +202,9 @@ export const runStreamingTurn = (
                 ),
               )
 
-              // A park forces terminal: the turn stops mid-loop awaiting the
-              // approval, with no `done` and no finish frame.
               const terminal =
                 parked || lastFinishReason === undefined || !shouldContinueToolLoop(lastFinishReason)
 
-              // `done` is journaled only on a terminal, non-parked finish. A
-              // hop-cap truncation and a park both stay silent (the journal
-              // reads as parked/incomplete).
               const hopEvents: Array<JournalEventPayload> = []
               const hopMessages = Prompt.fromResponseParts(collected).content
               if (hopMessages.length > 0) {
@@ -262,11 +224,9 @@ export const runStreamingTurn = (
                 hopEvents.length > 0
                   ? yield* Effect.promise(() => agent.appendEvents(hopEvents.map(eventJson)))
                   : []
-              pendingHopText = "" // journaled — the finalizer must not re-flush
+              pendingHopText = ""
 
               if (terminal) {
-                // On a park the approval-request is already the last frame;
-                // otherwise the terminal finish rides the `done` event's seq.
                 if (!parked && finishPart !== undefined) {
                   yield* Queue.offer(queue, { part: finishPart, seq: seqs[seqs.length - 1] })
                 }
@@ -289,15 +249,11 @@ export const runStreamingTurn = (
       return loopedStream.pipe(
         Stream.provide(AgentToolkitLayer),
         Stream.provide(bashRunner),
-        // Provide the ambient services the toolkit layer's `RIn` consumes
-        // (LanguageModel + SkillsBucket), satisfied at the Worker root.
         Stream.provideContext(ambient),
         Stream.filterMap(Filter.make(toFramedPart)),
         Stream.tap(({ sse }) =>
           sse._tag === "tool-call" ? Ref.update(toolCallCount, (n) => n + 1) : Effect.void,
         ),
-        // Replace the `done` frame's placeholder count with the live tally the
-        // `tap` above accumulated from every earlier `tool-call`.
         Stream.mapEffect((el): Effect.Effect<FramedPart> => {
           const sse = el.sse
           return sse._tag === "done"
@@ -309,9 +265,6 @@ export const runStreamingTurn = (
               )
             : Effect.succeed(el)
         }),
-        // Wire-level errors and defects become in-band error frames (so the
-        // client's decoder accepts them) and are journaled here, so defects
-        // arising downstream of the driver still land in the journal.
         Stream.catchCause((cause) =>
           Stream.unwrap(
             Effect.gen(function* () {
@@ -325,7 +278,6 @@ export const runStreamingTurn = (
             }),
           ),
         ),
-        // Every frame carries an SSE id: its backing seq, or the most recent one.
         Stream.mapEffect(({ seq, sse }) =>
           Effect.gen(function* () {
             if (seq !== undefined) yield* Ref.set(lastSeq, seq)
@@ -351,12 +303,7 @@ export const runStreamingTurn = (
   })
 }
 
-/**
- * Map one Effect AI response part to an SSE StreamPart, carrying its backing
- * journal seq. Response parts use `type` (not `_tag`); unknown parts are
- * dropped. A `tool-approval-request` requires the journal seq that backs it
- * (its eventId); without it the frame is dropped.
- */
+/** Map one Effect AI response part to an SSE StreamPart carrying its backing journal seq; unknown parts and a seq-less `tool-approval-request` are dropped. */
 const toFramedPart = (el: {
   part: AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>>
   seq: number | undefined

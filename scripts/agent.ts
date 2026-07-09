@@ -1,10 +1,5 @@
 #!/usr/bin/env bun
-// CLI wrapper around the deployed Worker's agent endpoints. The work is one
-// Effect over the typed AgentApi client; argv/exit code is the process edge.
-// Usage:
-//   bun run agent <name> <id> --message "hi" [--url URL] [--model M] [--skill S] [--role R]
-//   bun run agent <name> <id> --journal [--url URL]
-//   bun run agent --sessions [--url URL]
+/** CLI wrapper around the deployed Worker's agent endpoints, over the typed AgentApi client. */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { makePromptRequest } from "../packages/shared/src/index.ts"

@@ -1,6 +1,3 @@
-// CLI argument parsing, mirroring scripts/agent.ts. This is process
-// plumbing, not wire data — wire types flow from @effect-flue/shared.
-
 export const USAGE =
   'Usage: bun run tui <name> <id> [--url URL] [--message TEXT] [--model M] [--skill S] [--role R]\n' +
   "  --url or BASE_URL env required. --message runs one-shot (non-interactive) mode."

@@ -1,35 +1,17 @@
 #!/usr/bin/env bun
-// Executable proof of the event journal's hard criterion: a session's journal
-// must be PROMPT-RECONSTRUCTIBLE — the parked-turn prompt rebuilds from journal
-// events through the real `effect/unstable/ai` Prompt schemas, not
-// display-shaped stream parts.
-//
-// Checks:
-//   a. tool-call ↔ tool-result pairing is TURN-WIDE across hops (same call
-//      id), because #40's approve-and-continue resolves a parked tool-call in
-//      a LATER hop of the SAME turn (a new continuation stream). A call with
-//      no matching tool-result anywhere in its turn is classified by its
-//      approval state:
-//        - gated by `approval-requested`, no `approval-resolved` yet → PARKED;
-//        - `approval-resolved` DENIED, no result → PARKED;
-//        - `approval-resolved` APPROVED but no result yet (a continuation that
-//          disconnected — workerd runs no finalizers, see ISSUES.md) → PARKED;
-//        - APPROVED with a matching tool-result in the turn → RESOLVED (pass);
-//        - non-gated dangling call → PARKED (the pre-approval behaviour).
-//      PARKED is fatal unless --allow-parked; an approved-and-continued
-//      session has no dangling calls and passes cleanly with neither flag.
-//   b. every granular tool-call/tool-result part also appears (by call id)
-//      inside that hop's authoritative `hop-messages` event (the parked hop's
-//      hop-messages carries the tool-call + `tool-approval-request` part);
-//   c. the hop's messages survive a Prompt.Message encode→decode→encode
-//      round-trip byte-for-byte (covers the assistant `tool-approval-request`);
-// and globally: the rebuilt prompt is non-empty for any session with a
-// user-message event.
-//
-// The fetch + entrypoint are Effect (typed AgentApi client); the verification
-// is pure computation over the decoded events. argv/exit is the process edge.
-//
-// Usage: bun scripts/verify-journal.ts <name> <id> [--url URL] [--allow-parked]
+/**
+ * Proves a session's journal is PROMPT-RECONSTRUCTIBLE: the parked-turn prompt
+ * rebuilds from journal events through the real effect/unstable/ai Prompt
+ * schemas, not display-shaped stream parts. Checks: (a) tool-call ↔ tool-result
+ * pairing is TURN-WIDE across hops (#40 approve-and-continue resolves a parked
+ * call in a LATER hop of the same turn) — an unresolved call is classified by
+ * approval state (awaiting / denied / approved-without-result → all PARKED,
+ * never FAIL); (b) every granular tool part appears in that hop's authoritative
+ * hop-messages event; (c) hop messages round-trip through Prompt.Message
+ * byte-for-byte. PARKED is fatal unless --allow-parked.
+ *
+ * Usage: bun scripts/verify-journal.ts <name> <id> [--url URL] [--allow-parked]
+ */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { Cause, Console, Effect, Exit, Schema } from "effect"
@@ -47,16 +29,14 @@ interface HopData {
   messages: ReadonlyArray<Prompt.Message> | undefined
 }
 
-// Turn-level state so tool-call ↔ tool-result pairing spans hops (a parked
-// call resolves in a LATER hop of the same turn) and gated calls can be
-// classified against their approval events.
+/** Turn-level state so call↔result pairing spans hops and gated calls classify against approval events. */
 interface TurnData {
   readonly hops: Map<number, HopData>
-  // Every tool-result id seen ANYWHERE in this turn — cross-hop pairing (a).
+  /** Every tool-result id seen anywhere in this turn — enables cross-hop pairing (a). */
   readonly resultIds: Set<string>
-  // toolCallId → approvalId, from this turn's `approval-requested` events.
+  /** toolCallId → approvalId, from this turn's `approval-requested` events. */
   readonly gatedCalls: Map<string, string>
-  // approvalId → resolution, from this turn's `approval-resolved` events.
+  /** approvalId → resolution, from this turn's `approval-resolved` events. */
   readonly resolutions: Map<string, { readonly approved: boolean }>
 }
 
@@ -68,7 +48,10 @@ interface VerifyResult {
   readonly rebuiltCount: number
 }
 
-// Pure: group events by (turn, hop), run checks a/b/c, rebuild the prompt.
+/**
+ * Pure: group events by (turn, hop), run checks a/b/c, rebuild the prompt.
+ * Pairing (a) is turn-wide; `hopHasDanglingCall` stays hop-local to drive (b).
+ */
 const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
   const turns = new Map<number, TurnData>()
   const userMessages: Array<{ seq: number; content: string }> = []
@@ -103,7 +86,6 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
         turnData(event.turn).resultIds.add(event.part.id)
         break
       case "approval-requested":
-        // Which tool-call this approval gates — makes the call approval-aware.
         turnData(event.turn).gatedCalls.set(event.toolCallId, event.approvalId)
         break
       case "approval-resolved":
@@ -124,17 +106,10 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
     for (const [hop, data] of turnInfo.hops) {
       const where = `turn=${turn} hop=${hop}`
 
-      // a. call/result pairing — TURN-WIDE across hops. #40's approve-and-
-      // continue lands the parked call's tool-result in a LATER hop of the
-      // same turn, so a call is RESOLVED when a matching result exists
-      // anywhere in the turn. `hopHasDanglingCall` stays HOP-LOCAL: it drives
-      // check (b)'s "a parked hop skips its hop-end batch" reasoning, which is
-      // about a hop that did not complete, not about turn-wide resolution.
       let hopHasDanglingCall = false
       for (const [callId, toolName] of data.toolCallIds) {
         if (!data.toolResultIds.has(callId)) hopHasDanglingCall = true
-        if (turnInfo.resultIds.has(callId)) continue // resolved somewhere in this turn → pass
-        // Unresolved turn-wide: classify by approval state (all PARKED, none FAIL).
+        if (turnInfo.resultIds.has(callId)) continue
         const approvalId = turnInfo.gatedCalls.get(callId)
         if (approvalId === undefined) {
           parked.push(`${where}: tool-call ${toolName} (${callId}) has no tool-result — parked/incomplete turn`)
@@ -156,12 +131,8 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
         }
       }
 
-      // b. granular ↔ authoritative consistency
       if (data.toolCallIds.size > 0 || data.toolResultIds.size > 0) {
         if (data.messages === undefined) {
-          // A parked hop (one with a dangling call) necessarily lacks the
-          // hop-end-batched hop-messages — expected, record as PARKED. A hop
-          // whose calls ALL resolved but lacks hop-messages is corrupt: FAIL.
           if (hopHasDanglingCall) {
             parked.push(`${where}: no hop-messages event — parked hop (batched only at hop end)`)
           } else {
@@ -189,7 +160,6 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
         }
       }
 
-      // c. Prompt.Message round-trip
       if (data.messages !== undefined) {
         for (const message of data.messages) {
           try {
@@ -210,7 +180,6 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
     }
   }
 
-  // Rebuild the full prompt: user + hop messages in seq order.
   const rebuilt: Array<Prompt.Message> = []
   for (const user of userMessages) {
     rebuilt.push(Prompt.userMessage({ content: [Prompt.textPart({ text: user.content })] }))
@@ -240,7 +209,6 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
   }
 }
 
-// --- process boundary: parse args, then run the Effect ---
 const parsed = parseArgs(process.argv.slice(2), new Set(["allow-parked"]))
 if ("error" in parsed) {
   console.error(parsed.error)

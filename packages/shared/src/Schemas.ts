@@ -1,11 +1,7 @@
 import { Schema } from "effect"
 
-// Shared safe-identifier pattern for URL path segments AND R2 object keys.
-// The latter use applies to `skill` and `role` below, where unconstrained
-// input would let any caller probe the R2 keyspace via `skills/<key>.md` /
-// `roles/<key>.md` and would let an unbounded per-isolate cache grow one
-// entry per unique input. Same constraint as AgentApi's `:name` / `:id`.
 const SAFE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
+/** Safe identifier for URL path segments and R2 object keys — bounds the keyspace so callers can't probe R2 via `skills/<key>.md` / `roles/<key>.md`. */
 export const SafeName = Schema.String.pipe(
   Schema.refine((s): s is string => SAFE_NAME_PATTERN.test(s), {
     title: "SafeName",
@@ -13,15 +9,14 @@ export const SafeName = Schema.String.pipe(
   }),
 )
 
+/** A single chat message (user or assistant). */
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),
   content: Schema.String,
 }) {}
 
+/** Primary user-facing prompt payload — generous message cap, tight model cap (forwarded to OpenRouter). */
 export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")({
-  // Primary user-facing payload. Bounded like SubagentTaskRequest below: a
-  // generous message cap (long prompts are legitimate) and a tight model cap
-  // (it forwards to OpenRouter).
   message: Schema.String.check(Schema.isMaxLength(100_000)),
   model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
   skill: Schema.optionalKey(SafeName),
@@ -29,7 +24,7 @@ export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")(
 }) {}
 
 /**
- * The overlay overrides accepted alongside a prompt message — derived from
+ * The overlay overrides accepted alongside a prompt — derived from
  * `PromptRequest`'s encoded shape so the `SafeName` refinement on skill/role
  * can never drift into a bare `string`.
  */
@@ -38,12 +33,7 @@ export type PromptOverrides = Pick<
   "model" | "skill" | "role"
 >
 
-/**
- * Build a `PromptRequest` class instance (a real instance is required across
- * the DO RPC fence and by the HttpApiClient encoder — see ISSUES.md) from a
- * message plus optional overlay overrides. Centralizes the conditional-spread
- * construction that was previously copy-pasted across apps/web and apps/tui.
- */
+/** Build a real `PromptRequest` instance (required across the DO RPC fence and by the HttpApiClient encoder — see ISSUES.md) from a message plus optional overrides. */
 export const makePromptRequest = (
   message: string,
   overrides: PromptOverrides = {},
@@ -55,23 +45,24 @@ export const makePromptRequest = (
     ...(overrides.role !== undefined ? { role: overrides.role } : {}),
   })
 
+/** Prompt turn result; `approval` is present only when the turn parked awaiting approval (finishReason "tool-calls"), carrying the eventId to POST to /approve/:eventId. */
 export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse")({
   text: Schema.String,
   finishReason: Schema.String,
   toolCallCount: Schema.Number,
   model: Schema.String,
   messageCount: Schema.Number,
-  // Present only when the turn PARKED awaiting approval (finishReason will be
-  // "tool-calls"); carries the eventId to POST to /approve/:eventId.
   approval: Schema.optionalKey(
     Schema.Struct({ eventId: Schema.Number, approvalId: Schema.String, toolCallId: Schema.String }),
   ),
 }) {}
 
+/** A session's chat history. */
 export class HistoryResponse extends Schema.Class<HistoryResponse>("HistoryResponse")({
   history: Schema.Array(Message),
 }) {}
 
+/** Subagent task request dispatched to /tasks. */
 export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("SubagentTaskRequest")({
   prompt: Schema.String.check(Schema.isMaxLength(8192)),
   skill: Schema.optionalKey(SafeName),
@@ -79,19 +70,20 @@ export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("Suba
   model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
 }) {}
 
+/** Subagent task result. */
 export class SubagentTaskResponse extends Schema.Class<SubagentTaskResponse>("SubagentTaskResponse")({
   text: Schema.String,
   model: Schema.String,
   finishReason: Schema.String,
 }) {}
 
+/** Approve/deny decision for a parked tool call; approved defaults true when omitted, reason is surfaced to the model on denial. */
 export class ApprovalDecision extends Schema.Class<ApprovalDecision>("ApprovalDecision")({
-  // Defaults handled in the handler (approved=true when omitted) so `curl -d '{}'`
-  // or an empty grant works. reason is surfaced to the model on denial.
   approved: Schema.optionalKey(Schema.Boolean),
   reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2000))),
 }) {}
 
+/** SSE frame: incremental assistant text. */
 export class StreamPartTextDelta extends Schema.TaggedClass<StreamPartTextDelta>()(
   "text-delta",
   {
@@ -99,6 +91,7 @@ export class StreamPartTextDelta extends Schema.TaggedClass<StreamPartTextDelta>
   },
 ) {}
 
+/** SSE frame: a tool call the model requested. */
 export class StreamPartToolCall extends Schema.TaggedClass<StreamPartToolCall>()(
   "tool-call",
   {
@@ -108,6 +101,7 @@ export class StreamPartToolCall extends Schema.TaggedClass<StreamPartToolCall>()
   },
 ) {}
 
+/** SSE frame: the result of a tool call. */
 export class StreamPartToolResult extends Schema.TaggedClass<StreamPartToolResult>()(
   "tool-result",
   {
@@ -117,11 +111,13 @@ export class StreamPartToolResult extends Schema.TaggedClass<StreamPartToolResul
   },
 ) {}
 
+/** SSE frame: terminal frame with finish reason and tool-call count. */
 export class StreamPartDone extends Schema.TaggedClass<StreamPartDone>()("done", {
   finishReason: Schema.String,
   toolCallCount: Schema.Number,
 }) {}
 
+/** SSE frame: a stream-level error. */
 export class StreamPartError extends Schema.TaggedClass<StreamPartError>()(
   "error",
   {
@@ -129,18 +125,17 @@ export class StreamPartError extends Schema.TaggedClass<StreamPartError>()(
   },
 ) {}
 
+/** SSE frame: a parked tool call awaiting approval; `eventId` is the journal seq to POST to /approve/:eventId, `approvalId`/`toolCallId` correlate with the preceding tool-call frame. */
 export class StreamPartApprovalRequest extends Schema.TaggedClass<StreamPartApprovalRequest>()(
   "approval-request",
   {
-    // eventId = the journal seq of the approval-requested event; the value the
-    // caller POSTs to /approve/:eventId. approvalId/toolCallId let a client
-    // correlate with the preceding tool-call frame (same toolCallId as its id).
     eventId: Schema.Number,
     approvalId: Schema.String,
     toolCallId: Schema.String,
   },
 ) {}
 
+/** Discriminated union of all SSE stream frames. */
 export const StreamPart = Schema.Union([
   StreamPartTextDelta,
   StreamPartToolCall,

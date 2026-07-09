@@ -3,26 +3,19 @@ import { JournalApprovalResolved, JournalEventPayload, Message } from "@effect-f
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 
-// Legacy pre-journal history blob shape (KV key "history"). Only read by the
-// one-shot seed migration in the constructor.
+/** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
 const HistorySchema = Schema.Array(Message)
 
 const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
 const decodeEventPayload = Schema.decodeUnknownEffect(JournalEventPayload)
-// Synchronous decode/encode for the atomic `resolveApproval` check-and-insert:
-// a plain `await` (Effect.runPromise) between the already-resolved check and
-// the insert would let a concurrent approve interleave (see resolveApproval).
-// A throw on our own valid writes is an acceptable defect.
+/** Synchronous decode so `resolveApproval`'s check-and-insert stays await-free (atomic). */
 const decodeEventPayloadSync = Schema.decodeUnknownSync(JournalEventPayload)
 const encodeEventPayload = Schema.encodeSync(JournalEventPayload)
 
-// Plain (RPC-safe) message shape, derived from the Message schema's encoded
-// side so it can't drift from the wire contract.
+/** Plain, RPC-safe message shape derived from the Message schema's encoded side. */
 type PlainMessage = typeof Message.Encoded
 
-// Shape of the container server's `POST /exec` response body. Validated
-// before crossing the RPC fence so a misbehaving container can never leak
-// an arbitrary object into the `Bash` tool's typed contract.
+/** Validated shape of the container's `POST /exec` response, checked before it crosses the RPC fence. */
 const ExecResultSchema = Schema.Struct({
   exitCode: Schema.Number,
   stdout: Schema.String,
@@ -34,14 +27,9 @@ type ExecResult = (typeof ExecResultSchema)["Type"]
 const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
 
 /**
- * Storage + sandbox Durable Object.
- *
- * Holds the append-only event journal for one agent session (DO SQLite,
- * `ctx.storage.sql`) and reaches the sandbox Container that backs the `Bash`
- * tool. History is a fold over journal events. The DO RPC boundary requires
- * `structuredClone`-able values, so every method accepts and returns plain
- * objects (no `Schema.Class` instances) — journal payloads cross the fence
- * as JSON strings. See ISSUES.md.
+ * Per-session storage + sandbox Durable Object: holds the append-only event journal
+ * (DO SQLite) and the sandbox exec/hydrate seam. RPC fence — every method takes/returns
+ * plain structuredClone-able objects (no Schema.Class); journal payloads cross as JSON strings.
  */
 export class Agent extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -54,11 +42,6 @@ export class Agent extends DurableObject<Env> {
         payload TEXT NOT NULL
       )`,
     )
-    // One-shot legacy migration: fold-on-first-read seeding of the journal
-    // from the pre-journal `history` KV blob. Runs before any RPC is
-    // delivered. MUST NOT throw — a corrupt blob would otherwise brick the
-    // DO (including `reset()`, the recovery path): on decode failure we
-    // log, leave the blob in place, and start with an empty journal.
     ctx.blockConcurrencyWhile(async () => {
       const count = ctx.storage.sql
         .exec("SELECT COUNT(*) AS n FROM journal")
@@ -78,9 +61,6 @@ export class Agent extends DurableObject<Env> {
               JSON.stringify({ _tag: "user-message", content: message.content }),
             )
           } else {
-            // Legacy blobs always alternate user→assistant, but guard a
-            // leading assistant message: `turn: 0` matches no user row and
-            // the fold's orphan branch still emits it.
             this.#insert(
               now,
               "assistant-text",
@@ -93,8 +73,6 @@ export class Agent extends DurableObject<Env> {
             )
           }
         }
-        // Delete the blob so a later `reset()` + re-activation can never
-        // re-seed stale history.
         await ctx.storage.delete("history")
       } catch (error) {
         console.error(
@@ -105,10 +83,7 @@ export class Agent extends DurableObject<Env> {
     })
   }
 
-  // Insert one already-validated payload; returns the assigned monotonic
-  // seq. `json` must be the schema-Encoded JSON text (stored verbatim so
-  // reads decode through the same schema); `tag` comes from the validated
-  // decode of that same text, so column and payload cannot disagree.
+  /** Insert one already-validated Encoded-JSON payload verbatim; returns the assigned monotonic seq. */
   #insert(createdAt: number, tag: string, json: string): number {
     const row = this.ctx.storage.sql
       .exec(
@@ -121,8 +96,7 @@ export class Agent extends DurableObject<Env> {
     return Number(row.seq)
   }
 
-  // Upsert into the session registry. Failures are logged, never
-  // turn-fatal — the index heals on the next user message.
+  /** Upsert this session into the registry; failures are logged, never turn-fatal (the index heals on the next user message). */
   async #registerSession(at: number): Promise<void> {
     try {
       const full = this.ctx.id.name
@@ -143,12 +117,8 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Append a batch of journal events atomically (one RPC per hop). Each
-   * element is a JSON-encoded `JournalEventPayload`; payloads are validated
-   * before insert (failure = defect — these are our own writes, so a
-   * mismatch is a bug, not a recoverable error). Returns the assigned seqs
-   * in input order. A `user-message` payload also upserts this session into
-   * the registry.
+   * Append a batch of JSON-encoded journal events atomically (one RPC per hop), returning the
+   * assigned seqs in input order; a `user-message` also upserts this session into the registry.
    */
   async appendEvents(payloads: ReadonlyArray<string>): Promise<Array<number>> {
     const now = Date.now()
@@ -158,8 +128,6 @@ export class Agent extends DurableObject<Env> {
       const decoded: JournalEventPayloadType = await Effect.runPromise(
         decodeEventPayload(JSON.parse(raw)).pipe(Effect.orDie),
       )
-      // Store the validated ENCODED text verbatim — reads decode through
-      // the same schema, so the stored side must stay the Encoded side.
       seqs.push(this.#insert(now, decoded._tag, raw))
       if (decoded._tag === "user-message") sawUserMessage = true
     }
@@ -168,12 +136,9 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Resolve a pending tool approval. Validates the approval-requested event at
-   * `eventId` exists and is unresolved, then appends an approval-resolved event.
-   * Returns plain data for the handler to reconstruct the continuation prompt
-   * (Schema.Class cannot cross the RPC fence — see ISSUES.md). The whole
-   * check-and-insert is synchronous (no await) so concurrent approves cannot
-   * both pass the already-resolved check.
+   * Resolve a pending tool approval, appending an approval-resolved event and returning plain
+   * data for the handler to rebuild the continuation prompt. The check-and-insert is synchronous
+   * (no await) so concurrent approves cannot both pass the already-resolved check.
    */
   async resolveApproval(input: {
     eventId: number
@@ -185,7 +150,6 @@ export class Agent extends DurableObject<Env> {
     | { status: "not-approval-event" }
     | { status: "already-resolved" }
   > {
-    // NO `await` from here through the #insert below — keeps the section atomic.
     const row = this.ctx.storage.sql
       .exec("SELECT payload FROM journal WHERE seq = ?", input.eventId)
       .toArray()[0]
@@ -194,10 +158,6 @@ export class Agent extends DurableObject<Env> {
     if (decoded._tag !== "approval-requested") {
       return { status: "not-approval-event" }
     }
-    // Idempotency: reject if an approval-resolved already exists for this
-    // approvalId. One in-engine SQL check via json_extract on the payload —
-    // NOT a scan-and-schema-decode of every resolved row in JS. Still no
-    // `await`, so the check-and-insert stays atomic.
     const alreadyResolved = this.ctx.storage.sql
       .exec(
         "SELECT 1 FROM journal WHERE type = 'approval-resolved' AND json_extract(payload, '$.approvalId') = ? LIMIT 1",
@@ -225,10 +185,8 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Page of raw journal rows after `after`, oldest first. Payloads stay
-   * JSON strings across the RPC fence; the handler decodes them through the
-   * shared schemas. `nextAfter` is the cursor for the next page, or null
-   * when this page is the last.
+   * Page of raw journal rows after `after`, oldest first; payloads stay JSON strings across the
+   * RPC fence. `nextAfter` is the next-page cursor, or null when this page is the last.
    */
   async readJournal(input: { after: number; limit: number }): Promise<{
     events: Array<{
@@ -261,11 +219,8 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * History = fold over journal events, grouped by turn (NEVER by seq
-   * adjacency — concurrent prompts interleave appends). Per turn: the user
-   * message, then the concatenation of that turn's `assistant-text` texts
-   * in seq order (no separator) when non-empty. Matches the pre-journal
-   * wire shape byte-for-byte for seeded sessions.
+   * History as a fold over journal events grouped by turn (never by seq adjacency — concurrent
+   * prompts interleave appends): each turn's user message, then its `assistant-text` concatenated.
    */
   async history(): Promise<Array<PlainMessage>> {
     const rows = this.ctx.storage.sql
@@ -289,8 +244,6 @@ export class Agent extends DurableObject<Env> {
         if (existing !== undefined) {
           existing.texts.push(decoded.text)
         } else {
-          // Orphan (legacy leading-assistant or a turn whose user row was
-          // filtered): key by its turn stamp so the text still folds in.
           turns.set(decoded.turn, {
             userContent: undefined,
             texts: [decoded.text],
@@ -312,24 +265,14 @@ export class Agent extends DurableObject<Env> {
     return out
   }
 
-  // Clean-slate reset: clears the journal, the dirty flag, the durable R2
-  // workspace snapshot, AND wipes a live container's /workspace — so a session
-  // reset to start over gets a fresh transcript AND a fresh filesystem, not a
-  // dirty one the next Bash exec re-exposes.
+  /** Clean-slate reset: clears the journal, dirty flag, R2 snapshot, and a live container's /workspace. */
   async reset(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
-    // AUTOINCREMENT keeps the seq counter — ids stay monotonic across resets
-    // (Last-Event-ID safe). Also drop any legacy blob a failed seed left, and
-    // the workspace dirty flag.
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
     const name = this.ctx.id.name
     if (name === undefined) return
-    // Delete the R2 snapshot so a later wake re-hydrates to an empty workspace.
     await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
-    // Wipe a currently-live container too (awaited, so a hydrated container is
-    // clean now, not just after it recycles). Best-effort: on failure the R2
-    // delete above still guarantees clean-on-next-hydrate.
     try {
       const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
       const response = await sandbox.fetch("http://sandbox/reset", { method: "POST" })
@@ -341,22 +284,13 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
-  // DO-storage key for the workspace dirty flag. Storage-backed (not an
-  // instance field) because the gap between a turn's last exec and the
-  // turn-end snapshot contains the model's final generation — long enough
-  // for routine DO eviction to drop an in-memory flag while the container
-  // lives on and later sleeps with the delta unsnapshotted. Exec-seam
-  // state only; unrelated to the history keys.
+  /** DO-storage key for the workspace dirty flag (storage-backed so DO eviction can't drop it mid-turn). */
   static readonly #DIRTY_KEY = "workspaceDirty"
 
-  // Deduplicates concurrent hydrations on one DO instance: two interleaved
-  // execs must not double-restore. Cleared on settle so the next exec
-  // re-checks `/status` (the container may have died in between).
+  /** In-flight hydration, deduping concurrent execs so they can't double-restore; cleared on settle. */
   #hydrating: Promise<void> | undefined
 
-  // One sandbox container per agent session: derive the Sandbox DO id from
-  // this Agent's own name so `agents/<name>/<id>` always lands on the same
-  // container.
+  /** The Sandbox DO for this session, derived from this Agent's name so it always lands on the same container. */
   #sandbox(): { sandbox: DurableObjectStub; name: string } {
     const name = this.ctx.id.name
     if (name === undefined) {
@@ -374,13 +308,7 @@ export class Agent extends DurableObject<Env> {
     return `workspaces/${name}.tar.gz`
   }
 
-  // Restore-on-wake: the container's in-memory `hydrated` flag resets on
-  // container death, so a `hydrated: false` status IS the wake signal.
-  // Pull the session's snapshot from R2 (empty restore when none exists)
-  // and only then allow commands. Any failure throws — exec's try/catch
-  // maps it to the in-band `exitCode: -1` shape and the command does NOT
-  // run, so a good snapshot can never be clobbered by an unhydrated
-  // workspace at turn-end.
+  /** Restore-on-wake: if the container isn't hydrated, pull the session's R2 snapshot (empty when none) before any command runs; any failure throws so a good snapshot can't be clobbered. */
   async #hydrate(sandbox: DurableObjectStub, name: string): Promise<void> {
     const status = await sandbox.fetch("http://sandbox/status")
     const statusText = await status.text()
@@ -418,12 +346,8 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Snapshot the workspace to R2 if any command ran since the last
-   * snapshot. Called by the HTTP handlers in a turn-end finalizer; returns
-   * a plain object (RPC fence). The dirty flag is cleared BEFORE the
-   * snapshot fetch and re-set on failure — clearing after the R2 put would
-   * let a concurrent turn's exec (re-setting dirty mid-snapshot) be wiped
-   * by this turn's completion.
+   * Snapshot the workspace to R2 if any command ran since the last snapshot; the dirty flag clears
+   * before the fetch and re-sets on failure so a concurrent exec's dirty mark isn't wiped.
    */
   async snapshotIfDirty(): Promise<{ snapshotted: boolean }> {
     const dirty = await this.ctx.storage.get(Agent.#DIRTY_KEY)
@@ -446,15 +370,11 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
-  // Spawn-level failures (container unreachable, malformed response, bad
-  // status) never throw across RPC — they map to `{exitCode: -1, stdout:
-  // "", stderr: <why>}` so the `Bash` tool reports them in-band.
+  /** Run one command in the session's sandbox; spawn-level failures never throw — they map to `{exitCode: -1, ...}` so Bash reports them in-band. */
   async exec(command: string): Promise<ExecResult> {
     try {
       const { sandbox, name } = this.#sandbox()
       await this.#ensureHydrated(sandbox, name)
-      // Mark dirty BEFORE the exec POST: a command whose response is
-      // severed may still have mutated the workspace.
       await this.ctx.storage.put(Agent.#DIRTY_KEY, true)
       const response = await sandbox.fetch("http://sandbox/exec", {
         method: "POST",

@@ -40,16 +40,10 @@ interface RunPromptTurnInput {
 }
 
 /**
- * The non-streaming turn driver: runs the hop-capped `generateText` loop,
- * journaling one batch per hop, and returns the folded result. The turn is
- * already opened (its `user-message` journaled) so a failed loop leaves no
- * orphan state — the error is recorded and the workspace snapshotted regardless.
- *
- * `done` is journaled only on a terminal finish; a hop-cap truncation stays
- * silent. With Bash now requiring approval, a hop can return a
- * `tool-approval-request` in its content: the turn then PARKS (journals the
- * request, writes the hop batch with no `done`, and surfaces the eventId as
- * `approval`) rather than spinning to the hop cap.
+ * The non-streaming turn driver: runs the hop-capped `generateText` loop, journaling one batch
+ * per hop and returning the folded result. `done` is journaled only on a terminal finish. A hop
+ * returning a `tool-approval-request` PARKS the turn (journals the request, writes the hop batch
+ * with no `done`, surfaces the eventId as `approval`) rather than spinning to the hop cap.
  */
 export const runPromptTurn = (
   input: RunPromptTurnInput,
@@ -98,9 +92,6 @@ export const runPromptTurn = (
       finalFinishReason = response.finishReason
       anyHopText ||= response.text.length > 0
 
-      // Park: with Bash requiring approval, a hop may return a
-      // tool-approval-request (finishReason "tool-calls"). `.find` is not a
-      // type guard, so narrow by `.type` before reading the part.
       const approvalPart = response.content.find((p) => p.type === "tool-approval-request")
       if (approvalPart !== undefined && approvalPart.type === "tool-approval-request") {
         const approvalSeqs = yield* Effect.promise(() =>

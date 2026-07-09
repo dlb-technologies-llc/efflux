@@ -70,9 +70,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           payloadModel: payload.model,
         })
 
-        // The DO folds one assistant message per turn that produced any text,
-        // so the post-turn count is the turn-start length plus the user message
-        // (+1) and, when any hop had text, the assistant message (+1).
         const messageCount = history.length + (result.anyHopText ? 2 : 1)
 
         return new PromptResponse({
@@ -109,7 +106,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const after = query.after ?? 0
         const limit = Math.min(Math.max(query.limit ?? 100, 1), 500)
         const page = yield* Effect.promise(() => agent.readJournal({ after, limit }))
-        // Decode failures die: rows were validated at append time.
         const events = yield* Effect.forEach(page.events, (row) =>
           decodeEventPayload(JSON.parse(row.payload)).pipe(
             Effect.map((event) => new JournalEvent({ seq: row.seq, createdAt: row.createdAt, event })),
@@ -123,8 +119,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const registry = yield* RegistryStub
         const stub = registry.get(registry.idFromName("global"))
-        // Rebuild class instances from the plain RPC rows — Schema.Class cannot
-        // cross the DO fence (see ISSUES.md).
         const rows = yield* Effect.promise(() => stub.list())
         return new SessionsResponse({
           sessions: rows.map(
@@ -143,8 +137,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
-        // Capture ambient services (LanguageModel + SkillsBucket) to hand into
-        // the SSE stream, which cannot carry them in its `R` channel.
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
 
         const history = yield* Effect.promise(() => agent.history())
@@ -170,10 +162,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
         const approved = payload.approved ?? true
 
-        // Atomically mark the resolution (the DO's check-and-insert is
-        // synchronous, so concurrent approves cannot both pass). The `async`
-        // wrapper flattens the RPC stub's per-member union distribution back
-        // into a clean `Promise<Union>` so `res.status` narrows.
         const res = yield* Effect.promise(async () =>
           agent.resolveApproval({
             eventId: params.eventId,
@@ -188,9 +176,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           return yield* new ApprovalConflictError({ eventId: params.eventId, message: res.status })
         }
 
-        // Reconstruct the continuation prompt from the full journal and resume
-        // past every hop already recorded for the parked turn. loadOverlay's
-        // SkillNotFound/RoleNotFound propagate as declared endpoint errors.
         const events = yield* fetchAllEvents(agent)
         const userMsg = findUserMessage(events, res.turn)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
