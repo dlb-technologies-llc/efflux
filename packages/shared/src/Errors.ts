@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Cause, Schema } from "effect"
 
 export class AgentError extends Schema.TaggedErrorClass<AgentError>()(
   "AgentError",
@@ -42,3 +42,18 @@ export class ApprovalConflictError extends Schema.TaggedErrorClass<ApprovalConfl
   },
   { httpApiStatus: 409 },
 ) {}
+
+/** Best-effort string message from an unknown error-channel value — many endpoint error members carry no `message` field, so direct `.message` access is unsafe. */
+export const messageOf = (error: unknown): string => {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = error.message
+    if (typeof message === "string") return message
+  }
+  return String(error)
+}
+
+/** Message from a `Cause`'s first failure reason, falling back when the cause carries only defects/interrupts. */
+export const failureMessage = (cause: Cause.Cause<unknown>, fallback: string): string => {
+  const failReason = cause.reasons.find(Cause.isFailReason)
+  return failReason ? messageOf(failReason.error) : fallback
+}
