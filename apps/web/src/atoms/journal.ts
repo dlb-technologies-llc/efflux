@@ -1,8 +1,8 @@
 import { Effect } from "effect"
 import { Atom } from "effect/unstable/reactivity"
-import { type JournalEvent } from "@effect-flue/shared"
+import type { JournalEvent } from "@effect-flue/shared"
 import { ApiClient, runtime } from "../runtime.ts"
-import { type SessionArgs } from "../session.ts"
+import type { SessionArgs } from "../session.ts"
 
 /**
  * Query atom (per-session): fully page the append-only journal into one ordered

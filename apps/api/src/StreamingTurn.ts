@@ -3,7 +3,7 @@ import {
   JournalAssistantText,
   JournalDone,
   JournalErrorEvent,
-  JournalEventPayload,
+  type JournalEventPayload,
   JournalHopMessages,
   JournalToolCall,
   JournalToolResult,
@@ -17,9 +17,9 @@ import {
   StreamPartToolResult,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Context, Effect, Filter, Layer, Queue, Ref, Result, Schema, Stream } from "effect"
-import { LanguageModel, Prompt, Response as AiResponse, Toolkit } from "effect/unstable/ai"
-import * as AiError from "effect/unstable/ai/AiError"
+import { Cause, type Context, Effect, Filter, Layer, Queue, Ref, Result, Schema, Stream } from "effect"
+import { LanguageModel, Prompt, type Response as AiResponse, type Toolkit } from "effect/unstable/ai"
+import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import {

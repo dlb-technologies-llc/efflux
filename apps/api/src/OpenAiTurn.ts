@@ -1,13 +1,13 @@
 import {
-  AgentError,
+  type AgentError,
   ChatCompletionChunk,
   JournalErrorEvent,
   type RulesMap,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Context, Effect, Layer, Queue, Schema, Stream } from "effect"
-import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/ai"
-import * as AiError from "effect/unstable/ai/AiError"
+import { Cause, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
+import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
+import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import {

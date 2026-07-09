@@ -1,12 +1,12 @@
 import {
-  AgentError,
-  ApprovalHandle,
+  type AgentError,
+  type ApprovalHandle,
   JournalApprovalRequested,
   type RulesMap,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Effect, Layer } from "effect"
-import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/ai"
+import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import {
   MAX_TOOL_HOPS,
   MODEL_HOP_TIMEOUT,

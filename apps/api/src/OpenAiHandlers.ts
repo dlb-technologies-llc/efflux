@@ -9,10 +9,10 @@ import {
   ModelsResponse,
   parseAgentModel,
   type RulesMap,
-  ToolRule,
+  type ToolRule,
 } from "@effect-flue/shared"
 import { Effect, Schema } from "effect"
-import { LanguageModel, Prompt } from "effect/unstable/ai"
+import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { loadOverlay } from "./AgentLoop.ts"

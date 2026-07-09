@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /** Live smoke for the AI Search knowledge demo: uploads two docs the base model can't know, polls until indexed, asks a grounded question, and checks the journal for a search_knowledge tool-call. */
 
-import { AgentApi, makePromptRequest, PutKnowledgeRequest } from "../packages/shared/src/index.ts"
+import { type AgentApi, makePromptRequest, PutKnowledgeRequest } from "../packages/shared/src/index.ts"
 import { Console, Effect } from "effect"
-import { HttpApiClient } from "effect/unstable/httpapi"
+import type { HttpApiClient } from "effect/unstable/httpapi"
 import { ApiClient, bootstrap, fetchAllEvents, runMain } from "./lib.ts"
 
 const USAGE = [

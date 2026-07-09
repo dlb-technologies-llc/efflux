@@ -13,7 +13,7 @@ import {
   SubagentTaskResponse,
 } from "@effect-flue/shared"
 import { Effect, Schema } from "effect"
-import { LanguageModel, Prompt } from "effect/unstable/ai"
+import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
