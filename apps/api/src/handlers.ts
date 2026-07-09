@@ -99,11 +99,16 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         })
       }),
     )
-    .handle("reset", ({ params }) =>
+    .handle("reset", ({ params, query }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
-        yield* Effect.promise(() => agent.reset())
+        const mode = query.mode ?? "reset"
+        if (mode === "reset") {
+          yield* Effect.promise(() => agent.reset())
+        } else {
+          yield* Effect.promise(() => agent.close({ mode, reason: "closed" }))
+        }
       }),
     )
     .handle("journal", ({ params, query }) =>
