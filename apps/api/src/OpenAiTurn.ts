@@ -1,8 +1,6 @@
 import {
   AgentError,
   ChatCompletionChunk,
-  JournalAssistantText,
-  JournalDone,
   JournalErrorEvent,
   type RulesMap,
 } from "@effect-flue/shared"
@@ -14,7 +12,7 @@ import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
-import { buildHopEvents, buildUsageEvent, eventJson } from "./JournalWrite.ts"
+import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 
@@ -28,10 +26,8 @@ interface TurnMeta {
 /** Accumulated result of a collected (non-stream) facade turn. */
 interface CollectedTurn {
   readonly text: string
-  readonly finishReason: string
   readonly lastInputTokens: number
   readonly totalOutputTokens: number
-  readonly toolCallCount: number
 }
 
 /** Shared inputs for both facade turn drivers. `meta` stamps the OpenAI frames the caller builds. */
@@ -51,41 +47,6 @@ interface StreamTurnInput extends FacadeTurnInput {
 
 /** Message emitted when a facade turn hits an approval gate; approvals are coerced off upstream, so this only fires defensively. */
 const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are disabled"
-
-/**
- * One batched hop-end journal write: granular tool events + authoritative
- * hop-messages + display text + usage, and `done` only when supplied (a
- * terminal, non-parked finish). Mirrors the non-stream driver's batched shape.
- */
-const journalHopBatch = (input: {
-  agent: ReturnType<AgentNamespace["getByName"]>
-  turn: number
-  hop: number
-  model: string
-  parts: ReadonlyArray<AiResponse.AnyPart>
-  text: string
-  done?: { finishReason: AiResponse.FinishReason; toolCallCount: number }
-}) =>
-  Effect.gen(function* () {
-    const events = buildHopEvents({ turn: input.turn, hop: input.hop, parts: input.parts })
-    if (input.text.length > 0) {
-      events.push(new JournalAssistantText({ turn: input.turn, hop: input.hop, text: input.text }))
-    }
-    const usage = buildUsageEvent({ turn: input.turn, hop: input.hop, model: input.model, parts: input.parts })
-    if (usage !== undefined) events.push(usage)
-    if (input.done !== undefined) {
-      events.push(
-        new JournalDone({
-          turn: input.turn,
-          finishReason: input.done.finishReason,
-          toolCallCount: input.done.toolCallCount,
-        }),
-      )
-    }
-    if (events.length > 0) {
-      yield* Effect.promise(() => input.agent.appendEvents(events.map(eventJson)))
-    }
-  })
 
 /**
  * The collected (non-stream) facade driver: runs the hop-capped `generateText`
@@ -109,7 +70,6 @@ export const collectOpenAiTurn = (
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
     let text = ""
-    let finishReason: string = "unknown"
     let lastInputTokens = 0
     let totalOutputTokens = 0
     let toolCallCount = 0
@@ -136,7 +96,6 @@ export const collectOpenAiTurn = (
 
       toolCallCount += response.toolCalls.length
       text = response.text
-      finishReason = response.finishReason
 
       const finish = response.content.find((p) => p.type === "finish")
       if (finish !== undefined && finish.type === "finish") {
@@ -149,15 +108,7 @@ export const collectOpenAiTurn = (
         yield* Effect.promise(() =>
           agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: APPROVAL_DISABLED }))]),
         )
-        yield* journalHopBatch({
-          agent,
-          turn,
-          hop,
-          model,
-          parts: response.content,
-          text: response.text,
-          done: { finishReason: response.finishReason, toolCallCount },
-        })
+        yield* journalHopBatch({ agent, turn, hop, model, parts: response.content, text: response.text })
         break
       }
 
@@ -176,7 +127,7 @@ export const collectOpenAiTurn = (
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
     }
 
-    return { text, finishReason, lastInputTokens, totalOutputTokens, toolCallCount }
+    return { text, lastInputTokens, totalOutputTokens }
   })
 
   return loop.pipe(
@@ -279,21 +230,22 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
             lastFinishReason === undefined ||
             !shouldContinueToolLoop(lastFinishReason)
 
-          const events = buildHopEvents({ turn, hop, parts: collected })
-          if (hopText.length > 0) {
-            events.push(new JournalAssistantText({ turn, hop, text: hopText }))
-          }
-          const usage = buildUsageEvent({ turn, hop, model, parts: collected })
-          if (usage !== undefined) events.push(usage)
           if (approvalRequested) {
-            events.push(new JournalErrorEvent({ turn, message: APPROVAL_DISABLED }))
+            yield* Effect.promise(() =>
+              agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: APPROVAL_DISABLED }))]),
+            )
           }
-          if (terminal && lastFinishReason !== undefined && !approvalRequested) {
-            events.push(new JournalDone({ turn, finishReason: lastFinishReason, toolCallCount: totalToolCalls }))
-          }
-          if (events.length > 0) {
-            yield* Effect.promise(() => agent.appendEvents(events.map(eventJson)))
-          }
+          yield* journalHopBatch({
+            agent,
+            turn,
+            hop,
+            model,
+            parts: collected,
+            text: hopText,
+            ...(terminal && lastFinishReason !== undefined && !approvalRequested
+              ? { done: { finishReason: lastFinishReason, toolCallCount: totalToolCalls } }
+              : {}),
+          })
 
           if (terminal) break
           promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))

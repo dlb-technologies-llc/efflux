@@ -32,10 +32,10 @@ const autoApproveRules = (rules: RulesMap): RulesMap =>
     ),
   )
 
-/** OpenAI-shaped 400 for a malformed `model` field or a request with no user message. */
-const invalidRequest = (message: string): HttpServerResponse.HttpServerResponse =>
+/** OpenAI-shaped 400 for a malformed `model` field or a request with no user message; `code` distinguishes the two. */
+const invalidRequest = (message: string, code: string): HttpServerResponse.HttpServerResponse =>
   HttpServerResponse.jsonUnsafe(
-    { error: { message, type: "invalid_request_error", code: "model_not_found" } },
+    { error: { message, type: "invalid_request_error", code } },
     { status: 400 },
   )
 
@@ -67,7 +67,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
       Effect.gen(function* () {
         const parsed = parseAgentModel(payload.model)
         if (parsed === undefined) {
-          return invalidRequest(`Unknown model '${payload.model}'. Use 'agent:<name>:<id>'.`)
+          return invalidRequest(`Unknown model '${payload.model}'. Use 'agent:<name>:<id>'.`, "model_not_found")
         }
 
         const agents = yield* AgentStub
@@ -81,9 +81,10 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           .reverse()
           .find((m) => m.role === "user" && m.content !== null)
         if (lastUser === undefined || lastUser.content === null) {
-          return invalidRequest("messages must contain a user message")
+          return invalidRequest("messages must contain a user message", "invalid_request")
         }
-        const turn = yield* openTurn(agent, { message: lastUser.content, model: payload.model })
+        const effectiveModel = resolved.defaultModel
+        const turn = yield* openTurn(agent, { message: lastUser.content, model: effectiveModel })
 
         const meta = {
           id: `chatcmpl-${crypto.randomUUID()}`,
@@ -91,7 +92,6 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           model: payload.model,
         }
         const rules = autoApproveRules(resolved.rules)
-        const effectiveModel = resolved.defaultModel
         const initialPrompt = Prompt.make(promptMessages)
 
         if (payload.stream === true) {

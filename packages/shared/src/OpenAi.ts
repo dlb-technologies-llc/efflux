@@ -8,7 +8,7 @@ export class ChatMessage extends Schema.Class<ChatMessage>("ChatMessage")({
 
 /** OpenAI `POST /v1/chat/completions` request body. Unlisted fields (temperature, top_p, tools, …) are stripped on decode. `model` is the session address `agent:<name>:<id>`. */
 export class ChatCompletionRequest extends Schema.Class<ChatCompletionRequest>("ChatCompletionRequest")({
-  model: Schema.String.check(Schema.isMaxLength(256)),
+  model: Schema.String.check(Schema.isMaxLength(512)),
   messages: Schema.Array(ChatMessage).check(Schema.isMinLength(1)),
   stream: Schema.optionalKey(Schema.Boolean),
 }) {}
