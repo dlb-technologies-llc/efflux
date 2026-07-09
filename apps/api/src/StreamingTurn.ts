@@ -26,8 +26,9 @@ import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./Ag
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
+import { ApprovalRules } from "./Tools.ts"
 
 /** The SSE-bound StreamPart union, kept in lockstep with the wire contract. */
 type SseStreamPart = StreamPart
@@ -45,6 +46,10 @@ interface RunStreamingTurnInput {
   payloadModel: string | undefined
   /** Resolved per-tool permission rules for this turn; provided into the stream as the ApprovalRules Reference. */
   rules: RulesMap
+  /** The merged session toolkit (local `AgentToolkit` folded with the resolved MCP tools) driving `streamText` this turn. */
+  toolkit: SessionToolkit["toolkit"]
+  /** The matching merged handler layer for `toolkit`, provided into the stream for tool execution. */
+  toolLayer: SessionToolkit["toolLayer"]
 }
 
 /**
@@ -58,7 +63,8 @@ interface RunStreamingTurnInput {
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, model, payloadModel, rules, startHop, turn } = input
+  const { agent, ambient, initialPrompt, model, payloadModel, rules, startHop, toolkit, toolLayer, turn } =
+    input
 
   let pendingHopText = ""
   let currentHop = startHop
@@ -93,7 +99,7 @@ export const runStreamingTurn = (
         Effect.gen(function* () {
           const queue = yield* Queue.bounded<
             {
-              part: AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>>
+              part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
               seq: number | undefined
             },
             AiError.AiError | Cause.Done
@@ -108,7 +114,7 @@ export const runStreamingTurn = (
               pendingHopText = ""
               const baseCall = LanguageModel.streamText({
                 prompt: promptValue,
-                toolkit: AgentToolkit,
+                toolkit,
               })
               const withModel =
                 payloadModel !== undefined
@@ -119,7 +125,7 @@ export const runStreamingTurn = (
 
               const collected: Array<AiResponse.AnyPart> = []
               let lastFinishReason: AiResponse.FinishReason | undefined
-              let finishPart: AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>> | undefined
+              let finishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
 
               yield* withModel.pipe(
                 Stream.runForEach((part) =>
@@ -251,7 +257,7 @@ export const runStreamingTurn = (
       )
 
       return loopedStream.pipe(
-        Stream.provide(AgentToolkitLayer),
+        Stream.provide(toolLayer),
         Stream.provide(bashRunner),
         Stream.provide(Layer.succeed(ApprovalRules, rules)),
         Stream.provideContext(ambient),
@@ -310,7 +316,7 @@ export const runStreamingTurn = (
 
 /** Map one Effect AI response part to an SSE StreamPart carrying its backing journal seq; unknown parts and a seq-less `tool-approval-request` are dropped. */
 const toFramedPart = (el: {
-  part: AiResponse.StreamPart<Toolkit.Tools<typeof AgentToolkit>>
+  part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
   seq: number | undefined
 }): Result.Result<FramedPart, unknown> => {
   const part = el.part

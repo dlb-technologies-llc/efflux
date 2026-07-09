@@ -13,6 +13,7 @@ import { Cause, Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
+import { isBlockedHost } from "./Ssrf.ts"
 import { runSubagent } from "./Subagent.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
@@ -292,34 +293,6 @@ const MAX_FETCH_BYTES = 100_000
 
 /** How many redirect hops to follow before giving up (re-validated on each). */
 const MAX_REDIRECT_HOPS = 5
-
-/**
- * SSRF guard: reject hostnames pointing at the Worker's own network (localhost,
- * private/loopback/link-local/unique-local IP literals, `.internal`/`.local`),
- * re-applied to every redirect. Does NOT stop DNS rebinding — Workers exposes no
- * resolver to check a public hostname's resolved address before fetch.
- */
-const isBlockedHost = (hostname: string): boolean => {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
-  if (host === "" || host === "localhost") return true
-  if (host.endsWith(".internal") || host.endsWith(".local")) return true
-  if (host.includes(":")) {
-    if (host === "::1" || host === "::") return true
-    if (/^fe[89ab]/.test(host)) return true
-    if (/^f[cd]/.test(host)) return true
-    return false
-  }
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
-  if (v4 !== null) {
-    const a = Number(v4[1])
-    const b = Number(v4[2])
-    if (a === 0 || a === 10 || a === 127) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 192 && b === 168) return true
-    if (a === 169 && b === 254) return true
-  }
-  return false
-}
 
 const WebFetchResult = Schema.Struct({
   status: Schema.Number,

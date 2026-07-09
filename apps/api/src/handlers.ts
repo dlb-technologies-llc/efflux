@@ -24,6 +24,7 @@ import { runPromptTurn } from "./PromptTurn.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
 import { RegistryStub } from "./Registry.ts"
+import { buildSessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { runStreamingTurn } from "./StreamingTurn.ts"
 import { runSubagent } from "./Subagent.ts"
@@ -67,6 +68,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const resolved = yield* loadResolvedConfig(agent)
+        const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const messages = composeMessages({ skillBody, roleBody, history, message: payload.message })
@@ -80,6 +82,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           model: effectiveModel,
           payloadModel: effectiveModel,
           rules: resolved.rules,
+          toolkit,
+          toolLayer,
         })
 
         const messageCount = history.length + (result.anyHopText ? 2 : 1)
@@ -166,6 +170,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const resolved = yield* loadResolvedConfig(agent)
+        const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
@@ -182,6 +187,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           model: effectiveModel,
           payloadModel: effectiveModel,
           rules: resolved.rules,
+          toolkit,
+          toolLayer,
         })
       }),
     )
@@ -207,6 +214,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         }
 
         const resolved = yield* loadResolvedConfig(agent)
+        const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
         const events = yield* fetchAllEvents(agent)
         const userMsg = findUserMessage(events, res.turn)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
@@ -231,6 +239,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           model: effectiveModel,
           payloadModel: effectiveModel,
           rules: resolved.rules,
+          toolkit,
+          toolLayer,
         })
       }),
     )
