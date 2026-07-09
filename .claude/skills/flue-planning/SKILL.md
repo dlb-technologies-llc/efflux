@@ -25,6 +25,7 @@ This is v1 of the skill — deliberately lean. It gets sharpened by `/flue-postm
 
 ## Process
 
+0. **Re-sync `origin/staging` first.** `git fetch origin staging`; if the main checkout is behind, re-sync it before drafting. `/flue-planning` runs from the MAIN checkout's working tree (NOT a worktree), and the `flue-*` skills evolve fast on `staging` — every postmortem tightens them — so a behind-`staging` checkout silently plans against stale guidance. (openai-facade #68 was authored from a `#63` checkout missing #64's wave-boundary-clean rule and `flue-verifying`'s clobber/405 signatures, and reproduced BOTH already-forbidden anti-patterns: a red wave-1 typecheck from splitting a contract off its handler, and a slow deploy-clobber diagnosis.)
 1. **Research.** Codebase first — copy the local convention and cite `file:line` for every pattern a task relies on. Read `ISSUES.md` for landmines touching the plan's surface. Effect v4 APIs only from source, in the authority order above.
 2. **Exemplar inventory.** If the issue or user cites a template ("like <existing setup X>"), enumerate X's FULL inventory during research and list every element you're omitting in the plan for the user to see. Silent scope cuts against a named exemplar are the #1 "that's not what I asked" rework source (a releasing skill was silently dropped from the skills-suite plan this way).
 3. **Tracker check.** `gh issue list --state all --search "<surface>"` and `gh pr list --state all --search "<surface>"` — look for twins and in-flight work before drafting tasks.
