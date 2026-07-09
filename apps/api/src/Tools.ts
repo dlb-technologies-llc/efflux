@@ -6,11 +6,12 @@ import {
   DEFAULT_TOOL_RULES,
   resolveRule,
   type RulesMap,
+  SkillSummary,
   SubagentTaskRequest,
 } from "@effect-flue/shared"
 import { Cause, Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
-import { SkillsBucket } from "./Skills.ts"
+import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
@@ -58,6 +59,25 @@ export const SpawnSubagentTool = Tool.make("SpawnSubagent", {
   parameters: SpawnSubagentParameters,
   success: Schema.String,
   dependencies: [LanguageModel.LanguageModel, SkillsBucket],
+})
+
+export const ListSkillsTool = Tool.make("list_skills", {
+  description:
+    "List the specialized skills available in this workspace (name + one-line description). Call this to DISCOVER skills you can then pull into context with load_skill when the user's task matches one.",
+  success: Schema.Array(SkillSummary),
+  dependencies: [SkillsBucket],
+})
+
+export const LoadSkillTool = Tool.make("load_skill", {
+  description:
+    "Load a named skill's full instructions into the conversation so you can follow them for the current task. Use list_skills first to see what's available. Returns the skill's markdown instructions, or an 'Error: ...' string if the skill does not exist.",
+  parameters: Schema.Struct({
+    name: Schema.String.annotate({
+      description: "Skill name exactly as returned by list_skills.",
+    }),
+  }),
+  success: Schema.String,
+  dependencies: [SkillsBucket],
 })
 
 const BashParameters = Schema.Struct({
@@ -442,6 +462,8 @@ const runWebFetch = (url: string): Effect.Effect<WebFetchResultValue> =>
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,
   SpawnSubagentTool,
+  ListSkillsTool,
+  LoadSkillTool,
   BashTool,
   ReadFileTool,
   WriteFileTool,
@@ -475,6 +497,30 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
           Effect.succeed(`Error: Skill not found: ${e.skill}`),
         RoleNotFoundError: (e) =>
           Effect.succeed(`Error: Role not found: ${e.role}`),
+        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+      }),
+    ),
+  list_skills: () =>
+    listSkills().pipe(
+      Effect.map((skills) =>
+        skills.map(
+          (s) => new SkillSummary({ name: s.name, description: s.description }),
+        ),
+      ),
+      Effect.tapErrorTag("AgentError", (e) =>
+        Effect.logWarning(`list_skills: ${e.message}`),
+      ),
+      Effect.catchTag("AgentError", () => Effect.succeed([])),
+    ),
+  load_skill: (params) =>
+    loadSkillBody(params.name).pipe(
+      Effect.map(capText),
+      Effect.tapErrorTag("SkillNotFoundError", (e) =>
+        Effect.logWarning(`load_skill: not found: ${e.skill}`),
+      ),
+      Effect.catchTags({
+        SkillNotFoundError: (e) =>
+          Effect.succeed(`Error: Skill not found: ${e.skill}`),
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     ),
