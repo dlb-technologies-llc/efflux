@@ -10,6 +10,20 @@ export class SkillsBucket extends Context.Service<SkillsBucket, R2Bucket>()(
   "api/SkillsBucket",
 ) {}
 
+/** Run one R2 op, wrapping any thrown failure as an AgentError tagged with the op + key. */
+const r2 = <A>(
+  op: string,
+  key: string,
+  run: () => Promise<A>,
+): Effect.Effect<A, AgentError> =>
+  Effect.tryPromise({
+    try: run,
+    catch: (e) =>
+      new AgentError({
+        message: `R2 ${op} failed for ${key}: ${e instanceof Error ? e.message : String(e)}`,
+      }),
+  })
+
 /** Cross-isolate staleness bound for cached bodies: runtime PUT means bodies now change without a redeploy, so a lifetime cache would serve stale text; a short TTL bounds cross-isolate staleness while the writing isolate invalidates immediately. */
 const BODY_CACHE_TTL_MS = 60_000
 
@@ -53,27 +67,11 @@ const loadBody = <E>(
     }
 
     const bucket = yield* SkillsBucket
-    const obj = yield* Effect.tryPromise({
-      try: () => bucket.get(key),
-      catch: (e) =>
-        new AgentError({
-          message: `R2 get failed for ${key}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        }),
-    })
+    const obj = yield* r2("get", key, () => bucket.get(key))
 
     if (obj === null) return yield* Effect.fail(notFound(key))
 
-    const text = yield* Effect.tryPromise({
-      try: () => obj.text(),
-      catch: (e) =>
-        new AgentError({
-          message: `R2 body read failed for ${key}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        }),
-    })
+    const text = yield* r2("body read", key, () => obj.text())
 
     const body = stripFrontmatter(text)
     bodyCache.set(key, { body, at: Date.now() })
@@ -105,38 +103,16 @@ export const listSkills = Effect.fn("listSkills")(function* (): Effect.fn.Return
   SkillsBucket
 > {
   const bucket = yield* SkillsBucket
-  const listed = yield* Effect.tryPromise({
-    try: () => bucket.list({ prefix: "skills/" }),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 list failed for skills/: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  const listed = yield* r2("list", "skills/", () =>
+    bucket.list({ prefix: "skills/" }),
+  )
 
   const skills: Array<{ name: string; description: string }> = []
   for (const object of listed.objects) {
     if (!object.key.endsWith(".md")) continue
-    const obj = yield* Effect.tryPromise({
-      try: () => bucket.get(object.key),
-      catch: (e) =>
-        new AgentError({
-          message: `R2 get failed for ${object.key}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        }),
-    })
+    const obj = yield* r2("get", object.key, () => bucket.get(object.key))
     if (obj === null) continue
-    const text = yield* Effect.tryPromise({
-      try: () => obj.text(),
-      catch: (e) =>
-        new AgentError({
-          message: `R2 body read failed for ${object.key}: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        }),
-    })
+    const text = yield* r2("body read", object.key, () => obj.text())
     const name = object.key.slice("skills/".length, -".md".length)
     skills.push({ name, description: frontmatterDescription(text) })
   }
@@ -150,29 +126,13 @@ export const getSkillRaw = Effect.fn("getSkillRaw")(function* (
 ): Effect.fn.Return<string, SkillNotFoundError | AgentError, SkillsBucket> {
   const key = `skills/${name}.md`
   const bucket = yield* SkillsBucket
-  const obj = yield* Effect.tryPromise({
-    try: () => bucket.get(key),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 get failed for ${key}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  const obj = yield* r2("get", key, () => bucket.get(key))
 
   if (obj === null) {
     return yield* Effect.fail(new SkillNotFoundError({ skill: name, key }))
   }
 
-  return yield* Effect.tryPromise({
-    try: () => obj.text(),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 body read failed for ${key}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  return yield* r2("body read", key, () => obj.text())
 })
 
 /** Write a skill body to R2, then invalidate this isolate's cache so it never serves the pre-write text. */
@@ -182,15 +142,7 @@ export const putSkillBody = Effect.fn("putSkillBody")(function* (
 ): Effect.fn.Return<void, AgentError, SkillsBucket> {
   const key = `skills/${name}.md`
   const bucket = yield* SkillsBucket
-  yield* Effect.tryPromise({
-    try: () => bucket.put(key, content),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 put failed for ${key}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  yield* r2("put", key, () => bucket.put(key, content))
   invalidateSkillCache(name)
 })
 
@@ -200,28 +152,12 @@ export const deleteSkillObject = Effect.fn("deleteSkillObject")(function* (
 ): Effect.fn.Return<void, SkillNotFoundError | AgentError, SkillsBucket> {
   const key = `skills/${name}.md`
   const bucket = yield* SkillsBucket
-  const existing = yield* Effect.tryPromise({
-    try: () => bucket.head(key),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 head failed for ${key}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  const existing = yield* r2("head", key, () => bucket.head(key))
 
   if (existing === null) {
     return yield* Effect.fail(new SkillNotFoundError({ skill: name, key }))
   }
 
-  yield* Effect.tryPromise({
-    try: () => bucket.delete(key),
-    catch: (e) =>
-      new AgentError({
-        message: `R2 delete failed for ${key}: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      }),
-  })
+  yield* r2("delete", key, () => bucket.delete(key))
   invalidateSkillCache(name)
 })

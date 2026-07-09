@@ -81,7 +81,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   ]),
 )
 
-/** Build the native `(Request) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed and request-abort is wired to fiber interruption so handler finalizers run on client disconnect. */
+/** Build the native `(Request) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed. Request-abort interruption covers mid-hop model FAILURES only — workerd fires no disconnect callback, so handler finalizers do NOT run on client disconnect (persistence is inline, not finalizer-driven). */
 const buildWebHandler = (
   env: Env,
 ): Promise<(request: Request) => Promise<Response>> => {

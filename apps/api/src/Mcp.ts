@@ -396,7 +396,7 @@ const notify = (
   sendFetch(server, headers, { jsonrpc: "2.0", method }).pipe(
     Effect.flatMap((response) => ensureOk(server, response)),
     Effect.flatMap((response) =>
-      Effect.promise(() => response.body?.cancel() ?? Promise.resolve()),
+      Effect.ignore(Effect.tryPromise(() => response.body?.cancel() ?? Promise.resolve())),
     ),
     Effect.timeout("10 seconds"),
     Effect.catchTag("TimeoutError", () =>

@@ -9,13 +9,19 @@ import {
   SkillSummary,
   SubagentTaskRequest,
 } from "@effect-flue/shared"
-import { Cause, Context, Effect, Encoding, Schema } from "effect"
+import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
-import { isBlockedHost } from "./Ssrf.ts"
 import { runSubagent } from "./Subagent.ts"
 import { MAX_TOOL_OUTPUT_CHARS, capForPrompt } from "./Truncate.ts"
+import {
+  MAX_FETCH_BYTES,
+  MAX_REDIRECT_HOPS,
+  runWebFetch,
+  WebFetchResult,
+  webFetchError,
+} from "./WebFetch.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
 const BashResult = Schema.Struct({
@@ -283,21 +289,6 @@ export const GrepTool = Tool.make("grep", {
   needsApproval: needsApprovalFor("grep"),
 })
 
-/** Network read ceiling; the returned body is further capped for the prompt. */
-const MAX_FETCH_BYTES = 100_000
-
-/** How many redirect hops to follow before giving up (re-validated on each). */
-const MAX_REDIRECT_HOPS = 5
-
-const WebFetchResult = Schema.Struct({
-  status: Schema.Number,
-  contentType: Schema.String,
-  body: Schema.String,
-  truncated: Schema.Boolean,
-})
-
-type WebFetchResultValue = typeof WebFetchResult.Type
-
 export const WebFetchTool = Tool.make("web_fetch", {
   description: `Fetch a public http(s) URL from the Worker (GET, up to ${MAX_REDIRECT_HOPS} redirects followed with the destination re-validated on each hop, 15s timeout) and return the response body as text. The body is read up to ${MAX_FETCH_BYTES} bytes and the returned text is capped at ${MAX_TOOL_OUTPUT_CHARS} characters (truncated=true when cut). A status of 0 means the fetch itself failed (invalid URL, unsupported scheme, blocked private/internal host, too many redirects, network error, or timeout) — the reason is in the body as "Error: ...".`,
   parameters: Schema.Struct({
@@ -322,125 +313,6 @@ export const SearchKnowledgeTool = Tool.make("search_knowledge", {
   dependencies: [KnowledgeSearch],
   needsApproval: needsApprovalFor("search_knowledge"),
 })
-
-const webFetchError = (message: string): WebFetchResultValue => ({
-  status: 0,
-  contentType: "",
-  body: `Error: ${message}`,
-  truncated: false,
-})
-
-/** Surface the first failure/defect in a cause as readable text for the model. */
-const causeMessage = (cause: Cause.Cause<unknown>): string => {
-  for (const reason of cause.reasons) {
-    const value = Cause.isFailReason(reason)
-      ? reason.error
-      : Cause.isDieReason(reason)
-        ? reason.defect
-        : undefined
-    if (value instanceof Error) return value.message
-    if (value !== undefined) return String(value)
-  }
-  return "unknown error"
-}
-
-/** Read the response body up to MAX_FETCH_BYTES; cancels the reader on early exit and streams decode so a byte cut can't split a multibyte char. */
-const readBody = (
-  response: Response,
-): Effect.Effect<{ text: string; truncated: boolean }, Cause.UnknownError> =>
-  Effect.tryPromise(async (signal) => {
-    const body = response.body
-    if (body === null) return { text: "", truncated: false }
-    const reader = body.getReader()
-    const decoder = new TextDecoder()
-    let text = ""
-    let bytes = 0
-    let truncated = false
-    while (true) {
-      if (signal.aborted) {
-        await reader.cancel()
-        throw new Error("fetch aborted")
-      }
-      const { done, value } = await reader.read()
-      if (done || value === undefined) break
-      bytes += value.byteLength
-      text += decoder.decode(value, { stream: true })
-      if (bytes >= MAX_FETCH_BYTES) {
-        truncated = true
-        await reader.cancel()
-        break
-      }
-    }
-    text += decoder.decode()
-    return { text, truncated }
-  })
-
-/** Follow redirects manually, re-validating each hop's host and draining intermediate 3xx bodies; the AbortSignal wiring is load-bearing or the 15s timeout leaves the subrequest dangling. */
-const followRedirects = (
-  target: URL,
-  hopsLeft: number,
-): Effect.Effect<Response, Cause.UnknownError | Error> =>
-  Effect.gen(function* () {
-    const res = yield* Effect.tryPromise((signal) =>
-      fetch(target.href, { redirect: "manual", signal }),
-    )
-    const location =
-      res.status >= 300 && res.status < 400 ? res.headers.get("location") : null
-    if (location === null) return res
-    yield* Effect.promise(() => res.body?.cancel() ?? Promise.resolve())
-    if (hopsLeft === 0) {
-      return yield* Effect.fail(
-        new Error(`too many redirects (>${MAX_REDIRECT_HOPS})`),
-      )
-    }
-    const next = yield* Effect.try(() => new URL(location, target)).pipe(
-      Effect.mapError(() => new Error(`invalid redirect target: ${location}`)),
-    )
-    if (next.protocol !== "http:" && next.protocol !== "https:") {
-      return yield* Effect.fail(
-        new Error(`redirect to unsupported scheme: ${next.protocol}`),
-      )
-    }
-    if (isBlockedHost(next.hostname)) {
-      return yield* Effect.fail(
-        new Error(
-          `redirect to blocked host: ${next.hostname} (private/internal address)`,
-        ),
-      )
-    }
-    return yield* followRedirects(next, hopsLeft - 1)
-  })
-
-const runWebFetch = (url: string): Effect.Effect<WebFetchResultValue> =>
-  Effect.gen(function* () {
-    const parsed = yield* Effect.try(() => new URL(url))
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return yield* Effect.fail(
-        new Error(`unsupported URL scheme: ${parsed.protocol} (only http/https)`),
-      )
-    }
-    if (isBlockedHost(parsed.hostname)) {
-      return yield* Effect.fail(
-        new Error(`blocked host: ${parsed.hostname} (private/internal address)`),
-      )
-    }
-    const response = yield* followRedirects(parsed, MAX_REDIRECT_HOPS)
-    const { text, truncated } = yield* readBody(response)
-    const capped = text.length > MAX_TOOL_OUTPUT_CHARS
-    return {
-      status: response.status,
-      contentType: response.headers.get("content-type") ?? "",
-      body: capped
-        ? `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n[body truncated]`
-        : text,
-      truncated: truncated || capped,
-    }
-  }).pipe(
-    Effect.timeout("15 seconds"),
-    Effect.catchCause((cause) =>
-      Effect.succeed(webFetchError(causeMessage(cause))),
-    ),
-  )
 
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,

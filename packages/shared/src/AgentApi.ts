@@ -228,7 +228,7 @@ export const V1Group = HttpApiGroup.make("v1")
   .add(listModels)
   .middleware(AuthMiddleware)
 
-/** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
+/** The app's single HttpApi; `.middleware` is chained last, so per `HttpApi.middleware` semantics it applies to every endpoint already added across all groups — a group added after this call would not receive it. */
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
