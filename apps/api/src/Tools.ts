@@ -15,6 +15,7 @@ import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { isBlockedHost } from "./Ssrf.ts"
 import { runSubagent } from "./Subagent.ts"
+import { MAX_TOOL_OUTPUT_CHARS, capForPrompt } from "./Truncate.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
 const BashResult = Schema.Struct({
@@ -100,24 +101,16 @@ export const BashTool = Tool.make("Bash", {
   needsApproval: needsApprovalFor("Bash"),
 })
 
-/** Cap tool output — results feed back into the prompt next hop, so one runaway `cat` must not dwarf the context. */
-const MAX_TOOL_OUTPUT_CHARS = 30_000
-
 /** Pre-empt E2BIG: the whole command rides as one `sh -c` argv element, capped at MAX_ARG_STRLEN (131,072 bytes); commands are pure ASCII so chars == bytes. */
 const MAX_COMMAND_CHARS = 90_000
 
 const EPHEMERAL_NOTE =
   "Paths resolve relative to /workspace, a writable but EPHEMERAL scratch space — contents are wiped when the sandbox idles out (~10 minutes) or redeploys."
 
-const capText = (text: string): string =>
-  text.length > MAX_TOOL_OUTPUT_CHARS
-    ? `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n[output truncated]`
-    : text
-
 const capExecResult = (result: BashResultValue): BashResultValue => ({
   exitCode: result.exitCode,
-  stdout: capText(result.stdout),
-  stderr: capText(result.stderr),
+  stdout: capForPrompt(result.stdout),
+  stderr: capForPrompt(result.stderr),
 })
 
 const execCapped = (command: string): Effect.Effect<BashResultValue, never, BashRunner> =>
@@ -512,7 +505,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       const rules = yield* ApprovalRules
       if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
       return yield* loadSkillBody(params.name).pipe(
-        Effect.map(capText),
+        Effect.map(capForPrompt),
         Effect.tapErrorTag("SkillNotFoundError", (e) =>
           Effect.logWarning(`load_skill: not found: ${e.skill}`),
         ),
@@ -590,7 +583,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       const rules = yield* ApprovalRules
       if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
       return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
-        Effect.map(capText),
+        Effect.map(capForPrompt),
         Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
         Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
       )

@@ -1,4 +1,6 @@
 import { AgentConfig, DEFAULT_TOOL_RULES, type ResolvedConfig } from "@effect-flue/shared"
+import { Effect, Schema } from "effect"
+import type { AgentNamespace } from "./AgentStub.ts"
 
 export const DEFAULT_MODEL = "tencent/hy3:free"
 
@@ -16,3 +18,11 @@ export const resolveConfig = (stored: typeof AgentConfig.Type): ResolvedConfig =
   compactionThreshold: stored.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
   mcpServers: stored.mcpServers ?? [],
 })
+
+/** Load the session's stored overrides from the DO and resolve them against Defaults. Decode-dies on corruption (config was validated at PUT). */
+export const loadResolvedConfig = (agent: ReturnType<AgentNamespace["getByName"]>) =>
+  Effect.gen(function* () {
+    const raw = yield* Effect.promise(() => agent.getConfig())
+    const stored = yield* Schema.decodeUnknownEffect(AgentConfig)(raw).pipe(Effect.orDie)
+    return resolveConfig(stored)
+  })

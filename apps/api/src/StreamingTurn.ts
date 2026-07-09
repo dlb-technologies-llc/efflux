@@ -22,7 +22,13 @@ import { LanguageModel, Prompt, Response as AiResponse, Toolkit } from "effect/u
 import * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
-import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
+import {
+  MAX_TOOL_HOPS,
+  MODEL_HOP_TIMEOUT,
+  makeBashRunnerLayer,
+  shouldContinueToolLoop,
+  snapshotWorkspace,
+} from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
@@ -43,7 +49,6 @@ interface RunStreamingTurnInput {
   startHop: number
   initialPrompt: Prompt.Prompt
   model: string
-  payloadModel: string | undefined
   /** Resolved per-tool permission rules for this turn; provided into the stream as the ApprovalRules Reference. */
   rules: RulesMap
   /** The merged session toolkit (local `AgentToolkit` folded with the resolved MCP tools) driving `streamText` this turn. */
@@ -63,8 +68,7 @@ interface RunStreamingTurnInput {
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, model, payloadModel, rules, startHop, toolkit, toolLayer, turn } =
-    input
+  const { agent, ambient, initialPrompt, model, rules, startHop, toolkit, toolLayer, turn } = input
 
   let pendingHopText = ""
   let currentHop = startHop
@@ -85,11 +89,6 @@ export const runStreamingTurn = (
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
 
-  const snapshotWorkspace = Effect.promise(() => agent.snapshotIfDirty()).pipe(
-    Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
-    Effect.asVoid,
-  )
-
   const sseFrames = Stream.unwrap(
     Effect.gen(function* () {
       const toolCallCount = yield* Ref.make(0)
@@ -102,7 +101,7 @@ export const runStreamingTurn = (
               part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
               seq: number | undefined
             },
-            AiError.AiError | Cause.Done
+            AiError.AiError | Cause.TimeoutError | Cause.Done
           >(64)
 
           const driver = Effect.gen(function* () {
@@ -116,12 +115,9 @@ export const runStreamingTurn = (
                 prompt: promptValue,
                 toolkit,
               })
-              const withModel =
-                payloadModel !== undefined
-                  ? baseCall.pipe(
-                      Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model: payloadModel })),
-                    )
-                  : baseCall
+              const withModel = baseCall.pipe(
+                Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
+              )
 
               const collected: Array<AiResponse.AnyPart> = []
               let lastFinishReason: AiResponse.FinishReason | undefined
@@ -210,6 +206,7 @@ export const runStreamingTurn = (
                     }
                   }),
                 ),
+                Effect.timeout(MODEL_HOP_TIMEOUT),
               )
 
               const terminal =
@@ -302,8 +299,7 @@ export const runStreamingTurn = (
           }),
         ),
         Stream.encodeText,
-        Stream.ensuring(flushPartialHopText),
-        Stream.ensuring(snapshotWorkspace),
+        Stream.ensuring(snapshotWorkspace(agent)),
       )
     }),
   )

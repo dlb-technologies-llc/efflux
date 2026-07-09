@@ -67,7 +67,12 @@ export const searchKnowledge = Effect.fn("searchKnowledge")(function* (
       new AgentError({
         message: `AI Search query failed: ${e instanceof Error ? e.message : String(e)}`,
       }),
-  })
+  }).pipe(
+    Effect.timeout("15 seconds"),
+    Effect.catchTag("TimeoutError", () =>
+      Effect.fail(new AgentError({ message: "AI Search query timed out after 15 seconds" })),
+    ),
+  )
   if (res.chunks.length === 0) return "No relevant knowledge found."
   return res.chunks
     .map((c) => `[${toName(c.item.key)} · score ${c.score.toFixed(3)}]\n${c.text}`)

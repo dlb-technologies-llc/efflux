@@ -1,6 +1,5 @@
 import {
   AgentApi,
-  AgentConfig,
   ChatCompletionChoice,
   ChatCompletionResponse,
   ChatCompletionUsage,
@@ -17,13 +16,13 @@ import { LanguageModel, Prompt } from "effect/unstable/ai"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { loadOverlay } from "./AgentLoop.ts"
-import type { AgentNamespace } from "./AgentStub.ts"
 import { AgentStub } from "./AgentStub.ts"
-import { resolveConfig } from "./Defaults.ts"
+import { loadResolvedConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import { collectOpenAiTurn, streamOpenAiTurn } from "./OpenAiTurn.ts"
 import { RegistryStub } from "./Registry.ts"
+import { buildSessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
 /** Map a session's resolved rules for the facade: `ask` → `allow` (OpenAI cannot approve), `deny`/`allow` preserved. */
@@ -54,14 +53,6 @@ const toPromptMessages = (
   ),
 ]
 
-/** Load the session's stored overrides from the DO and resolve them against Defaults. Decode-dies on corruption (config was validated at PUT). */
-const loadResolvedConfig = (agent: ReturnType<AgentNamespace["getByName"]>) =>
-  Effect.gen(function* () {
-    const raw = yield* Effect.promise(() => agent.getConfig())
-    const stored = yield* Schema.decodeUnknownEffect(AgentConfig)(raw).pipe(Effect.orDie)
-    return resolveConfig(stored)
-  })
-
 /** OpenAI-compatible facade handlers for the `v1` group: chat completions (JSON or SSE) and the session-backed model list. */
 export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
   handlers
@@ -75,6 +66,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const agents = yield* AgentStub
         const agent = agents.getByName(`${parsed.name}/${parsed.id}`)
         const resolved = yield* loadResolvedConfig(agent)
+        const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const { skillBody } = yield* loadOverlay(undefined, undefined)
         const promptMessages = toPromptMessages(skillBody, payload.messages)
@@ -98,7 +90,17 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
 
         if (payload.stream === true) {
           const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
-          return streamOpenAiTurn({ agent, ambient, turn, initialPrompt, model: effectiveModel, rules, meta })
+          return streamOpenAiTurn({
+            agent,
+            ambient,
+            turn,
+            initialPrompt,
+            model: effectiveModel,
+            rules,
+            meta,
+            toolkit,
+            toolLayer,
+          })
         }
 
         const collected = yield* collectOpenAiTurn({
@@ -108,6 +110,8 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           model: effectiveModel,
           rules,
           meta,
+          toolkit,
+          toolLayer,
         })
         return HttpServerResponse.jsonUnsafe(
           Schema.encodeSync(ChatCompletionResponse)(

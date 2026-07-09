@@ -13,8 +13,11 @@
  * no-history, single-shot design is the anti-recursion guard. Do not fold
  * it in.
  */
-import { Effect, Layer } from "effect"
+import { AgentError, JournalErrorEvent } from "@effect-flue/shared"
+import { Cause, Effect, Layer, type Duration } from "effect"
 import type { Response as AiResponse } from "effect/unstable/ai"
+import type { AgentNamespace } from "./AgentStub.ts"
+import { eventJson } from "./JournalWrite.ts"
 import { loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { BashRunner } from "./Tools.ts"
 
@@ -107,3 +110,37 @@ export const makeBashRunnerLayer = (
       exec: (command) => Effect.promise(() => exec(command)),
     }),
   )
+
+/** Per-hop wall-clock ceiling for a single model round (inference + this hop's tool calls). */
+export const MODEL_HOP_TIMEOUT: Duration.Input = "120 seconds"
+
+/** Best-effort R2 snapshot of the session workspace; a snapshot failure is logged, never propagated. */
+export const snapshotWorkspace = (
+  agent: ReturnType<AgentNamespace["getByName"]>,
+): Effect.Effect<void> =>
+  Effect.promise(() => agent.snapshotIfDirty()).pipe(
+    Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
+    Effect.asVoid,
+  )
+
+/** Map a model-hop failure to the drivers' uniform `AgentError`; a per-hop `Effect.timeout` surfaces as a timeout message (a bare `TimeoutError` carries no `.message`). */
+export const toAgentError =
+  (context: string) =>
+  (error: unknown): Effect.Effect<never, AgentError> =>
+    Effect.fail(
+      new AgentError({
+        message: Cause.isTimeoutError(error)
+          ? `${context} timed out`
+          : error instanceof Error
+            ? error.message
+            : `${context} failed: ${String(error)}`,
+      }),
+    )
+
+/** Append a terminal `JournalError` for a turn from a failure cause; its own append failure is swallowed. */
+export const journalTurnError =
+  (agent: ReturnType<AgentNamespace["getByName"]>, turn: number) =>
+  (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
+    Effect.promise(() =>
+      agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),
+    ).pipe(Effect.catchCause(() => Effect.void))

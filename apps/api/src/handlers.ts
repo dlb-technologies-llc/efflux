@@ -18,7 +18,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { AgentStub } from "./AgentStub.ts"
-import { resolveConfig } from "./Defaults.ts"
+import { loadResolvedConfig, resolveConfig } from "./Defaults.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
@@ -53,14 +53,6 @@ const findUserMessage = (events: ReadonlyArray<ReconstructEvent>, turn: number) 
   return row !== undefined && row.event._tag === "user-message" ? row.event : undefined
 }
 
-/** Load the session's stored overrides from the DO and resolve them against Defaults. Decode-dies on corruption (config was validated at PUT). */
-const loadResolvedConfig = (agent: ReturnType<AgentNamespace["getByName"]>) =>
-  Effect.gen(function* () {
-    const raw = yield* Effect.promise(() => agent.getConfig())
-    const stored = yield* Schema.decodeUnknownEffect(AgentConfig)(raw).pipe(Effect.orDie)
-    return resolveConfig(stored)
-  })
-
 export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers) =>
   handlers
     .handle("prompt", ({ params, payload }) =>
@@ -80,7 +72,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           turn,
           initialPrompt: Prompt.make(messages),
           model: effectiveModel,
-          payloadModel: effectiveModel,
           rules: resolved.rules,
           toolkit,
           toolLayer,
@@ -185,7 +176,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           startHop: 0,
           initialPrompt: Prompt.make(messages),
           model: effectiveModel,
-          payloadModel: effectiveModel,
           rules: resolved.rules,
           toolkit,
           toolLayer,
@@ -237,7 +227,6 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           startHop: maxHopForTurn(events, res.turn) + 1,
           initialPrompt,
           model: effectiveModel,
-          payloadModel: effectiveModel,
           rules: resolved.rules,
           toolkit,
           toolLayer,

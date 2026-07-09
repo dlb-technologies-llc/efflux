@@ -14,9 +14,7 @@ import { Effect, Layer, Schema } from "effect"
 import { Tool, Toolkit } from "effect/unstable/ai"
 import { connect, type McpToolDef } from "./Mcp.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
-
-/** Cap on a single MCP tool result — it feeds back into the prompt next hop, so a runaway result must not dwarf the context. */
-const MAX_MCP_RESULT_CHARS = 30_000
+import { capForPrompt } from "./Truncate.ts"
 
 /** Compose the reserved namespaced tool name for a server tool (`mcp__<server>__<tool>`). */
 const mcpToolName = (server: string, tool: string): string => `mcp__${server}__${tool}`
@@ -28,12 +26,6 @@ const sanitizeToolName = (name: string): string =>
 /** Narrow an unknown MCP `inputSchema` to a JSON Schema object; primitives/null are treated as "no parameters". */
 const isJsonSchema = (value: unknown): value is { [x: string]: unknown } =>
   typeof value === "object" && value !== null
-
-/** Clamp a tool result to MAX_MCP_RESULT_CHARS so one oversized payload can't dominate the next hop. */
-const capResult = (text: string): string =>
-  text.length > MAX_MCP_RESULT_CHARS
-    ? `${text.slice(0, MAX_MCP_RESULT_CHARS)}\n[output truncated]`
-    : text
 
 /** De-dupe servers by name (last configured wins), preserving first-seen order. */
 const dedupeServers = (servers: ReadonlyArray<McpServer>): Array<McpServer> => {
@@ -119,7 +111,7 @@ export const buildSessionToolkit = (mcpServers: ReadonlyArray<McpServer>) =>
               return `Error: tool "${namespaced}" is denied by session policy`
             }
             const { text, isError } = yield* client.callTool(def.name, params)
-            return capResult(isError ? `Error: ${text}` : text)
+            return capForPrompt(isError ? `Error: ${text}` : text)
           }).pipe(
             Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
           )
