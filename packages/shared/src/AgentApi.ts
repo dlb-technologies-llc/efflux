@@ -30,6 +30,7 @@ import {
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
+import { AuthMiddleware } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
 import {
   PutSkillRequest,
@@ -170,6 +171,7 @@ export const SkillsGroup = HttpApiGroup.make("skills")
   .add(getSkill)
   .add(putSkill)
   .add(deleteSkill)
+  .middleware(AuthMiddleware)
 
 /** Every knowledge item with status, for polling until `completed`. */
 const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
@@ -189,6 +191,7 @@ const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
 export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(listKnowledge)
   .add(putKnowledge)
+  .middleware(AuthMiddleware)
 
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
@@ -202,6 +205,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(sessions)
   .add(getConfig)
   .add(putConfig)
+  .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
 const chatCompletions = HttpApiEndpoint.post("chatCompletions", "/v1/chat/completions", {
@@ -221,6 +225,7 @@ const listModels = HttpApiEndpoint.get("listModels", "/v1/models", {
 export const V1Group = HttpApiGroup.make("v1")
   .add(chatCompletions)
   .add(listModels)
+  .middleware(AuthMiddleware)
 
 /** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
 export class AgentApi extends HttpApi.make("agent-api")

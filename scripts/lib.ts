@@ -3,18 +3,29 @@
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { AgentApi } from "../packages/shared/src/index.ts"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
 
 export class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
   "@effect-flue/scripts/ApiClient",
 ) {}
 
+/** FetchHttpClient wrapped once to attach the API bearer token to every outgoing request. */
+const AuthedHttpClient = Layer.effect(
+  HttpClient.HttpClient,
+  Effect.map(
+    HttpClient.HttpClient,
+    HttpClient.mapRequest(
+      HttpClientRequest.setHeader("Authorization", `Bearer ${process.env["API_TOKEN"] ?? ""}`),
+    ),
+  ),
+).pipe(Layer.provide(FetchHttpClient.layer))
+
 /** A ManagedRuntime whose context has the typed AgentApi client. */
 export const makeRuntime = (baseUrl: string) =>
   ManagedRuntime.make(
     Layer.effect(ApiClient, HttpApiClient.make(AgentApi, { baseUrl })).pipe(
-      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(AuthedHttpClient),
     ),
   )
 
