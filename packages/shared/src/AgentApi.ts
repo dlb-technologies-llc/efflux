@@ -14,6 +14,7 @@ import {
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
   KnowledgeItemResponse,
@@ -202,10 +203,30 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(getConfig)
   .add(putConfig)
 
+/** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
+const chatCompletions = HttpApiEndpoint.post("chatCompletions", "/v1/chat/completions", {
+  payload: ChatCompletionRequest,
+  success: Schema.String.pipe(
+    HttpApiSchema.asText({ contentType: "text/event-stream" }),
+  ),
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+})
+
+/** OpenAI-compatible model list — every registered session as `agent:<name>:<id>`. */
+const listModels = HttpApiEndpoint.get("listModels", "/v1/models", {
+  success: ModelsResponse,
+})
+
+/** OpenAI-compatible facade endpoints grouped. */
+export const V1Group = HttpApiGroup.make("v1")
+  .add(chatCompletions)
+  .add(listModels)
+
 /** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
+  .add(V1Group)
   .add(KnowledgeGroup)
   .add(MetaGroup)
   .middleware(SchemaErrorMiddleware) {}

@@ -17,6 +17,7 @@
     "dev": "wrangler dev",
     "cf-typegen": "wrangler types",
     "agent": "bun scripts/agent.ts",
+    "openai-smoke": "bun scripts/openai-smoke.ts",
     "tui": "bun apps/tui/src/main.tsx"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "lightningcss": "^1.32.0",
+    "openai": "^6.46.0",
     "typescript": "^6.0.3",
     "wrangler": "^4.0.0"
   }

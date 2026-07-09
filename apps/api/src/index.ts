@@ -15,6 +15,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
+import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
@@ -55,6 +56,7 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
+  Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
   Layer.provide(SchemaErrorMiddlewareLive),
@@ -143,6 +145,7 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/tasks/") ||
   pathname === "/skills" ||
   pathname.startsWith("/skills/") ||
+  pathname.startsWith("/v1/") ||
   pathname === "/knowledge" ||
   pathname.startsWith("/knowledge/") ||
   pathname.startsWith("/meta/")
