@@ -82,7 +82,15 @@ const approve = HttpApiEndpoint.post(
     success: Schema.String.pipe(
       HttpApiSchema.asText({ contentType: "text/event-stream" }),
     ),
-    error: [AgentError, ApprovalNotFoundError, ApprovalConflictError],
+    // Skill/Role-not-found propagate untouched from the overlay reload on
+    // continuation (the same errors `prompt`/`stream` declare).
+    error: [
+      AgentError,
+      ApprovalNotFoundError,
+      ApprovalConflictError,
+      SkillNotFoundError,
+      RoleNotFoundError,
+    ],
   },
 )
 
