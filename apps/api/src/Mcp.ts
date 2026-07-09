@@ -21,6 +21,9 @@ const CLIENT_INFO = { name: "effect-flue", version: "0.1.0" }
 /** Rendered in place of image/audio/other non-text content blocks when flattening a tool result. */
 const NON_TEXT_PLACEHOLDER = "[non-text content omitted]"
 
+/** Maximum redirect hops followed while re-validating each hop's host against the SSRF blocklist BEFORE re-posting to it. */
+const MAX_REDIRECT_HOPS = 5
+
 /** The client's own typed failure. Distinct from `McpSchema.McpError`, which is the wire error decoded INTO `.message`. */
 export class McpError extends Data.TaggedError("McpError")<{
   readonly server: string
@@ -91,7 +94,6 @@ const jsonRpcErrorMessage = (error: unknown): string => {
   return `JSON-RPC error: ${truncate(JSON.stringify(error), 300)}`
 }
 
-/** POST a JSON-RPC payload; a network/fetch failure becomes an `McpError`. */
 /** Hostname of a (possibly post-redirect) response URL, or undefined when it can't be parsed. */
 const responseHost = (rawUrl: string): string | undefined => {
   try {
@@ -101,26 +103,72 @@ const responseHost = (rawUrl: string): string | undefined => {
   }
 }
 
+/**
+ * POST a JSON-RPC body to `url`, following any 3xx redirect MANUALLY and
+ * re-validating each hop's host against the SSRF blocklist BEFORE re-posting to
+ * it. `redirect: "manual"` stops fetch from replaying the body to the redirect
+ * target on its own, so an allowlist-passing public server cannot bounce the
+ * POST to an internal host (e.g. `308 → http://169.254.169.254/`). Fails closed
+ * with an `McpError` on a network failure, a missing/malformed `Location`, a
+ * blocked host, or an exceeded hop cap.
+ */
+const postFollowingRedirects = (
+  server: McpServer,
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  hopsLeft: number,
+): Effect.Effect<Response, McpError> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            ...headers,
+          },
+          body,
+          redirect: "manual",
+          signal,
+        }),
+      catch: (error) =>
+        new McpError({ server: server.name, message: `request failed: ${describe(error)}` }),
+    })
+    const location =
+      response.status >= 300 && response.status < 400 ? response.headers.get("location") : null
+    if (location === null) return response
+    yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve())
+    if (hopsLeft === 0) {
+      return yield* Effect.fail(
+        new McpError({ server: server.name, message: `too many redirects (>${MAX_REDIRECT_HOPS})` }),
+      )
+    }
+    const next = yield* Effect.try(() => new URL(location, url)).pipe(
+      Effect.mapError(
+        () =>
+          new McpError({ server: server.name, message: `invalid redirect target: ${location}` }),
+      ),
+    )
+    if (isBlockedHost(next.hostname)) {
+      return yield* Effect.fail(
+        new McpError({
+          server: server.name,
+          message: `redirect to blocked host: ${next.hostname} (private/internal address)`,
+        }),
+      )
+    }
+    return yield* postFollowingRedirects(server, next.href, headers, body, hopsLeft - 1)
+  })
+
+/** POST a JSON-RPC payload with SSRF-safe manual redirect following; a network/fetch failure or blocked redirect becomes an `McpError`. */
 const sendFetch = (
   server: McpServer,
   headers: Record<string, string>,
   payload: unknown,
 ): Effect.Effect<Response, McpError> =>
-  Effect.tryPromise({
-    try: (signal) =>
-      fetch(server.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          ...headers,
-        },
-        body: JSON.stringify(payload),
-        signal,
-      }),
-    catch: (error) =>
-      new McpError({ server: server.name, message: `request failed: ${describe(error)}` }),
-  }).pipe(
+  postFollowingRedirects(server, server.url, headers, JSON.stringify(payload), MAX_REDIRECT_HOPS).pipe(
     Effect.flatMap((response) => {
       const host = responseHost(response.url)
       return host !== undefined && isBlockedHost(host)

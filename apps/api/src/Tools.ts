@@ -68,6 +68,7 @@ export const ListSkillsTool = Tool.make("list_skills", {
     "List the specialized skills available in this workspace (name + one-line description). Call this to DISCOVER skills you can then pull into context with load_skill when the user's task matches one.",
   success: Schema.Array(SkillSummary),
   dependencies: [SkillsBucket],
+  needsApproval: needsApprovalFor("list_skills"),
 })
 
 export const LoadSkillTool = Tool.make("load_skill", {
@@ -80,6 +81,7 @@ export const LoadSkillTool = Tool.make("load_skill", {
   }),
   success: Schema.String,
   dependencies: [SkillsBucket],
+  needsApproval: needsApprovalFor("load_skill"),
 })
 
 const BashParameters = Schema.Struct({
@@ -490,29 +492,37 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       }),
     ),
   list_skills: () =>
-    listSkills().pipe(
-      Effect.map((skills) =>
-        skills.map(
-          (s) => new SkillSummary({ name: s.name, description: s.description }),
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      if (resolveRule(rules, "list_skills") === "deny") return []
+      return yield* listSkills().pipe(
+        Effect.map((skills) =>
+          skills.map(
+            (s) => new SkillSummary({ name: s.name, description: s.description }),
+          ),
         ),
-      ),
-      Effect.tapErrorTag("AgentError", (e) =>
-        Effect.logWarning(`list_skills: ${e.message}`),
-      ),
-      Effect.catchTag("AgentError", () => Effect.succeed([])),
-    ),
+        Effect.tapErrorTag("AgentError", (e) =>
+          Effect.logWarning(`list_skills: ${e.message}`),
+        ),
+        Effect.catchTag("AgentError", () => Effect.succeed([])),
+      )
+    }),
   load_skill: (params) =>
-    loadSkillBody(params.name).pipe(
-      Effect.map(capText),
-      Effect.tapErrorTag("SkillNotFoundError", (e) =>
-        Effect.logWarning(`load_skill: not found: ${e.skill}`),
-      ),
-      Effect.catchTags({
-        SkillNotFoundError: (e) =>
-          Effect.succeed(`Error: Skill not found: ${e.skill}`),
-        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
-      }),
-    ),
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
+      return yield* loadSkillBody(params.name).pipe(
+        Effect.map(capText),
+        Effect.tapErrorTag("SkillNotFoundError", (e) =>
+          Effect.logWarning(`load_skill: not found: ${e.skill}`),
+        ),
+        Effect.catchTags({
+          SkillNotFoundError: (e) =>
+            Effect.succeed(`Error: Skill not found: ${e.skill}`),
+          AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+        }),
+      )
+    }),
   Bash: (params) => guardExec("Bash", execCapped(params.command)),
   read_file: (params) =>
     guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`)),
