@@ -86,6 +86,11 @@ export const BashTool = Tool.make("Bash", {
   // it. Bubbles up through `AgentToolkit.toLayer(...)` as the layer's
   // `RIn`, satisfied per-request in `handlers.ts`.
   dependencies: [BashRunner],
+  // HARDCODED per-tool policy (#40): Bash=ask, every other tool=allow. Effect
+  // AI parks the turn on a needsApproval tool (emits tool-approval-request,
+  // does not run the handler). The config issue replaces this static `true`
+  // with a session-config-reading needsApproval FUNCTION.
+  needsApproval: true,
 })
 
 // ---------------------------------------------------------------------------

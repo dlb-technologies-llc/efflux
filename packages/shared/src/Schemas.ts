@@ -61,6 +61,11 @@ export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse
   toolCallCount: Schema.Number,
   model: Schema.String,
   messageCount: Schema.Number,
+  // Present only when the turn PARKED awaiting approval (finishReason will be
+  // "tool-calls"); carries the eventId to POST to /approve/:eventId.
+  approval: Schema.optionalKey(
+    Schema.Struct({ eventId: Schema.Number, approvalId: Schema.String, toolCallId: Schema.String }),
+  ),
 }) {}
 
 export class HistoryResponse extends Schema.Class<HistoryResponse>("HistoryResponse")({
@@ -78,6 +83,13 @@ export class SubagentTaskResponse extends Schema.Class<SubagentTaskResponse>("Su
   text: Schema.String,
   model: Schema.String,
   finishReason: Schema.String,
+}) {}
+
+export class ApprovalDecision extends Schema.Class<ApprovalDecision>("ApprovalDecision")({
+  // Defaults handled in the handler (approved=true when omitted) so `curl -d '{}'`
+  // or an empty grant works. reason is surfaced to the model on denial.
+  approved: Schema.optionalKey(Schema.Boolean),
+  reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2000))),
 }) {}
 
 export class StreamPartTextDelta extends Schema.TaggedClass<StreamPartTextDelta>()(
@@ -117,12 +129,25 @@ export class StreamPartError extends Schema.TaggedClass<StreamPartError>()(
   },
 ) {}
 
+export class StreamPartApprovalRequest extends Schema.TaggedClass<StreamPartApprovalRequest>()(
+  "approval-request",
+  {
+    // eventId = the journal seq of the approval-requested event; the value the
+    // caller POSTs to /approve/:eventId. approvalId/toolCallId let a client
+    // correlate with the preceding tool-call frame (same toolCallId as its id).
+    eventId: Schema.Number,
+    approvalId: Schema.String,
+    toolCallId: Schema.String,
+  },
+) {}
+
 export const StreamPart = Schema.Union([
   StreamPartTextDelta,
   StreamPartToolCall,
   StreamPartToolResult,
   StreamPartDone,
   StreamPartError,
+  StreamPartApprovalRequest,
 ])
 
 export type StreamPart = typeof StreamPart.Type
