@@ -9,6 +9,15 @@ export const SafeName = Schema.String.pipe(
   }),
 )
 
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
+/** Safe identifier for `:name` / `:id` path segments backed by DO ids — constrains characters to prevent path-traversal-style attacks. */
+export const SafeId = Schema.String.pipe(
+  Schema.refine((s): s is string => SAFE_ID_PATTERN.test(s), {
+    title: "SafeId",
+    description: "alphanumeric, hyphen, underscore; 1-128 chars",
+  }),
+)
+
 /** A single chat message (user or assistant). */
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),

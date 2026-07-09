@@ -14,6 +14,7 @@ import {
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { ToolsResponse } from "./Meta.ts"
 import {
   KnowledgeItemResponse,
   KnowledgeListResponse,
@@ -24,6 +25,7 @@ import {
   HistoryResponse,
   PromptRequest,
   PromptResponse,
+  SafeId,
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
@@ -33,15 +35,6 @@ import {
   SkillContentResponse,
   SkillListResponse,
 } from "./Skills.ts"
-
-const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
-/** Safe identifier for `:name` / `:id` path segments backed by DO ids — constrains characters to prevent path-traversal-style attacks. */
-const SafeId = Schema.String.pipe(
-  Schema.refine((s): s is string => SAFE_ID_PATTERN.test(s), {
-    title: "SafeId",
-    description: "alphanumeric, hyphen, underscore; 1-128 chars",
-  }),
-)
 
 const AgentParams = Schema.Struct({
   name: SafeId,
@@ -162,6 +155,14 @@ const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
   error: [AgentError, SkillNotFoundError],
 })
 
+/** Static toolkit inventory for the Tools panel — no params, no declared errors. */
+const tools = HttpApiEndpoint.get("tools", "/meta/tools", {
+  success: ToolsResponse,
+})
+
+/** Meta/introspection endpoints. */
+export const MetaGroup = HttpApiGroup.make("meta").add(tools)
+
 /** All skill CRUD endpoints grouped. */
 export const SkillsGroup = HttpApiGroup.make("skills")
   .add(listSkills)
@@ -206,4 +207,5 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)
   .add(KnowledgeGroup)
+  .add(MetaGroup)
   .middleware(SchemaErrorMiddleware) {}

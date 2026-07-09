@@ -17,6 +17,7 @@ import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
+import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
@@ -55,6 +56,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
   Layer.provide(KnowledgeHandlers),
+  Layer.provide(MetaHandlers),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
     Etag.layer,
@@ -142,7 +144,8 @@ const isApiPath = (pathname: string): boolean =>
   pathname === "/skills" ||
   pathname.startsWith("/skills/") ||
   pathname === "/knowledge" ||
-  pathname.startsWith("/knowledge/")
+  pathname.startsWith("/knowledge/") ||
+  pathname.startsWith("/meta/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(
