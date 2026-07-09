@@ -40,6 +40,14 @@ export class Registry extends DurableObject<Env> {
     )
   }
 
+  async unregister(input: { name: string; id: string }): Promise<void> {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM sessions WHERE name = ? AND id = ?",
+      input.name,
+      input.id,
+    )
+  }
+
   async list(input?: { limit?: number }): Promise<Array<SessionRow>> {
     const requested = input?.limit ?? 100
     const limit = Math.min(500, Math.max(1, Math.trunc(requested)))

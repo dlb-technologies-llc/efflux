@@ -1,13 +1,21 @@
 import {
-  AgentError,
+  type AgentError,
+  type ApprovalHandle,
   JournalApprovalRequested,
-  JournalErrorEvent,
   type RulesMap,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Effect, Layer } from "effect"
-import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/ai"
-import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
+import { Effect, Layer } from "effect"
+import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
+import {
+  MAX_TOOL_HOPS,
+  MODEL_HOP_TIMEOUT,
+  journalTurnError,
+  makeBashRunnerLayer,
+  shouldContinueToolLoop,
+  snapshotWorkspace,
+  toAgentError,
+} from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
@@ -15,12 +23,8 @@ import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { ApprovalRules } from "./Tools.ts"
 
-/** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. */
-export interface PromptApproval {
-  eventId: number
-  approvalId: string
-  toolCallId: string
-}
+/** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. Derived from the shared `ApprovalHandle` schema so the coordinates never drift from the contract. */
+export type PromptApproval = typeof ApprovalHandle.Type
 
 export interface PromptTurnResult {
   finalText: string
@@ -37,7 +41,6 @@ interface RunPromptTurnInput {
   turn: number
   initialPrompt: Prompt.Prompt
   model: string
-  payloadModel: string | undefined
   /** Resolved per-tool permission rules for this turn; provided into the model call as the ApprovalRules Reference. */
   rules: RulesMap
   /** The session's merged toolkit (local tools + resolved MCP tools) handed to `generateText`. */
@@ -55,14 +58,9 @@ interface RunPromptTurnInput {
 export const runPromptTurn = (
   input: RunPromptTurnInput,
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, payloadModel, rules, toolkit, toolLayer, turn } = input
+  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-
-  const snapshotWorkspace = Effect.promise(() => agent.snapshotIfDirty()).pipe(
-    Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
-    Effect.asVoid,
-  )
 
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
@@ -74,25 +72,14 @@ export const runPromptTurn = (
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
-      const withModel =
-        payloadModel !== undefined
-          ? OpenRouterLanguageModel.withConfigOverride(call, { model: payloadModel })
-          : call
+      const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
       const response = yield* withModel.pipe(
         Effect.provide(toolLayer),
         Effect.provide(bashRunner),
         Effect.provide(Layer.succeed(ApprovalRules, rules)),
-        Effect.catch((cause) =>
-          Effect.fail(
-            new AgentError({
-              message:
-                cause instanceof Error
-                  ? cause.message
-                  : `LanguageModel.generateText failed: ${String(cause)}`,
-            }),
-          ),
-        ),
+        Effect.timeout(MODEL_HOP_TIMEOUT),
+        Effect.catch(toAgentError("LanguageModel.generateText")),
       )
 
       toolCallCount += response.toolCalls.length
@@ -145,11 +132,7 @@ export const runPromptTurn = (
   })
 
   return loop.pipe(
-    Effect.ensuring(snapshotWorkspace),
-    Effect.tapCause((cause) =>
-      Effect.promise(() =>
-        agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),
-      ).pipe(Effect.catchCause(() => Effect.void)),
-    ),
+    Effect.ensuring(snapshotWorkspace(agent)),
+    Effect.tapCause(journalTurnError(agent, turn)),
   )
 }

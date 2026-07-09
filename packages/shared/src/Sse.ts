@@ -1,4 +1,4 @@
-import { Effect, Schema, Stream } from "effect"
+import { type Effect, type Schema, Stream } from "effect"
 import * as Sse from "effect/unstable/encoding/Sse"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 

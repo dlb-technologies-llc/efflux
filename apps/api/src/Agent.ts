@@ -1,4 +1,3 @@
-import type { JournalEventPayload as JournalEventPayloadType } from "@effect-flue/shared"
 import { JournalApprovalResolved, JournalEventPayload, Message } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
@@ -7,7 +6,6 @@ import { Effect, Result, Schema } from "effect"
 const HistorySchema = Schema.Array(Message)
 
 const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
-const decodeEventPayload = Schema.decodeUnknownEffect(JournalEventPayload)
 /** Synchronous decode so `resolveApproval`'s check-and-insert stays await-free (atomic). */
 const decodeEventPayloadSync = Schema.decodeUnknownSync(JournalEventPayload)
 const encodeEventPayload = Schema.encodeSync(JournalEventPayload)
@@ -25,6 +23,10 @@ const ExecResultSchema = Schema.Struct({
 type ExecResult = (typeof ExecResultSchema)["Type"]
 
 const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
+
+/** Shape of the container's `GET /status` reply; only `hydrated` is consumed (excess keys stripped on decode). */
+const StatusSchema = Schema.Struct({ hydrated: Schema.Boolean })
+const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
 
 /**
  * Per-session storage + sandbox Durable Object: holds the append-only event journal
@@ -116,6 +118,25 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
+  /** Remove this session from the registry; failures are logged, never fatal (the index heals on the next user message). */
+  async #unregisterSession(): Promise<void> {
+    try {
+      const full = this.ctx.id.name
+      if (full === undefined) return
+      const slash = full.indexOf("/")
+      if (slash === -1) return
+      const registry = this.env.REGISTRY.get(
+        this.env.REGISTRY.idFromName("global"),
+      )
+      await registry.unregister({
+        name: full.slice(0, slash),
+        id: full.slice(slash + 1),
+      })
+    } catch (error) {
+      console.error("session registry delete failed", error)
+    }
+  }
+
   /**
    * Append a batch of JSON-encoded journal events atomically (one RPC per hop), returning the
    * assigned seqs in input order; a `user-message` also upserts this session into the registry.
@@ -125,9 +146,7 @@ export class Agent extends DurableObject<Env> {
     const seqs: Array<number> = []
     let sawUserMessage = false
     for (const raw of payloads) {
-      const decoded: JournalEventPayloadType = await Effect.runPromise(
-        decodeEventPayload(JSON.parse(raw)).pipe(Effect.orDie),
-      )
+      const decoded = decodeEventPayloadSync(JSON.parse(raw))
       seqs.push(this.#insert(now, decoded._tag, raw))
       if (decoded._tag === "user-message") sawUserMessage = true
     }
@@ -232,9 +251,7 @@ export class Agent extends DurableObject<Env> {
     const turns = new Map<number, Turn>()
     const order: Array<number> = []
     for (const row of rows) {
-      const decoded: JournalEventPayloadType = await Effect.runPromise(
-        decodeEventPayload(JSON.parse(String(row.payload))).pipe(Effect.orDie),
-      )
+      const decoded = decodeEventPayloadSync(JSON.parse(String(row.payload)))
       if (decoded._tag === "user-message") {
         const key = Number(row.seq)
         turns.set(key, { userContent: decoded.content, texts: [] })
@@ -282,6 +299,7 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
     await this.ctx.storage.delete(Agent.#CONFIG_KEY)
+    await this.#unregisterSession()
     const name = this.ctx.id.name
     if (name === undefined) return
     await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
@@ -330,12 +348,8 @@ export class Agent extends DurableObject<Env> {
     if (!status.ok) {
       throw new Error(`sandbox status failed ${status.status}: ${statusText}`)
     }
-    const parsed: unknown = JSON.parse(statusText)
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      Reflect.get(parsed, "hydrated") === true
-    ) {
+    const parsed = decodeStatus(JSON.parse(statusText))
+    if (Result.isSuccess(parsed) && parsed.success.hydrated) {
       return
     }
     const object = await this.env.SESSIONS.get(Agent.#workspaceKey(name))

@@ -5,15 +5,16 @@
  * passthrough to OpenRouter (no system message).
  */
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import {
+import type {
   AgentError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "@effect-flue/shared"
 import { Effect } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
+import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"
 import { DEFAULT_MODEL } from "./Defaults.ts"
-import { SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
+import { type SkillsBucket, loadRoleBody, loadSkillBody } from "./Skills.ts"
 
 /** Run a focused subtask. Anti-recursion: passes NO toolkit to generateText, so subagents cannot call tools (incl. spawn_subagent) — don't add a toolkit param without designing depth tracking first. */
 export const runSubagent = Effect.fn("runSubagent")(function* (args: {
@@ -53,16 +54,8 @@ export const runSubagent = Effect.fn("runSubagent")(function* (args: {
       : call
 
   const response = yield* withModel.pipe(
-    Effect.catch((cause) =>
-      Effect.fail(
-        new AgentError({
-          message:
-            cause instanceof Error
-              ? cause.message
-              : `runSubagent failed: ${String(cause)}`,
-        }),
-      ),
-    ),
+    Effect.timeout(MODEL_HOP_TIMEOUT),
+    Effect.catch(toAgentError("runSubagent")),
   )
 
   return {

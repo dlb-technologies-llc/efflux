@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react"
-import { type RulesMap, resolveRule, ToolRule } from "@effect-flue/shared"
+import { type RulesMap, resolveRule, type ToolRule } from "@effect-flue/shared"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { sessionConfigAtom, toolsAtom } from "../atoms/tools.ts"

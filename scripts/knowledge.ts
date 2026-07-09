@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 /** Live smoke for the AI Search knowledge demo: uploads two docs the base model can't know, polls until indexed, asks a grounded question, and checks the journal for a search_knowledge tool-call. */
 
-import { AgentApi, makePromptRequest, PutKnowledgeRequest } from "../packages/shared/src/index.ts"
-import { Cause, Console, Effect, Exit } from "effect"
-import { HttpApiClient } from "effect/unstable/httpapi"
-import { ApiClient, fetchAllEvents, makeRuntime, parseArgs, resolveBaseUrl } from "./lib.ts"
+import { type AgentApi, makePromptRequest, PutKnowledgeRequest } from "../packages/shared/src/index.ts"
+import { Console, Effect } from "effect"
+import type { HttpApiClient } from "effect/unstable/httpapi"
+import { ApiClient, bootstrap, fetchAllEvents, runMain } from "./lib.ts"
 
 const USAGE = [
   "Usage: bun run scripts/knowledge.ts <name> <id> [--url URL] [--model M]",
@@ -77,19 +77,7 @@ const pollUntilIndexed = (
   return go(1)
 }
 
-const parsed = parseArgs(process.argv.slice(2), new Set<string>())
-if ("error" in parsed) {
-  console.error(parsed.error)
-  console.error(USAGE)
-  process.exit(1)
-}
-const base = resolveBaseUrl(parsed.flags["url"])
-if (base === undefined) {
-  console.error("BASE_URL or --url required")
-  console.error(USAGE)
-  process.exit(1)
-}
-const runtime = makeRuntime(base)
+const { parsed, runtime } = bootstrap(process.argv.slice(2), new Set<string>(), USAGE)
 
 const main = Effect.gen(function*() {
   const api = yield* ApiClient
@@ -146,14 +134,4 @@ const main = Effect.gen(function*() {
   )
 })
 
-const result = await runtime.runPromiseExit(main)
-await runtime.dispose()
-if (Exit.isFailure(result)) {
-  const failReason = result.cause.reasons.find(Cause.isFailReason)
-  console.error(
-    failReason !== undefined
-      ? (failReason.error instanceof Error ? failReason.error.message : String(failReason.error))
-      : Cause.pretty(result.cause),
-  )
-}
-process.exitCode = Exit.isSuccess(result) ? 0 : 1
+await runMain(main, runtime)

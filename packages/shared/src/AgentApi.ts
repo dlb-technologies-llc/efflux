@@ -27,9 +27,11 @@ import {
   PromptRequest,
   PromptResponse,
   SafeId,
+  SafeName,
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
+import { AuthMiddleware } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddleware } from "./SchemaErrorMiddleware.ts"
 import {
   PutSkillRequest,
@@ -77,7 +79,7 @@ const approve = HttpApiEndpoint.post(
       name: SafeId,
       id: SafeId,
       eventId: Schema.NumberFromString.pipe(
-        Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+        Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
       ),
     }),
     payload: ApprovalDecision,
@@ -136,14 +138,14 @@ const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
 
 /** One skill's full markdown by name. */
 const getSkill = HttpApiEndpoint.get("getSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   success: SkillContentResponse,
   error: [AgentError, SkillNotFoundError],
 })
 
 /** Upsert a skill's markdown by name. */
 const putSkill = HttpApiEndpoint.put("putSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   payload: PutSkillRequest,
   success: SkillContentResponse,
   error: AgentError,
@@ -151,7 +153,7 @@ const putSkill = HttpApiEndpoint.put("putSkill", "/skills/:name", {
 
 /** Remove a skill by name. */
 const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   success: Schema.Void,
   error: [AgentError, SkillNotFoundError],
 })
@@ -170,6 +172,7 @@ export const SkillsGroup = HttpApiGroup.make("skills")
   .add(getSkill)
   .add(putSkill)
   .add(deleteSkill)
+  .middleware(AuthMiddleware)
 
 /** Every knowledge item with status, for polling until `completed`. */
 const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
@@ -179,7 +182,7 @@ const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
 
 /** Upsert a knowledge document's text by name. */
 const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   payload: PutKnowledgeRequest,
   success: KnowledgeItemResponse,
   error: AgentError,
@@ -189,6 +192,7 @@ const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
 export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(listKnowledge)
   .add(putKnowledge)
+  .middleware(AuthMiddleware)
 
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
@@ -202,6 +206,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(sessions)
   .add(getConfig)
   .add(putConfig)
+  .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
 const chatCompletions = HttpApiEndpoint.post("chatCompletions", "/v1/chat/completions", {
@@ -221,8 +226,9 @@ const listModels = HttpApiEndpoint.get("listModels", "/v1/models", {
 export const V1Group = HttpApiGroup.make("v1")
   .add(chatCompletions)
   .add(listModels)
+  .middleware(AuthMiddleware)
 
-/** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
+/** The app's single HttpApi; `.middleware` is chained last, so per `HttpApi.middleware` semantics it applies to every endpoint already added across all groups — a group added after this call would not receive it. */
 export class AgentApi extends HttpApi.make("agent-api")
   .add(AgentGroup)
   .add(SkillsGroup)

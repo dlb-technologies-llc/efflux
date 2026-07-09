@@ -18,16 +18,22 @@
     "cf-typegen": "wrangler types",
     "agent": "bun scripts/agent.ts",
     "openai-smoke": "bun scripts/openai-smoke.ts",
-    "tui": "bun apps/tui/src/main.tsx"
+    "tui": "bun apps/tui/src/main.tsx",
+    "test": "vitest run --passWithNoTests",
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "dependencies": {
     "effect": "4.0.0-beta.94"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@effect/vitest": "4.0.0-beta.94",
     "@types/bun": "^1.3.14",
     "lightningcss": "^1.32.0",
     "openai": "^6.46.0",
     "typescript": "^6.0.3",
+    "vitest": "^4.1.4",
     "wrangler": "^4.0.0"
   }
 }

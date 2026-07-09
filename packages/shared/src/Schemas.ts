@@ -18,6 +18,16 @@ export const SafeId = Schema.String.pipe(
   }),
 )
 
+/** Non-negative integer — journal seqs, timestamps, counts, event ids (rejects NaN, negatives, floats). The single shared source for the whole contract. */
+export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+/** The coordinates a parked turn resumes from: the journal `eventId` to POST to `/approve/:eventId`, plus `approvalId`/`toolCallId` correlating the parked tool call. */
+export const ApprovalHandle = Schema.Struct({
+  eventId: NonNegativeInt,
+  approvalId: Schema.String,
+  toolCallId: Schema.String,
+})
+
 /** A single chat message (user or assistant). */
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),
@@ -58,12 +68,10 @@ export const makePromptRequest = (
 export class PromptResponse extends Schema.Class<PromptResponse>("PromptResponse")({
   text: Schema.String,
   finishReason: Schema.String,
-  toolCallCount: Schema.Number,
+  toolCallCount: NonNegativeInt,
   model: Schema.String,
-  messageCount: Schema.Number,
-  approval: Schema.optionalKey(
-    Schema.Struct({ eventId: Schema.Number, approvalId: Schema.String, toolCallId: Schema.String }),
-  ),
+  messageCount: NonNegativeInt,
+  approval: Schema.optionalKey(ApprovalHandle),
 }) {}
 
 /** A session's chat history. */
@@ -123,7 +131,7 @@ export class StreamPartToolResult extends Schema.TaggedClass<StreamPartToolResul
 /** SSE frame: terminal frame with finish reason and tool-call count. */
 export class StreamPartDone extends Schema.TaggedClass<StreamPartDone>()("done", {
   finishReason: Schema.String,
-  toolCallCount: Schema.Number,
+  toolCallCount: NonNegativeInt,
 }) {}
 
 /** SSE frame: a stream-level error. */
@@ -137,11 +145,7 @@ export class StreamPartError extends Schema.TaggedClass<StreamPartError>()(
 /** SSE frame: a parked tool call awaiting approval; `eventId` is the journal seq to POST to /approve/:eventId, `approvalId`/`toolCallId` correlate with the preceding tool-call frame. */
 export class StreamPartApprovalRequest extends Schema.TaggedClass<StreamPartApprovalRequest>()(
   "approval-request",
-  {
-    eventId: Schema.Number,
-    approvalId: Schema.String,
-    toolCallId: Schema.String,
-  },
+  ApprovalHandle.fields,
 ) {}
 
 /** Discriminated union of all SSE stream frames. */

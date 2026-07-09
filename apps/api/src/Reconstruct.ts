@@ -31,6 +31,55 @@ export const reconstructForContinuation = (input: {
 
   const bySeq = [...events].sort((a, b) => a.seq - b.seq)
 
+  const priorUsers: Array<{ seq: number; content: string }> = []
+  const textsByTurn = new Map<number, Array<string>>()
+  const resolvedToolCallIds = new Set<string>()
+  const parkedHops: Array<{ hop: number; messages: ReadonlyArray<Prompt.Message> }> = []
+  let parkedUserContent: string | undefined
+
+  for (const { event, seq } of bySeq) {
+    switch (event._tag) {
+      case "user-message": {
+        if (seq < parkedTurn) {
+          priorUsers.push({ seq, content: event.content })
+        } else if (seq === parkedTurn) {
+          parkedUserContent = event.content
+        }
+        break
+      }
+      case "assistant-text": {
+        const texts = textsByTurn.get(event.turn)
+        if (texts === undefined) {
+          textsByTurn.set(event.turn, [event.text])
+        } else {
+          texts.push(event.text)
+        }
+        break
+      }
+      case "tool-result": {
+        if (event.turn === parkedTurn) resolvedToolCallIds.add(event.part.id)
+        break
+      }
+      case "hop-messages": {
+        if (event.turn === parkedTurn) {
+          for (const message of event.messages) {
+            if (message.role === "tool") {
+              for (const part of message.content) {
+                if (part.type === "tool-result") resolvedToolCallIds.add(part.id)
+              }
+            }
+          }
+          parkedHops.push({ hop: event.hop, messages: event.messages })
+        }
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  parkedHops.sort((a, b) => a.hop - b.hop)
+
   const messages: Array<Prompt.Message> = []
 
   messages.push(Prompt.systemMessage({ content: skillBody }))
@@ -38,49 +87,17 @@ export const reconstructForContinuation = (input: {
     messages.push(Prompt.systemMessage({ content: roleBody }))
   }
 
-  for (const { event, seq } of bySeq) {
-    if (event._tag !== "user-message" || seq >= parkedTurn) continue
-    messages.push(Prompt.userMessage({ content: [Prompt.textPart({ text: event.content })] }))
-    const texts: Array<string> = []
-    for (const { event: priorEvent } of bySeq) {
-      if (priorEvent._tag === "assistant-text" && priorEvent.turn === seq) {
-        texts.push(priorEvent.text)
-      }
-    }
-    if (texts.length > 0) {
+  for (const priorUser of priorUsers) {
+    messages.push(Prompt.userMessage({ content: [Prompt.textPart({ text: priorUser.content })] }))
+    const texts = textsByTurn.get(priorUser.seq)
+    if (texts !== undefined && texts.length > 0) {
       messages.push(Prompt.assistantMessage({ content: [Prompt.textPart({ text: texts.join("") })] }))
     }
   }
 
-  for (const { event, seq } of bySeq) {
-    if (seq === parkedTurn && event._tag === "user-message") {
-      messages.push(Prompt.userMessage({ content: [Prompt.textPart({ text: event.content })] }))
-      break
-    }
+  if (parkedUserContent !== undefined) {
+    messages.push(Prompt.userMessage({ content: [Prompt.textPart({ text: parkedUserContent })] }))
   }
-
-  const resolvedToolCallIds = new Set<string>()
-  for (const { event } of bySeq) {
-    if (event._tag === "tool-result" && event.turn === parkedTurn) {
-      resolvedToolCallIds.add(event.part.id)
-    } else if (event._tag === "hop-messages" && event.turn === parkedTurn) {
-      for (const message of event.messages) {
-        if (message.role === "tool") {
-          for (const part of message.content) {
-            if (part.type === "tool-result") resolvedToolCallIds.add(part.id)
-          }
-        }
-      }
-    }
-  }
-
-  const parkedHops: Array<{ hop: number; messages: ReadonlyArray<Prompt.Message> }> = []
-  for (const { event } of bySeq) {
-    if (event._tag === "hop-messages" && event.turn === parkedTurn) {
-      parkedHops.push({ hop: event.hop, messages: event.messages })
-    }
-  }
-  parkedHops.sort((a, b) => a.hop - b.hop)
 
   for (const { messages: hopMessages } of parkedHops) {
     for (const message of hopMessages) {

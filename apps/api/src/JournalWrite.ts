@@ -10,7 +10,7 @@ import {
   JournalUserMessage,
 } from "@effect-flue/shared"
 import { Effect, Result, Schema } from "effect"
-import { Prompt, Response as AiResponse } from "effect/unstable/ai"
+import { Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
 
 /**

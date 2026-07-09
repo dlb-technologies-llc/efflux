@@ -1,4 +1,4 @@
-import { AgentApi } from "@effect-flue/shared"
+import { AgentApi, ApiToken } from "@effect-flue/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Cause, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
@@ -8,7 +8,7 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpEffect from "effect/unstable/http/HttpEffect"
 import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
+import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -21,6 +21,7 @@ import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
+import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
 
@@ -35,6 +36,17 @@ const requireApiKey = (env: Env): string => {
   if (typeof value !== "string" || value === "") {
     throw new Error(
       "OPENROUTER_API_KEY missing from Worker environment (set it via wrangler secret or .dev.vars)",
+    )
+  }
+  return value
+}
+
+/** Require a non-empty API_TOKEN, throwing a clear error rather than letting an undefined credential reach the auth gate. */
+const requireApiToken = (env: Env): string => {
+  const value = env.API_TOKEN
+  if (typeof value !== "string" || value === "") {
+    throw new Error(
+      "API_TOKEN missing from Worker environment (set it via wrangler secret or .dev.vars)",
     )
   }
   return value
@@ -59,6 +71,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
+  Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
     Etag.layer,
@@ -68,7 +81,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   ]),
 )
 
-/** Build the native `(Request) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed and request-abort is wired to fiber interruption so handler finalizers run on client disconnect. */
+/** Build the native `(Request) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed. Request-abort interruption covers mid-hop model FAILURES only — workerd fires no disconnect callback, so handler finalizers do NOT run on client disconnect (persistence is inline, not finalizer-driven). */
 const buildWebHandler = (
   env: Env,
 ): Promise<(request: Request) => Promise<Response>> => {
@@ -82,7 +95,11 @@ const buildWebHandler = (
         Layer.succeed(SkillsBucket, env.SKILLS),
         Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
       )
-      const handler = yield* HttpRouter.toHttpEffect(routerLayer)
+      const handler = yield* HttpRouter.toHttpEffect(
+        routerLayer.pipe(
+          Layer.provide(Layer.succeed(ApiToken, Redacted.make(requireApiToken(env)))),
+        ),
+      )
       const wrapped = handler.pipe(
         Effect.catchCause((cause) => {
           for (const reason of cause.reasons) {

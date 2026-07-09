@@ -21,6 +21,9 @@ const CLIENT_INFO = { name: "effect-flue", version: "0.1.0" }
 /** Rendered in place of image/audio/other non-text content blocks when flattening a tool result. */
 const NON_TEXT_PLACEHOLDER = "[non-text content omitted]"
 
+/** Maximum redirect hops followed while re-validating each hop's host against the SSRF blocklist BEFORE re-posting to it. */
+const MAX_REDIRECT_HOPS = 5
+
 /** The client's own typed failure. Distinct from `McpSchema.McpError`, which is the wire error decoded INTO `.message`. */
 export class McpError extends Data.TaggedError("McpError")<{
   readonly server: string
@@ -91,7 +94,6 @@ const jsonRpcErrorMessage = (error: unknown): string => {
   return `JSON-RPC error: ${truncate(JSON.stringify(error), 300)}`
 }
 
-/** POST a JSON-RPC payload; a network/fetch failure becomes an `McpError`. */
 /** Hostname of a (possibly post-redirect) response URL, or undefined when it can't be parsed. */
 const responseHost = (rawUrl: string): string | undefined => {
   try {
@@ -101,26 +103,72 @@ const responseHost = (rawUrl: string): string | undefined => {
   }
 }
 
+/**
+ * POST a JSON-RPC body to `url`, following any 3xx redirect MANUALLY and
+ * re-validating each hop's host against the SSRF blocklist BEFORE re-posting to
+ * it. `redirect: "manual"` stops fetch from replaying the body to the redirect
+ * target on its own, so an allowlist-passing public server cannot bounce the
+ * POST to an internal host (e.g. `308 → http://169.254.169.254/`). Fails closed
+ * with an `McpError` on a network failure, a missing/malformed `Location`, a
+ * blocked host, or an exceeded hop cap.
+ */
+const postFollowingRedirects = (
+  server: McpServer,
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  hopsLeft: number,
+): Effect.Effect<Response, McpError> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            ...headers,
+          },
+          body,
+          redirect: "manual",
+          signal,
+        }),
+      catch: (error) =>
+        new McpError({ server: server.name, message: `request failed: ${describe(error)}` }),
+    })
+    const location =
+      response.status >= 300 && response.status < 400 ? response.headers.get("location") : null
+    if (location === null) return response
+    yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve())
+    if (hopsLeft === 0) {
+      return yield* Effect.fail(
+        new McpError({ server: server.name, message: `too many redirects (>${MAX_REDIRECT_HOPS})` }),
+      )
+    }
+    const next = yield* Effect.try(() => new URL(location, url)).pipe(
+      Effect.mapError(
+        () =>
+          new McpError({ server: server.name, message: `invalid redirect target: ${location}` }),
+      ),
+    )
+    if (isBlockedHost(next.hostname)) {
+      return yield* Effect.fail(
+        new McpError({
+          server: server.name,
+          message: `redirect to blocked host: ${next.hostname} (private/internal address)`,
+        }),
+      )
+    }
+    return yield* postFollowingRedirects(server, next.href, headers, body, hopsLeft - 1)
+  })
+
+/** POST a JSON-RPC payload with SSRF-safe manual redirect following; a network/fetch failure or blocked redirect becomes an `McpError`. */
 const sendFetch = (
   server: McpServer,
   headers: Record<string, string>,
   payload: unknown,
 ): Effect.Effect<Response, McpError> =>
-  Effect.tryPromise({
-    try: (signal) =>
-      fetch(server.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          ...headers,
-        },
-        body: JSON.stringify(payload),
-        signal,
-      }),
-    catch: (error) =>
-      new McpError({ server: server.name, message: `request failed: ${describe(error)}` }),
-  }).pipe(
+  postFollowingRedirects(server, server.url, headers, JSON.stringify(payload), MAX_REDIRECT_HOPS).pipe(
     Effect.flatMap((response) => {
       const host = responseHost(response.url)
       return host !== undefined && isBlockedHost(host)
@@ -168,10 +216,75 @@ const readJsonReply = (server: McpServer, response: Response): Effect.Effect<unk
     ),
   )
 
+/** Strip one trailing carriage return so a line parses identically under `\r\n` and `\n` endings. */
+const stripCr = (line: string): string => (line.endsWith("\r") ? line.slice(0, -1) : line)
+
+/** The value carried by one `data:` line: the text after `data:`, with a single optional leading space removed. */
+const dataLineValue = (line: string): string => line.slice(5).replace(/^ /, "")
+
+/** Join one SSE event's lines into its `data:` payload (data-line values by `\n`), dropping non-`data:` lines; `undefined` when the event carries no `data:` line. */
+const framePayload = (lines: ReadonlyArray<string>): string | undefined => {
+  const data = lines.filter((line) => line.startsWith("data:")).map(dataLineValue)
+  return data.length === 0 ? undefined : data.join("\n")
+}
+
+/** Complete SSE frames split out of an accumulated buffer, plus the still-incomplete trailing `rest` to prepend to the next chunk. */
+export interface SseFrames {
+  readonly frames: ReadonlyArray<string>
+  readonly rest: string
+}
+
+/**
+ * Split accumulated SSE text into complete event frames plus the unparsed tail.
+ *
+ * Pure and streaming-safe: an event is complete only once a blank line
+ * terminates it (`\r\n` tolerated), so each returned frame is that event's
+ * `data:` payload with non-`data:` lines (comments/keep-alives, `event:`, `id:`)
+ * dropped and events carrying no `data:` line omitted. `rest` is the bytes from
+ * the first still-incomplete event onward — feed it back joined to the next
+ * chunk so a frame split across reads is not lost.
+ */
+export const parseSseFrames = (buffer: string): SseFrames => {
+  const frames: Array<string> = []
+  let pending: Array<string> = []
+  let eventStart = 0
+  let lineStart = 0
+  let newline = buffer.indexOf("\n")
+  while (newline !== -1) {
+    const line = stripCr(buffer.slice(lineStart, newline))
+    if (line === "") {
+      const payload = framePayload(pending)
+      if (payload !== undefined) frames.push(payload)
+      pending = []
+      eventStart = newline + 1
+    } else {
+      pending.push(line)
+    }
+    lineStart = newline + 1
+    newline = buffer.indexOf("\n", lineStart)
+  }
+  return { frames, rest: buffer.slice(eventStart) }
+}
+
+/** Flush the final unterminated event at stream end: the `rest` buffer's `data:` payload, or `undefined` when it carries no `data:` line. */
+export const flushSseFrame = (rest: string): string | undefined =>
+  framePayload(rest.split("\n").map(stripCr))
+
+/** First SSE frame that parses to a JSON-RPC message with the given `id`, or `undefined`; non-JSON frames (keep-alives) are skipped. */
+export const matchFrameById = (frames: Iterable<string>, id: number): unknown => {
+  for (const frame of frames) {
+    const parsed = tryParseJson(frame)
+    if (readField(parsed, "id") === id) return parsed
+  }
+  return undefined
+}
+
 /**
  * Stream an SSE reply and return the JSON-RPC message whose `id` matches, then
  * cancel the reader. Stops at the first match rather than draining, so a server
- * that holds the channel open after replying does not hang to the timeout.
+ * that holds the channel open after replying does not hang to the timeout. Frame
+ * extraction and id-matching live in the pure `parseSseFrames` / `flushSseFrame`
+ * / `matchFrameById` helpers; only the read/cancel loop here is effectful.
  */
 const readSseReply = (
   server: McpServer,
@@ -185,14 +298,6 @@ const readSseReply = (
       const reader = body.getReader()
       const decoder = new TextDecoder()
       let buffer = ""
-      let dataLines: Array<string> = []
-      const takeEvent = (): unknown => {
-        if (dataLines.length === 0) return undefined
-        const payload = dataLines.join("\n")
-        dataLines = []
-        const parsed = tryParseJson(payload)
-        return readField(parsed, "id") === id ? parsed : undefined
-      }
       while (true) {
         if (signal.aborted) {
           await reader.cancel()
@@ -201,28 +306,16 @@ const readSseReply = (
         const { done, value } = await reader.read()
         if (done || value === undefined) break
         buffer += decoder.decode(value, { stream: true })
-        let newline = buffer.indexOf("\n")
-        while (newline !== -1) {
-          const rawLine = buffer.slice(0, newline)
-          buffer = buffer.slice(newline + 1)
-          const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
-          if (line === "") {
-            const matched = takeEvent()
-            if (matched !== undefined) {
-              await reader.cancel()
-              return matched
-            }
-          } else if (line.startsWith("data:")) {
-            dataLines.push(line.slice(5).replace(/^ /, ""))
-          }
-          newline = buffer.indexOf("\n")
+        const { frames, rest } = parseSseFrames(buffer)
+        buffer = rest
+        const matched = matchFrameById(frames, id)
+        if (matched !== undefined) {
+          await reader.cancel()
+          return matched
         }
       }
-      const tail = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer
-      if (tail.startsWith("data:")) {
-        dataLines.push(tail.slice(5).replace(/^ /, ""))
-      }
-      return takeEvent()
+      const tail = flushSseFrame(buffer)
+      return tail === undefined ? undefined : matchFrameById([tail], id)
     },
     catch: (error) =>
       new McpError({ server: server.name, message: `failed to read SSE response: ${describe(error)}` }),
@@ -303,7 +396,7 @@ const notify = (
   sendFetch(server, headers, { jsonrpc: "2.0", method }).pipe(
     Effect.flatMap((response) => ensureOk(server, response)),
     Effect.flatMap((response) =>
-      Effect.promise(() => response.body?.cancel() ?? Promise.resolve()),
+      Effect.ignore(Effect.tryPromise(() => response.body?.cancel() ?? Promise.resolve())),
     ),
     Effect.timeout("10 seconds"),
     Effect.catchTag("TimeoutError", () =>

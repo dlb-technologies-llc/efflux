@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
+import { failureMessage } from "@effect-flue/shared"
 import type { StreamPart } from "@effect-flue/shared"
-import { Cause, Effect, Exit, Stream } from "effect"
+import { Effect, Exit, Function, Stream } from "effect"
 import { render } from "ink"
 import { App } from "./App.tsx"
 import { parseCliConfig } from "./cli.ts"
@@ -40,6 +41,11 @@ if (config.message !== undefined) {
         exitCode = 1
         console.error(`\n[error] ${part.message}`)
         return
+      case "approval-request":
+        process.stderr.write(`\n[approval-request ${part.toolCallId} — parked; approve interactively]\n`)
+        return
+      default:
+        return Function.absurd(part)
     }
   }
   const result = await client.runtime.runPromiseExit(
@@ -50,13 +56,7 @@ if (config.message !== undefined) {
   )
   await client.runtime.dispose()
   if (Exit.isFailure(result)) {
-    const failReason = result.cause.reasons.find(Cause.isFailReason)
-    const message = failReason === undefined
-      ? "unknown error"
-      : failReason.error instanceof Error
-      ? failReason.error.message
-      : String(failReason.error)
-    console.error(`\n[stream failed] ${message}`)
+    console.error(`\n[stream failed] ${failureMessage(result.cause, "unknown error")}`)
     exitCode = 1
   }
   if (!sawDone) exitCode = 1

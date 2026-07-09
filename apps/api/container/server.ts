@@ -1,6 +1,6 @@
 import { Effect, Result } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
+import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 
 /** Workspace root — all commands run here and snapshot/restore tar exactly this directory (separate from /app so a snapshot never captures server.ts). */

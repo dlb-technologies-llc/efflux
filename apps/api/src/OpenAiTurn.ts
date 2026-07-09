@@ -1,21 +1,30 @@
 import {
-  AgentError,
+  type AgentError,
   ChatCompletionChunk,
   JournalErrorEvent,
   type RulesMap,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Context, Effect, Layer, Queue, Schema, Stream } from "effect"
-import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/ai"
-import * as AiError from "effect/unstable/ai/AiError"
+import { Cause, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
+import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
+import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
-import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
+import {
+  MAX_TOOL_HOPS,
+  MODEL_HOP_TIMEOUT,
+  journalTurnError,
+  makeBashRunnerLayer,
+  shouldContinueToolLoop,
+  snapshotWorkspace,
+  toAgentError,
+} from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
+import { ApprovalRules } from "./Tools.ts"
 
 /** Fixed OpenAI object id + creation time + model label for one facade turn's frames. */
 interface TurnMeta {
@@ -38,6 +47,10 @@ interface FacadeTurnInput {
   readonly initialPrompt: Prompt.Prompt
   readonly model: string
   readonly rules: RulesMap
+  /** The session's merged toolkit (local tools + resolved MCP tools) handed to the model call. */
+  readonly toolkit: SessionToolkit["toolkit"]
+  /** The matching handler layer for `toolkit`, provided into each hop's model call. */
+  readonly toolLayer: SessionToolkit["toolLayer"]
   readonly meta: TurnMeta
 }
 
@@ -59,14 +72,9 @@ const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are di
 export const collectOpenAiTurn = (
   input: FacadeTurnInput,
 ): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, rules, turn } = input
+  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-
-  const snapshotWorkspace = Effect.promise(() => agent.snapshotIfDirty()).pipe(
-    Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
-    Effect.asVoid,
-  )
 
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
@@ -76,23 +84,15 @@ export const collectOpenAiTurn = (
     let toolCallCount = 0
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
-      const call = LanguageModel.generateText({ prompt: promptValue, toolkit: AgentToolkit })
+      const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
       const response = yield* withModel.pipe(
-        Effect.provide(AgentToolkitLayer),
+        Effect.provide(toolLayer),
         Effect.provide(bashRunner),
         Effect.provide(Layer.succeed(ApprovalRules, rules)),
-        Effect.catch((cause) =>
-          Effect.fail(
-            new AgentError({
-              message:
-                cause instanceof Error
-                  ? cause.message
-                  : `LanguageModel.generateText failed: ${String(cause)}`,
-            }),
-          ),
-        ),
+        Effect.timeout(MODEL_HOP_TIMEOUT),
+        Effect.catch(toAgentError("LanguageModel.generateText")),
       )
 
       toolCallCount += response.toolCalls.length
@@ -132,12 +132,8 @@ export const collectOpenAiTurn = (
   })
 
   return loop.pipe(
-    Effect.ensuring(snapshotWorkspace),
-    Effect.tapCause((cause) =>
-      Effect.promise(() =>
-        agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),
-      ).pipe(Effect.catchCause(() => Effect.void)),
-    ),
+    Effect.ensuring(snapshotWorkspace(agent)),
+    Effect.tapCause(journalTurnError(agent, turn)),
   )
 }
 
@@ -163,22 +159,20 @@ const makeChunk = (
  * as an error and terminates the turn.
  */
 export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, meta, model, rules, turn } = input
+  const { agent, ambient, initialPrompt, meta, model, rules, toolkit, toolLayer, turn } = input
 
   const encodeChunk = Schema.encodeSync(ChatCompletionChunk)
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-
-  const snapshotWorkspace = Effect.promise(() => agent.snapshotIfDirty()).pipe(
-    Effect.catchCause((cause) => Effect.logError("Workspace snapshot failed", cause)),
-    Effect.asVoid,
-  )
 
   const sseFrame = (data: string): string =>
     Sse.encoder.write({ _tag: "Event", event: "message", id: undefined, data })
 
   const chunkStream = Stream.unwrap(
     Effect.gen(function* () {
-      const queue = yield* Queue.bounded<ChatCompletionChunk, AiError.AiError | Cause.Done>(64)
+      const queue = yield* Queue.bounded<
+        ChatCompletionChunk,
+        AiError.AiError | Cause.TimeoutError | Cause.Done
+      >(64)
 
       const driver = Effect.gen(function* () {
         let promptValue: Prompt.Prompt = initialPrompt
@@ -187,7 +181,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
         yield* Queue.offer(queue, makeChunk(meta, { role: "assistant" }, null))
 
         for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
-          const baseCall = LanguageModel.streamText({ prompt: promptValue, toolkit: AgentToolkit })
+          const baseCall = LanguageModel.streamText({ prompt: promptValue, toolkit })
           const withModel = baseCall.pipe(
             Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
           )
@@ -224,6 +218,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
                 }
               }),
             ),
+            Effect.timeout(MODEL_HOP_TIMEOUT),
           )
 
           const terminal =
@@ -270,7 +265,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
   )
 
   const bytes = chunkStream.pipe(
-    Stream.provide(AgentToolkitLayer),
+    Stream.provide(toolLayer),
     Stream.provide(bashRunner),
     Stream.provide(Layer.succeed(ApprovalRules, rules)),
     Stream.provideContext(ambient),
@@ -280,7 +275,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
       Stream.fromEffect(Effect.logError("openai stream failed", cause)).pipe(Stream.drain),
     ),
     Stream.encodeText,
-    Stream.ensuring(snapshotWorkspace),
+    Stream.ensuring(snapshotWorkspace(agent)),
   )
 
   return HttpServerResponse.stream(bytes, {

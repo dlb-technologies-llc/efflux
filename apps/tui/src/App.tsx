@@ -1,5 +1,6 @@
+import { ApprovalDecision, failureMessage } from "@effect-flue/shared"
 import type { StreamPart } from "@effect-flue/shared"
-import { Cause, Effect, Exit, Stream } from "effect"
+import { Effect, Exit, Function, Stream } from "effect"
 import { Box, Text, useApp } from "ink"
 import TextInput from "ink-text-input"
 import * as React from "react"
@@ -15,15 +16,6 @@ export interface AppProps {
   readonly initialOverrides: PromptOverrides
 }
 
-/** Extract a string `message` from the stream's union error channel (not every member carries one). */
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message
-    if (typeof message === "string") return message
-  }
-  return String(error)
-}
-
 /** Interactive Ink chat: streams turns, handles slash commands, renders the transcript. */
 export function App({ client, name, id, initialOverrides }: AppProps) {
   const { exit } = useApp()
@@ -32,6 +24,7 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   const [pending, setPending] = React.useState(false)
   const [streaming, setStreaming] = React.useState("")
   const [overrides, setOverrides] = React.useState<PromptOverrides>(initialOverrides)
+  const [pendingApprovalId, setPendingApprovalId] = React.useState<number | null>(null)
 
   const mountedRef = React.useRef(true)
   React.useEffect(
@@ -96,6 +89,13 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
         flushStreaming()
         pushEntry({ kind: "error", text: part.message })
         return
+      case "approval-request":
+        flushStreaming()
+        setPendingApprovalId(part.eventId)
+        pushEntry({ kind: "info", text: "⏸ tool call parked — /approve or /deny [reason]" })
+        return
+      default:
+        return Function.absurd(part)
     }
   }
 
@@ -114,10 +114,7 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
     flushStreaming()
     setPending(false)
     if (Exit.isFailure(result)) {
-      const failReason = result.cause.reasons.find(Cause.isFailReason)
-      if (failReason !== undefined) {
-        pushEntry({ kind: "error", text: `stream failed: ${messageOf(failReason.error)}` })
-      }
+      pushEntry({ kind: "error", text: `stream failed: ${failureMessage(result.cause, "unknown error")}` })
     }
   }
 
@@ -131,6 +128,37 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
       case "note":
         pushEntry({ kind: "info", text: result.note })
         return
+      case "approve": {
+        if (pendingApprovalId === null) {
+          pushEntry({ kind: "info", text: "nothing awaiting approval" })
+          return
+        }
+        const eventId = pendingApprovalId
+        const decision = new ApprovalDecision({
+          approved: result.approved,
+          ...(result.reason !== undefined ? { reason: result.reason } : {}),
+        })
+        setPendingApprovalId(null)
+        setPending(true)
+        streamRef.current = ""
+        setStreaming("")
+        const exitResult = await client.runtime.runPromiseExit(
+          Stream.runForEach(
+            client.streamApprove(name, id, eventId, decision),
+            (part) => Effect.sync(() => onPart(part)),
+          ),
+        )
+        if (!mountedRef.current) return
+        flushStreaming()
+        setPending(false)
+        if (Exit.isFailure(exitResult)) {
+          pushEntry({
+            kind: "error",
+            text: `stream failed: ${failureMessage(exitResult.cause, "unknown error")}`,
+          })
+        }
+        return
+      }
       case "reset": {
         setPending(true)
         const exitResult = await client.runtime.runPromiseExit(client.reset(name, id))
@@ -140,11 +168,7 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
           onSuccess: () =>
             pushEntry({ kind: "info", text: "session reset — server history cleared" }),
           onFailure: (cause) => {
-            const failReason = cause.reasons.find(Cause.isFailReason)
-            pushEntry({
-              kind: "error",
-              text: `reset failed: ${failReason ? messageOf(failReason.error) : "unknown error"}`,
-            })
+            pushEntry({ kind: "error", text: `reset failed: ${failureMessage(cause, "unknown error")}` })
           },
         })
         return
