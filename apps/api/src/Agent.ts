@@ -265,11 +265,23 @@ export class Agent extends DurableObject<Env> {
     return out
   }
 
-  /** Clean-slate reset: clears the journal, dirty flag, R2 snapshot, and a live container's /workspace. */
+  /** Read the session's stored config overrides (empty object when none set). Plain object across the RPC fence — the handler owns schema validation. */
+  async getConfig(): Promise<unknown> {
+    const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
+    return raw === undefined ? {} : JSON.parse(String(raw))
+  }
+
+  /** Persist the session's config overrides verbatim (already validated at the HTTP edge); replaces any previously stored overrides. */
+  async putConfig(config: unknown): Promise<void> {
+    await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
+  }
+
+  /** Clean-slate reset: clears the journal, dirty flag, config overrides, R2 snapshot, and a live container's /workspace. */
   async reset(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
+    await this.ctx.storage.delete(Agent.#CONFIG_KEY)
     const name = this.ctx.id.name
     if (name === undefined) return
     await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
@@ -286,6 +298,9 @@ export class Agent extends DurableObject<Env> {
 
   /** DO-storage key for the workspace dirty flag (storage-backed so DO eviction can't drop it mid-turn). */
   static readonly #DIRTY_KEY = "workspaceDirty"
+
+  /** DO-storage key for the session's config overrides (plain JSON string; schema lives at the HTTP edge). */
+  static readonly #CONFIG_KEY = "config"
 
   /** In-flight hydration, deduping concurrent execs so they can't double-restore; cleared on settle. */
   #hydrating: Promise<void> | undefined
