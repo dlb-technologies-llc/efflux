@@ -15,6 +15,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
+import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
@@ -52,6 +53,7 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
+  Layer.provide(OpenAiHandlers),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
     Etag.layer,
@@ -135,7 +137,8 @@ const isApiPath = (pathname: string): boolean =>
   pathname === "/tasks" ||
   pathname.startsWith("/tasks/") ||
   pathname === "/skills" ||
-  pathname.startsWith("/skills/")
+  pathname.startsWith("/skills/") ||
+  pathname.startsWith("/v1/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(
