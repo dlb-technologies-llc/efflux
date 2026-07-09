@@ -24,12 +24,15 @@ import {
   JournalAssistantText,
   JournalDone,
   JournalErrorEvent,
+  JournalEvent,
   JournalEventPayload,
   JournalHopMessages,
+  JournalSessionClosed,
   JournalToolCall,
   JournalToolResult,
   JournalUsage,
   JournalUserMessage,
+  SessionArchive,
 } from "@effect-flue/shared"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
@@ -47,6 +50,7 @@ const CleanPayload = Schema.Union([
   JournalUsage,
   JournalDone,
   JournalErrorEvent,
+  JournalSessionClosed,
 ])
 
 const cleanArb = Schema.toArbitrary(CleanPayload)
@@ -112,6 +116,33 @@ describe("JournalEventPayload codec", () => {
           }),
           Prompt.assistantMessage({
             content: [Prompt.textPart({ text: "hi there" })],
+          }),
+        ],
+      }),
+    ))
+
+  it.effect("pins SessionArchive (envelope of session-closed + a clean event)", () =>
+    assertStable(
+      SessionArchive,
+      new SessionArchive({
+        name: "session-lifecycle",
+        id: "abc123",
+        closedAt: 1_700_000_000_000,
+        reason: "reaped",
+        events: [
+          new JournalEvent({
+            seq: 1,
+            createdAt: 1_699_999_000_000,
+            event: new JournalDone({
+              turn: 1,
+              finishReason: "stop",
+              toolCallCount: 0,
+            }),
+          }),
+          new JournalEvent({
+            seq: 2,
+            createdAt: 1_700_000_000_000,
+            event: new JournalSessionClosed({ reason: "reaped" }),
           }),
         ],
       }),

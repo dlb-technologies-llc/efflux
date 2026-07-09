@@ -39,6 +39,8 @@ export const formatEvent = ({ createdAt, event, seq }: JournalEvent): string => 
       return `${head}  turn=${event.turn}  ${event.finishReason}  toolCalls=${event.toolCallCount}`
     case "error":
       return `${head}  turn=${event.turn}  ${truncate(event.message, 200)}`
+    case "session-closed":
+      return `${head}  reason=${event.reason}`
   }
 }
 

@@ -102,6 +102,14 @@ export class JournalErrorEvent extends Schema.TaggedClass<JournalErrorEvent>()(
   },
 ) {}
 
+/** Terminal session-lifecycle event: the session was closed explicitly (`closed`) or reaped by the TTL alarm (`reaped`). Captured in the archived journal; never present in a live journal (close writes it, archives, then purges). */
+export class JournalSessionClosed extends Schema.TaggedClass<JournalSessionClosed>()(
+  "session-closed",
+  {
+    reason: Schema.Literals(["closed", "reaped"]),
+  },
+) {}
+
 /**
  * The append-only event vocabulary persisted in the Agent DO's SQLite journal;
  * history is a fold over these. Two prompt-reconstruction layers coexist:
@@ -109,7 +117,9 @@ export class JournalErrorEvent extends Schema.TaggedClass<JournalErrorEvent>()(
  * for per-call timelines and approvals; AUTHORITATIVE `hop-messages` stores the
  * exact per-hop `Prompt.Message`s for lossless rebuild. Every event but
  * `user-message` carries `turn`; folds group by `(turn, hop)`, never seq
- * adjacency (concurrent prompts to one session interleave appends).
+ * adjacency (concurrent prompts to one session interleave appends). The
+ * terminal `session-closed` member is archive-only — close writes it into the
+ * archived journal, then purges the live journal, so it never appears live.
  */
 export const JournalEventPayload = Schema.Union([
   JournalUserMessage,
@@ -122,6 +132,7 @@ export const JournalEventPayload = Schema.Union([
   JournalUsage,
   JournalDone,
   JournalErrorEvent,
+  JournalSessionClosed,
 ])
 
 export type JournalEventPayload = typeof JournalEventPayload.Type
@@ -150,4 +161,13 @@ export class SessionInfo extends Schema.Class<SessionInfo>("SessionInfo")({
 /** All known sessions. */
 export class SessionsResponse extends Schema.Class<SessionsResponse>("SessionsResponse")({
   sessions: Schema.Array(SessionInfo),
+}) {}
+
+/** One archived session — the eval-corpus record written to `effect-flue-sessions/archives/<name>/<id>/<closedAt>/journal.json` on close or reap. `events` is the full journal at close time (including the terminal `session-closed` event). */
+export class SessionArchive extends Schema.Class<SessionArchive>("SessionArchive")({
+  name: Schema.String,
+  id: Schema.String,
+  closedAt: NonNegativeInt,
+  reason: Schema.Literals(["closed", "reaped"]),
+  events: Schema.Array(JournalEvent),
 }) {}
