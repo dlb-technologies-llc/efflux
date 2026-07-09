@@ -216,10 +216,75 @@ const readJsonReply = (server: McpServer, response: Response): Effect.Effect<unk
     ),
   )
 
+/** Strip one trailing carriage return so a line parses identically under `\r\n` and `\n` endings. */
+const stripCr = (line: string): string => (line.endsWith("\r") ? line.slice(0, -1) : line)
+
+/** The value carried by one `data:` line: the text after `data:`, with a single optional leading space removed. */
+const dataLineValue = (line: string): string => line.slice(5).replace(/^ /, "")
+
+/** Join one SSE event's lines into its `data:` payload (data-line values by `\n`), dropping non-`data:` lines; `undefined` when the event carries no `data:` line. */
+const framePayload = (lines: ReadonlyArray<string>): string | undefined => {
+  const data = lines.filter((line) => line.startsWith("data:")).map(dataLineValue)
+  return data.length === 0 ? undefined : data.join("\n")
+}
+
+/** Complete SSE frames split out of an accumulated buffer, plus the still-incomplete trailing `rest` to prepend to the next chunk. */
+export interface SseFrames {
+  readonly frames: ReadonlyArray<string>
+  readonly rest: string
+}
+
+/**
+ * Split accumulated SSE text into complete event frames plus the unparsed tail.
+ *
+ * Pure and streaming-safe: an event is complete only once a blank line
+ * terminates it (`\r\n` tolerated), so each returned frame is that event's
+ * `data:` payload with non-`data:` lines (comments/keep-alives, `event:`, `id:`)
+ * dropped and events carrying no `data:` line omitted. `rest` is the bytes from
+ * the first still-incomplete event onward — feed it back joined to the next
+ * chunk so a frame split across reads is not lost.
+ */
+export const parseSseFrames = (buffer: string): SseFrames => {
+  const frames: Array<string> = []
+  let pending: Array<string> = []
+  let eventStart = 0
+  let lineStart = 0
+  let newline = buffer.indexOf("\n")
+  while (newline !== -1) {
+    const line = stripCr(buffer.slice(lineStart, newline))
+    if (line === "") {
+      const payload = framePayload(pending)
+      if (payload !== undefined) frames.push(payload)
+      pending = []
+      eventStart = newline + 1
+    } else {
+      pending.push(line)
+    }
+    lineStart = newline + 1
+    newline = buffer.indexOf("\n", lineStart)
+  }
+  return { frames, rest: buffer.slice(eventStart) }
+}
+
+/** Flush the final unterminated event at stream end: the `rest` buffer's `data:` payload, or `undefined` when it carries no `data:` line. */
+export const flushSseFrame = (rest: string): string | undefined =>
+  framePayload(rest.split("\n").map(stripCr))
+
+/** First SSE frame that parses to a JSON-RPC message with the given `id`, or `undefined`; non-JSON frames (keep-alives) are skipped. */
+export const matchFrameById = (frames: Iterable<string>, id: number): unknown => {
+  for (const frame of frames) {
+    const parsed = tryParseJson(frame)
+    if (readField(parsed, "id") === id) return parsed
+  }
+  return undefined
+}
+
 /**
  * Stream an SSE reply and return the JSON-RPC message whose `id` matches, then
  * cancel the reader. Stops at the first match rather than draining, so a server
- * that holds the channel open after replying does not hang to the timeout.
+ * that holds the channel open after replying does not hang to the timeout. Frame
+ * extraction and id-matching live in the pure `parseSseFrames` / `flushSseFrame`
+ * / `matchFrameById` helpers; only the read/cancel loop here is effectful.
  */
 const readSseReply = (
   server: McpServer,
@@ -233,14 +298,6 @@ const readSseReply = (
       const reader = body.getReader()
       const decoder = new TextDecoder()
       let buffer = ""
-      let dataLines: Array<string> = []
-      const takeEvent = (): unknown => {
-        if (dataLines.length === 0) return undefined
-        const payload = dataLines.join("\n")
-        dataLines = []
-        const parsed = tryParseJson(payload)
-        return readField(parsed, "id") === id ? parsed : undefined
-      }
       while (true) {
         if (signal.aborted) {
           await reader.cancel()
@@ -249,28 +306,16 @@ const readSseReply = (
         const { done, value } = await reader.read()
         if (done || value === undefined) break
         buffer += decoder.decode(value, { stream: true })
-        let newline = buffer.indexOf("\n")
-        while (newline !== -1) {
-          const rawLine = buffer.slice(0, newline)
-          buffer = buffer.slice(newline + 1)
-          const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
-          if (line === "") {
-            const matched = takeEvent()
-            if (matched !== undefined) {
-              await reader.cancel()
-              return matched
-            }
-          } else if (line.startsWith("data:")) {
-            dataLines.push(line.slice(5).replace(/^ /, ""))
-          }
-          newline = buffer.indexOf("\n")
+        const { frames, rest } = parseSseFrames(buffer)
+        buffer = rest
+        const matched = matchFrameById(frames, id)
+        if (matched !== undefined) {
+          await reader.cancel()
+          return matched
         }
       }
-      const tail = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer
-      if (tail.startsWith("data:")) {
-        dataLines.push(tail.slice(5).replace(/^ /, ""))
-      }
-      return takeEvent()
+      const tail = flushSseFrame(buffer)
+      return tail === undefined ? undefined : matchFrameById([tail], id)
     },
     catch: (error) =>
       new McpError({ server: server.name, message: `failed to read SSE response: ${describe(error)}` }),
