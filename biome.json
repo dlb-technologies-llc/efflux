@@ -12,6 +12,7 @@
 			"packages/**",
 			"scripts/**",
 			"!**/dist",
+			"!**/*.svg",
 			"!**/worker-configuration.d.ts",
 			"!.claude/effect-smol",
 			"!**/node_modules"
