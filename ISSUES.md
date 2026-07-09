@@ -630,3 +630,72 @@ multi-step tool flows will silently degrade to one-shot announcements.
   `streamText` stating "this runs one round per call; if
   `finishReason === 'tool-calls'`, the caller must concatenate
   `Prompt.fromResponseParts(response.content)` and call again."
+
+---
+
+## Effect ships an MCP *server*, not a client — we hand-rolled the JSON-RPC Streamable-HTTP transport
+
+**TL;DR:** `effect/unstable/ai` ships `McpServer.ts` (expose *your* toolkit
+as an MCP server) and `McpSchema.ts` (the protocol modelled as `Rpc.make`
+classes), but NO MCP *client*. To CONSUME external MCP servers,
+`apps/api/src/Mcp.ts` is a hand-written JSON-RPC 2.0 Streamable-HTTP client
+that still decodes replies with the canonical `McpSchema` result classes
+(`InitializeResult`, `ListToolsResult`, `CallToolResult`). Every transport
+quirk below cost real debugging when it was missed.
+
+### Transport quirks (`apps/api/src/Mcp.ts`)
+
+- **Two reply encodings.** One request may come back as `application/json`
+  OR `text/event-stream` — branch on the response `content-type` and handle
+  both (`readReply`). For SSE, stop reading at the frame whose JSON-RPC `id`
+  matches the request and cancel the reader; do NOT drain the stream, or a
+  server that holds the channel open after replying hangs to the 10s
+  timeout.
+- **Echo the session + protocol headers on EVERY post-init request.**
+  `Mcp-Session-Id` (captured from the `initialize` response headers) and
+  `MCP-Protocol-Version: <negotiated>` must ride on every subsequent
+  request — INCLUDING the `notifications/initialized` notification. Some
+  servers 400 without them.
+- **Handshake order.** `notifications/initialized` must be sent AFTER
+  `initialize` and BEFORE the first `tools/list`.
+- **Follow redirects.** Real servers 307/308 to their canonical path; the
+  fetch must use `redirect: "follow"` — `redirect: "manual"` breaks the
+  handshake.
+- **Read the JSON-RPC `.error` object, not just `.result`.** A well-formed
+  error envelope carries no `result`; treating a missing `.result` as
+  success yields an opaque `undefined`-decode failure instead of the
+  server's real message. `resultOf` maps `.error` to an `McpError`
+  explicitly and fails on an envelope with neither.
+- **`CallToolResult` may carry binary.** `ImageContent`/`AudioContent`
+  blocks decode `data` as `Uint8Array`, which trips strict decode.
+  `callTool` decodes strict first (`flattenStrict`), then falls back to a
+  lenient text-only extraction (`flattenLenient`), so a binary block
+  degrades to a placeholder instead of failing the whole call.
+
+### Toolkit side (`apps/api/src/SessionToolkit.ts`)
+
+Discovered tools become `Tool.dynamic(...)` in JSON-Schema mode, namespaced
+`mcp__<server>__<tool>`, and folded into the session toolkit via
+`Toolkit.merge`. Two non-obvious requirements:
+
+- Each dynamic tool MUST be annotated `.annotate(Tool.Strict, false)` — the
+  server's raw JSON Schema will not survive a provider's strict-schema
+  validation otherwise.
+- The handler MUST `Effect.catchTag("McpError", ...)` the transport failure.
+  `McpError` is neither the tool's declared `Failure` nor an `AiError`, so
+  an uncaught one fails typecheck at `mcpToolkit.toLayer(handlers)`.
+
+Discovery runs per-turn and degrades gracefully: `discoverServer` catches
+every per-server failure (SSRF reject, handshake error, dead/slow server) to
+a warning plus an empty tool set, so a broken server contributes zero tools
+and never fails the turn.
+
+### Approval-continuation edge
+
+`reconstructForContinuation` rebuilds a parked turn's continuation prompt by
+tool NAME + `approvalId`/`toolCallId` — never Effect's internal `tool.id` —
+so a parked MCP tool-call survives per-turn re-discovery and resumes. BUT if
+the server is unreachable at `/approve` time, the freshly rebuilt toolkit
+lacks that tool and the runtime raises `AiError.ToolNotFoundError`: the
+approved action is lost. An MCP tool's approval is only as durable as the
+server's availability at resume time.

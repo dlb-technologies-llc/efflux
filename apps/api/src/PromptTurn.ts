@@ -12,8 +12,9 @@ import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/a
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildHopEvents, buildUsageEvent, eventJson } from "./JournalWrite.ts"
+import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
+import { ApprovalRules } from "./Tools.ts"
 
 /** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. */
 export interface PromptApproval {
@@ -40,6 +41,10 @@ interface RunPromptTurnInput {
   payloadModel: string | undefined
   /** Resolved per-tool permission rules for this turn; provided into the model call as the ApprovalRules Reference. */
   rules: RulesMap
+  /** The session's merged toolkit (local tools + resolved MCP tools) handed to `generateText`. */
+  toolkit: SessionToolkit["toolkit"]
+  /** The matching handler layer for `toolkit`, provided into each hop's model call. */
+  toolLayer: SessionToolkit["toolLayer"]
 }
 
 /**
@@ -51,7 +56,7 @@ interface RunPromptTurnInput {
 export const runPromptTurn = (
   input: RunPromptTurnInput,
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket> => {
-  const { agent, initialPrompt, model, payloadModel, rules, turn } = input
+  const { agent, initialPrompt, model, payloadModel, rules, toolkit, toolLayer, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
 
@@ -69,14 +74,14 @@ export const runPromptTurn = (
     let approval: PromptApproval | undefined
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
-      const call = LanguageModel.generateText({ prompt: promptValue, toolkit: AgentToolkit })
+      const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
       const withModel =
         payloadModel !== undefined
           ? OpenRouterLanguageModel.withConfigOverride(call, { model: payloadModel })
           : call
 
       const response = yield* withModel.pipe(
-        Effect.provide(AgentToolkitLayer),
+        Effect.provide(toolLayer),
         Effect.provide(bashRunner),
         Effect.provide(Layer.succeed(ApprovalRules, rules)),
         Effect.catch((cause) =>
