@@ -13,6 +13,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson, journalHopBatch } from "./JournalWrite.ts"
+import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 
@@ -42,7 +43,7 @@ interface FacadeTurnInput {
 
 /** Streaming driver inputs: the root context is forwarded so the forked stream can reach the model + skills bucket. */
 interface StreamTurnInput extends FacadeTurnInput {
-  readonly ambient: Context.Context<LanguageModel.LanguageModel | SkillsBucket>
+  readonly ambient: Context.Context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>
 }
 
 /** Message emitted when a facade turn hits an approval gate; approvals are coerced off upstream, so this only fires defensively. */
@@ -57,7 +58,7 @@ const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are di
  */
 export const collectOpenAiTurn = (
   input: FacadeTurnInput,
-): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket> => {
+): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
   const { agent, initialPrompt, model, rules, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))

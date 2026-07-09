@@ -20,6 +20,7 @@ import type { AgentNamespace } from "./AgentStub.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { resolveConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
+import type { KnowledgeSearch } from "./Knowledge.ts"
 import { collectOpenAiTurn, streamOpenAiTurn } from "./OpenAiTurn.ts"
 import { RegistryStub } from "./Registry.ts"
 import type { SkillsBucket } from "./Skills.ts"
@@ -95,7 +96,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const initialPrompt = Prompt.make(promptMessages)
 
         if (payload.stream === true) {
-          const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
+          const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
           return streamOpenAiTurn({ agent, ambient, turn, initialPrompt, model: effectiveModel, rules, meta })
         }
 

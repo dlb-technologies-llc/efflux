@@ -16,6 +16,9 @@ import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
 import { OpenAiHandlers } from "./OpenAiHandlers.ts"
+import { KnowledgeSearch } from "./Knowledge.ts"
+import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
+import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
@@ -54,6 +57,8 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
   Layer.provide(OpenAiHandlers),
+  Layer.provide(KnowledgeHandlers),
+  Layer.provide(MetaHandlers),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
     Etag.layer,
@@ -75,6 +80,7 @@ const buildWebHandler = (
         Layer.succeed(AgentStub, env.AGENTS),
         Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
+        Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
       )
       const handler = yield* HttpRouter.toHttpEffect(routerLayer)
       const wrapped = handler.pipe(
@@ -115,12 +121,13 @@ const buildWebHandler = (
       )
       const context = yield* Layer.build(services)
       return HttpEffect.toWebHandlerWith<
-        AgentStub | RegistryStub | SkillsBucket | LanguageModel.LanguageModel,
+        AgentStub | RegistryStub | SkillsBucket | KnowledgeSearch | LanguageModel.LanguageModel,
         | HttpServerRequest.HttpServerRequest
         | Scope.Scope
         | AgentStub
         | RegistryStub
         | SkillsBucket
+        | KnowledgeSearch
         | LanguageModel.LanguageModel
       >(context)(wrapped)
     }).pipe(Effect.provideService(Scope.Scope, scope)),
@@ -138,7 +145,10 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/tasks/") ||
   pathname === "/skills" ||
   pathname.startsWith("/skills/") ||
-  pathname.startsWith("/v1/")
+  pathname.startsWith("/v1/") ||
+  pathname === "/knowledge" ||
+  pathname.startsWith("/knowledge/") ||
+  pathname.startsWith("/meta/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(

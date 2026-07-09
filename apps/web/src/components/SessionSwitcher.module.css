@@ -1,0 +1,154 @@
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  width: 260px;
+  box-sizing: border-box;
+  border-right: 1px solid rgba(127, 127, 127, 0.2);
+  font-size: 13px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.refresh {
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  background: transparent;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.refresh:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.session {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.session:hover {
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.active {
+  border-color: rgba(99, 102, 241, 0.6);
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.sessionKey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.sessionTime {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.fields {
+  display: flex;
+  gap: 8px;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: transparent;
+  color: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.7);
+}
+
+.create {
+  border: 1px solid rgba(99, 102, 241, 0.6);
+  background: rgba(99, 102, 241, 0.15);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.create:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.pickerLabel {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: #dc2626;
+}
