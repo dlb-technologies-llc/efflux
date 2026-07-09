@@ -7,6 +7,7 @@ import {
   JournalHopMessages,
   JournalToolCall,
   JournalToolResult,
+  type RulesMap,
   StreamPart,
   StreamPartApprovalRequest,
   StreamPartDone,
@@ -25,7 +26,7 @@ import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./Ag
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
+import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 
 /** The SSE-bound StreamPart union, kept in lockstep with the wire contract. */
 type SseStreamPart = StreamPart
@@ -41,6 +42,8 @@ interface RunStreamingTurnInput {
   initialPrompt: Prompt.Prompt
   model: string
   payloadModel: string | undefined
+  /** Resolved per-tool permission rules for this turn; provided into the stream as the ApprovalRules Reference. */
+  rules: RulesMap
 }
 
 /**
@@ -54,7 +57,7 @@ interface RunStreamingTurnInput {
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, model, payloadModel, startHop, turn } = input
+  const { agent, ambient, initialPrompt, model, payloadModel, rules, startHop, turn } = input
 
   let pendingHopText = ""
   let currentHop = startHop
@@ -249,6 +252,7 @@ export const runStreamingTurn = (
       return loopedStream.pipe(
         Stream.provide(AgentToolkitLayer),
         Stream.provide(bashRunner),
+        Stream.provide(Layer.succeed(ApprovalRules, rules)),
         Stream.provideContext(ambient),
         Stream.filterMap(Filter.make(toFramedPart)),
         Stream.tap(({ sse }) =>

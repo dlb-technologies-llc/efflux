@@ -5,6 +5,7 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
+import { AgentConfig, ResolvedConfig } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
@@ -115,6 +116,19 @@ const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
 })
 
+/** Read the session's effective (resolved) config — stored overrides merged over Defaults. */
+const getConfig = HttpApiEndpoint.get("getConfig", "/agents/:name/:id/config", {
+  params: AgentParams,
+  success: ResolvedConfig,
+})
+
+/** Replace the session's config overrides wholesale; returns the new effective config. */
+const putConfig = HttpApiEndpoint.put("putConfig", "/agents/:name/:id/config", {
+  params: AgentParams,
+  payload: AgentConfig,
+  success: ResolvedConfig,
+})
+
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
   success: SkillListResponse,
@@ -160,6 +174,8 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(task)
   .add(journal)
   .add(sessions)
+  .add(getConfig)
+  .add(putConfig)
 
 /** The app's single HttpApi; `.middleware` attaches after `.add(AgentGroup)` so per `HttpApi.middleware` semantics it applies to every endpoint in the group. */
 export class AgentApi extends HttpApi.make("agent-api")

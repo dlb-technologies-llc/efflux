@@ -2,7 +2,13 @@
  * Tools exposed to the parent prompt loop: clock, subagent spawn, Bash, and the
  * file/search ops (all on the same exec seam as Bash) plus Worker-side web_fetch.
  */
-import { SkillSummary, SubagentTaskRequest } from "@effect-flue/shared"
+import {
+  DEFAULT_TOOL_RULES,
+  resolveRule,
+  type RulesMap,
+  SkillSummary,
+  SubagentTaskRequest,
+} from "@effect-flue/shared"
 import { Cause, Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
@@ -25,6 +31,19 @@ export class BashRunner extends Context.Service<
   }
 >()("api/BashRunner") {}
 
+/** Request-scoped per-tool permission rules; each turn provides the resolved rules, defaulting to DEFAULT_TOOL_RULES. */
+export const ApprovalRules = Context.Reference<RulesMap>("api/ApprovalRules", {
+  defaultValue: () => DEFAULT_TOOL_RULES,
+})
+
+/** Dynamic `needsApproval`: parks the turn when this tool's resolved rule is `ask`. Reads the request-scoped ApprovalRules Reference (requirement erased — it has a default). */
+const needsApprovalFor = (name: string) => (): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const rules = yield* ApprovalRules
+    return resolveRule(rules, name) === "ask"
+  })
+
+/** Clock read; ask/deny rules do not gate it in v1. */
 export const GetCurrentTimeTool = Tool.make("GetCurrentTime", {
   description: "Returns the current UTC date and time as an ISO 8601 string.",
   success: Schema.String,
@@ -33,6 +52,7 @@ export const GetCurrentTimeTool = Tool.make("GetCurrentTime", {
 /** Parameters derived from SubagentTaskRequest.fields to stay in lockstep with POST /tasks. */
 const SpawnSubagentParameters = Schema.Struct(SubagentTaskRequest.fields)
 
+/** Delegate to a stateless subagent; ask/deny rules do not gate it in v1. */
 export const SpawnSubagentTool = Tool.make("SpawnSubagent", {
   description:
     "Delegate a focused subtask to a stateless subagent. The subagent has no access to this conversation's history and returns only its final response text. Use for classification, summarization, or KB lookups without polluting the parent's context.",
@@ -73,7 +93,7 @@ export const BashTool = Tool.make("Bash", {
   parameters: BashParameters,
   success: BashResult,
   dependencies: [BashRunner],
-  needsApproval: true,
+  needsApproval: needsApprovalFor("Bash"),
 })
 
 /** Cap tool output — results feed back into the prompt next hop, so one runaway `cat` must not dwarf the context. */
@@ -100,6 +120,19 @@ const execCapped = (command: string): Effect.Effect<BashResultValue, never, Bash
   BashRunner.use((runner) => runner.exec(command)).pipe(
     Effect.map(capExecResult),
   )
+
+/** Short-circuit an exec-backed tool with an in-band refusal when its resolved rule is `deny`; otherwise run it. */
+const guardExec = (
+  name: string,
+  run: Effect.Effect<BashResultValue, never, BashRunner>,
+): Effect.Effect<BashResultValue, never, BashRunner> =>
+  Effect.gen(function* () {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, name) === "deny") {
+      return { exitCode: -1, stdout: "", stderr: `Tool "${name}" is denied by session policy` }
+    }
+    return yield* run
+  })
 
 const commandTooLarge = (what: string): BashResultValue => ({
   exitCode: -1,
@@ -181,6 +214,7 @@ export const ReadFileTool = Tool.make("read_file", {
   }),
   success: BashResult,
   dependencies: [BashRunner],
+  needsApproval: needsApprovalFor("read_file"),
 })
 
 export const WriteFileTool = Tool.make("write_file", {
@@ -195,6 +229,7 @@ export const WriteFileTool = Tool.make("write_file", {
   }),
   success: BashResult,
   dependencies: [BashRunner],
+  needsApproval: needsApprovalFor("write_file"),
 })
 
 export const EditFileTool = Tool.make("edit_file", {
@@ -216,6 +251,7 @@ export const EditFileTool = Tool.make("edit_file", {
   }),
   success: BashResult,
   dependencies: [BashRunner],
+  needsApproval: needsApprovalFor("edit_file"),
 })
 
 export const GlobTool = Tool.make("glob", {
@@ -231,6 +267,7 @@ export const GlobTool = Tool.make("glob", {
   }),
   success: BashResult,
   dependencies: [BashRunner],
+  needsApproval: needsApprovalFor("glob"),
 })
 
 export const GrepTool = Tool.make("grep", {
@@ -246,6 +283,7 @@ export const GrepTool = Tool.make("grep", {
   }),
   success: BashResult,
   dependencies: [BashRunner],
+  needsApproval: needsApprovalFor("grep"),
 })
 
 /** Network read ceiling; the returned body is further capped for the prompt. */
@@ -299,6 +337,7 @@ export const WebFetchTool = Tool.make("web_fetch", {
     }),
   }),
   success: WebFetchResult,
+  needsApproval: needsApprovalFor("web_fetch"),
 })
 
 const webFetchError = (message: string): WebFetchResultValue => ({
@@ -485,8 +524,9 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     ),
-  Bash: (params) => execCapped(params.command),
-  read_file: (params) => execCapped(`cat -- ${shellQuote(params.path)}`),
+  Bash: (params) => guardExec("Bash", execCapped(params.command)),
+  read_file: (params) =>
+    guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`)),
   write_file: (params) => {
     const command = bunEval(
       {
@@ -495,9 +535,12 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       WRITE_SCRIPT,
     )
-    return command.length > MAX_COMMAND_CHARS
-      ? Effect.succeed(commandTooLarge("content"))
-      : execCapped(command)
+    return guardExec(
+      "write_file",
+      command.length > MAX_COMMAND_CHARS
+        ? Effect.succeed(commandTooLarge("content"))
+        : execCapped(command),
+    )
   },
   edit_file: (params) => {
     const command = bunEval(
@@ -509,23 +552,38 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       EDIT_SCRIPT,
     )
-    return command.length > MAX_COMMAND_CHARS
-      ? Effect.succeed(commandTooLarge("old_string/new_string"))
-      : execCapped(command)
+    return guardExec(
+      "edit_file",
+      command.length > MAX_COMMAND_CHARS
+        ? Effect.succeed(commandTooLarge("old_string/new_string"))
+        : execCapped(command),
+    )
   },
   glob: (params) =>
-    execCapped(
-      bunEval(
-        {
-          FLUE_PATTERN: Encoding.encodeBase64(params.pattern),
-          FLUE_CWD: Encoding.encodeBase64(params.path ?? "."),
-        },
-        GLOB_SCRIPT,
+    guardExec(
+      "glob",
+      execCapped(
+        bunEval(
+          {
+            FLUE_PATTERN: Encoding.encodeBase64(params.pattern),
+            FLUE_CWD: Encoding.encodeBase64(params.path ?? "."),
+          },
+          GLOB_SCRIPT,
+        ),
       ),
     ),
   grep: (params) =>
-    execCapped(
-      `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
+    guardExec(
+      "grep",
+      execCapped(
+        `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
+      ),
     ),
-  web_fetch: (params) => runWebFetch(params.url),
+  web_fetch: (params) =>
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      return resolveRule(rules, "web_fetch") === "deny"
+        ? webFetchError("denied by session policy")
+        : yield* runWebFetch(params.url)
+    }),
 })

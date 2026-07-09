@@ -1,5 +1,6 @@
 import {
   AgentApi,
+  AgentConfig,
   ApprovalConflictError,
   ApprovalNotFoundError,
   HistoryResponse,
@@ -11,13 +12,13 @@ import {
   SessionsResponse,
   SubagentTaskResponse,
 } from "@effect-flue/shared"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { AgentStub } from "./AgentStub.ts"
-import { DEFAULT_MODEL } from "./Defaults.ts"
+import { resolveConfig } from "./Defaults.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
@@ -50,24 +51,34 @@ const findUserMessage = (events: ReadonlyArray<ReconstructEvent>, turn: number) 
   return row !== undefined && row.event._tag === "user-message" ? row.event : undefined
 }
 
+/** Load the session's stored overrides from the DO and resolve them against Defaults. Decode-dies on corruption (config was validated at PUT). */
+const loadResolvedConfig = (agent: ReturnType<AgentNamespace["getByName"]>) =>
+  Effect.gen(function* () {
+    const raw = yield* Effect.promise(() => agent.getConfig())
+    const stored = yield* Schema.decodeUnknownEffect(AgentConfig)(raw).pipe(Effect.orDie)
+    return resolveConfig(stored)
+  })
+
 export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers) =>
   handlers
     .handle("prompt", ({ params, payload }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
+        const resolved = yield* loadResolvedConfig(agent)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const messages = composeMessages({ skillBody, roleBody, history, message: payload.message })
         const turn = yield* openTurn(agent, payload)
-        const model = payload.model ?? DEFAULT_MODEL
+        const effectiveModel = payload.model ?? resolved.defaultModel
 
         const result = yield* runPromptTurn({
           agent,
           turn,
           initialPrompt: Prompt.make(messages),
-          model,
-          payloadModel: payload.model,
+          model: effectiveModel,
+          payloadModel: effectiveModel,
+          rules: resolved.rules,
         })
 
         const messageCount = history.length + (result.anyHopText ? 2 : 1)
@@ -76,7 +87,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           text: result.finalText,
           finishReason: result.finalFinishReason,
           toolCallCount: result.toolCallCount,
-          model,
+          model: effectiveModel,
           messageCount,
           ...(result.approval !== undefined ? { approval: result.approval } : {}),
         })
@@ -133,16 +144,33 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         })
       }),
     )
+    .handle("getConfig", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        return yield* loadResolvedConfig(agent)
+      }),
+    )
+    .handle("putConfig", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() => agent.putConfig(Schema.encodeSync(AgentConfig)(payload)))
+        return resolveConfig(payload)
+      }),
+    )
     .handle("stream", ({ params, payload }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket>()
+        const resolved = yield* loadResolvedConfig(agent)
 
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const messages = composeMessages({ skillBody, roleBody, history, message: payload.message })
         const turn = yield* openTurn(agent, payload)
+        const effectiveModel = payload.model ?? resolved.defaultModel
 
         return runStreamingTurn({
           agent,
@@ -150,8 +178,9 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           turn,
           startHop: 0,
           initialPrompt: Prompt.make(messages),
-          model: payload.model ?? DEFAULT_MODEL,
-          payloadModel: payload.model,
+          model: effectiveModel,
+          payloadModel: effectiveModel,
+          rules: resolved.rules,
         })
       }),
     )
@@ -176,10 +205,11 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           return yield* new ApprovalConflictError({ eventId: params.eventId, message: res.status })
         }
 
+        const resolved = yield* loadResolvedConfig(agent)
         const events = yield* fetchAllEvents(agent)
         const userMsg = findUserMessage(events, res.turn)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
-        const payloadModel = userMsg?.model
+        const effectiveModel = userMsg?.model ?? resolved.defaultModel
 
         const initialPrompt = reconstructForContinuation({
           events,
@@ -197,8 +227,9 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           turn: res.turn,
           startHop: maxHopForTurn(events, res.turn) + 1,
           initialPrompt,
-          model: payloadModel ?? DEFAULT_MODEL,
-          payloadModel,
+          model: effectiveModel,
+          payloadModel: effectiveModel,
+          rules: resolved.rules,
         })
       }),
     )

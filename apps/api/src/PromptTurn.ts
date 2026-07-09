@@ -4,15 +4,16 @@ import {
   JournalAssistantText,
   JournalDone,
   JournalErrorEvent,
+  type RulesMap,
 } from "@effect-flue/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Effect } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { LanguageModel, Prompt, Response as AiResponse } from "effect/unstable/ai"
 import { MAX_TOOL_HOPS, makeBashRunnerLayer, shouldContinueToolLoop } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { buildHopEvents, buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { AgentToolkit, AgentToolkitLayer } from "./Tools.ts"
+import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 
 /** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. */
 export interface PromptApproval {
@@ -37,6 +38,8 @@ interface RunPromptTurnInput {
   initialPrompt: Prompt.Prompt
   model: string
   payloadModel: string | undefined
+  /** Resolved per-tool permission rules for this turn; provided into the model call as the ApprovalRules Reference. */
+  rules: RulesMap
 }
 
 /**
@@ -48,7 +51,7 @@ interface RunPromptTurnInput {
 export const runPromptTurn = (
   input: RunPromptTurnInput,
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket> => {
-  const { agent, initialPrompt, model, payloadModel, turn } = input
+  const { agent, initialPrompt, model, payloadModel, rules, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
 
@@ -75,6 +78,7 @@ export const runPromptTurn = (
       const response = yield* withModel.pipe(
         Effect.provide(AgentToolkitLayer),
         Effect.provide(bashRunner),
+        Effect.provide(Layer.succeed(ApprovalRules, rules)),
         Effect.catch((cause) =>
           Effect.fail(
             new AgentError({
