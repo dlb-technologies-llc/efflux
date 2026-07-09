@@ -7,11 +7,14 @@ import {
 } from "effect/unstable/httpapi"
 import {
   AgentError,
+  ApprovalConflictError,
+  ApprovalNotFoundError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
 import {
+  ApprovalDecision,
   HistoryResponse,
   PromptRequest,
   PromptResponse,
@@ -62,6 +65,27 @@ const stream = HttpApiEndpoint.post("stream", "/agents/:name/:id/stream", {
   error: [AgentError, SkillNotFoundError, RoleNotFoundError],
 })
 
+const approve = HttpApiEndpoint.post(
+  "approve",
+  "/agents/:name/:id/approve/:eventId",
+  {
+    params: Schema.Struct({
+      name: SafeId,
+      id: SafeId,
+      // Path segment → number. NumberFromString is ALREADY used in this file
+      // for query params; a non-negative int refinement rejects junk.
+      eventId: Schema.NumberFromString.pipe(
+        Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+      ),
+    }),
+    payload: ApprovalDecision,
+    success: Schema.String.pipe(
+      HttpApiSchema.asText({ contentType: "text/event-stream" }),
+    ),
+    error: [AgentError, ApprovalNotFoundError, ApprovalConflictError],
+  },
+)
+
 const task = HttpApiEndpoint.post("task", "/tasks", {
   payload: SubagentTaskRequest,
   success: SubagentTaskResponse,
@@ -91,6 +115,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(history)
   .add(reset)
   .add(stream)
+  .add(approve)
   .add(task)
   .add(journal)
   .add(sessions)
