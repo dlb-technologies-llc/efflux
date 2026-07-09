@@ -1,5 +1,5 @@
 import type { JournalEventPayload as JournalEventPayloadType } from "@effect-flue/shared"
-import { JournalEventPayload, Message } from "@effect-flue/shared"
+import { JournalApprovalResolved, JournalEventPayload, Message } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 
@@ -9,6 +9,12 @@ const HistorySchema = Schema.Array(Message)
 
 const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
 const decodeEventPayload = Schema.decodeUnknownEffect(JournalEventPayload)
+// Synchronous decode/encode for the atomic `resolveApproval` check-and-insert:
+// a plain `await` (Effect.runPromise) between the already-resolved check and
+// the insert would let a concurrent approve interleave (see resolveApproval).
+// A throw on our own valid writes is an acceptable defect.
+const decodeEventPayloadSync = Schema.decodeUnknownSync(JournalEventPayload)
+const encodeEventPayload = Schema.encodeSync(JournalEventPayload)
 
 // Plain (RPC-safe) message shape, derived from the Message schema's encoded
 // side so it can't drift from the wire contract.
@@ -159,6 +165,62 @@ export class Agent extends DurableObject<Env> {
     }
     if (sawUserMessage) await this.#registerSession(now)
     return seqs
+  }
+
+  /**
+   * Resolve a pending tool approval. Validates the approval-requested event at
+   * `eventId` exists and is unresolved, then appends an approval-resolved event.
+   * Returns plain data for the handler to reconstruct the continuation prompt
+   * (Schema.Class cannot cross the RPC fence — see ISSUES.md). The whole
+   * check-and-insert is synchronous (no await) so concurrent approves cannot
+   * both pass the already-resolved check.
+   */
+  async resolveApproval(input: {
+    eventId: number
+    approved: boolean
+    reason?: string
+  }): Promise<
+    | { status: "ok"; turn: number; approvalId: string; toolCallId: string }
+    | { status: "not-found" }
+    | { status: "not-approval-event" }
+    | { status: "already-resolved" }
+  > {
+    // NO `await` from here through the #insert below — keeps the section atomic.
+    const row = this.ctx.storage.sql
+      .exec("SELECT payload FROM journal WHERE seq = ?", input.eventId)
+      .toArray()[0]
+    if (row === undefined) return { status: "not-found" }
+    const decoded = decodeEventPayloadSync(JSON.parse(String(row.payload)))
+    if (decoded._tag !== "approval-requested") {
+      return { status: "not-approval-event" }
+    }
+    // Reject if any approval-resolved already exists for this approvalId.
+    const resolvedRows = this.ctx.storage.sql
+      .exec("SELECT payload FROM journal WHERE type = 'approval-resolved'")
+      .toArray()
+    for (const r of resolvedRows) {
+      const d = decodeEventPayloadSync(JSON.parse(String(r.payload)))
+      if (d._tag === "approval-resolved" && d.approvalId === decoded.approvalId) {
+        return { status: "already-resolved" }
+      }
+    }
+    const resolved = new JournalApprovalResolved({
+      turn: decoded.turn,
+      approvalId: decoded.approvalId,
+      approved: input.approved,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    })
+    this.#insert(
+      Date.now(),
+      "approval-resolved",
+      JSON.stringify(encodeEventPayload(resolved)),
+    )
+    return {
+      status: "ok",
+      turn: decoded.turn,
+      approvalId: decoded.approvalId,
+      toolCallId: decoded.toolCallId,
+    }
   }
 
   /**
