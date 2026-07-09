@@ -79,7 +79,7 @@ const approve = HttpApiEndpoint.post(
       name: SafeId,
       id: SafeId,
       eventId: Schema.NumberFromString.pipe(
-        Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+        Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
       ),
     }),
     payload: ApprovalDecision,
