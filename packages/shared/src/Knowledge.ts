@@ -17,7 +17,7 @@ export class KnowledgeItemResponse extends Schema.Class<KnowledgeItemResponse>("
   item: KnowledgeItem,
 }) {}
 
-/** Response for `GET /knowledge` — every item with status, for polling until `completed`. */
+/** Response for `GET /knowledge` — items with status (first page; not paginated in v1), for polling until `completed`. */
 export class KnowledgeListResponse extends Schema.Class<KnowledgeListResponse>("KnowledgeListResponse")({
   items: Schema.Array(KnowledgeItem),
 }) {}

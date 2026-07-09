@@ -38,16 +38,23 @@ const DEMO_DOCS = [
 const QUESTION =
   "Our records reference product code QX-9981-ZULU. What is its internal codename, and what is the official name and factory serial prefix of its single classified subcomponent? Answer using only the knowledge base."
 
-/** Poll the knowledge list until every named doc reports `completed`, or attempts run out; resolves to whether all reached `completed`. */
+/** AI Search item statuses that will never reach `completed` — polling must stop on these rather than burn the whole timeout. */
+const TERMINAL_FAILURE: ReadonlySet<string> = new Set(["error", "skipped"])
+
+/** Poll outcome: all docs indexed, one hit a terminal failure, or attempts ran out. */
+type PollOutcome = "completed" | "failed" | "timeout"
+
+/** Poll the knowledge list until every named doc reports `completed` (→ "completed"), any lands in a terminal `error`/`skipped` (→ "failed", logging which), or attempts run out (→ "timeout"). */
 const pollUntilIndexed = (
   api: HttpApiClient.ForApi<typeof AgentApi>,
   names: ReadonlySet<string>,
-): Effect.Effect<boolean, unknown> => {
-  const go = (attempt: number): Effect.Effect<boolean, unknown> =>
+): Effect.Effect<PollOutcome, unknown> => {
+  const go = (attempt: number): Effect.Effect<PollOutcome, unknown> =>
     api.knowledge.listKnowledge().pipe(
       Effect.flatMap((response) => {
         const relevant = response.items.filter((item) => names.has(item.name))
         const summary = relevant.map((item) => `${item.name}=${item.status}`).join(", ")
+        const failed = relevant.filter((item) => TERMINAL_FAILURE.has(item.status))
         const done = Array.from(names).every(
           (docName) => relevant.some((item) => item.name === docName && item.status === "completed"),
         )
@@ -55,8 +62,13 @@ const pollUntilIndexed = (
           `  [poll ${attempt}/${MAX_POLL_ATTEMPTS}] ${summary === "" ? "(no matching items yet)" : summary}`,
         ).pipe(
           Effect.flatMap(() => {
-            if (done) return Effect.succeed(true)
-            if (attempt >= MAX_POLL_ATTEMPTS) return Effect.succeed(false)
+            if (failed.length > 0) {
+              return Console.log(
+                `  indexing failed for: ${failed.map((item) => `${item.name} (${item.status})`).join(", ")}`,
+              ).pipe(Effect.flatMap(() => Effect.succeed<PollOutcome>("failed")))
+            }
+            if (done) return Effect.succeed<PollOutcome>("completed")
+            if (attempt >= MAX_POLL_ATTEMPTS) return Effect.succeed<PollOutcome>("timeout")
             return Effect.sleep("3 seconds").pipe(Effect.flatMap(() => go(attempt + 1)))
           }),
         )
@@ -87,20 +99,26 @@ const main = Effect.gen(function*() {
   const model = parsed.flags["model"] ?? DEFAULT_MODEL
 
   yield* Console.log(`Uploading ${DEMO_DOCS.length} demo docs…`)
-  yield* Effect.forEach(DEMO_DOCS, (doc) =>
+  const uploadedNames = yield* Effect.forEach(DEMO_DOCS, (doc) =>
     api.knowledge.putKnowledge({
       params: { name: doc.name },
       payload: new PutKnowledgeRequest({ content: doc.content }),
     }).pipe(
-      Effect.flatMap((response) =>
+      Effect.tap((response) =>
         Console.log(`  put ${response.item.name} → ${response.item.status} (id ${response.item.id})`)
       ),
+      Effect.map((response) => response.item.name),
     ))
 
   yield* Console.log("Polling until both docs report completed (indexing is async — may take minutes)…")
-  const names = new Set(DEMO_DOCS.map((doc) => doc.name))
-  const indexed = yield* pollUntilIndexed(api, names)
-  if (!indexed) {
+  const names = new Set(uploadedNames)
+  const outcome = yield* pollUntilIndexed(api, names)
+  if (outcome === "failed") {
+    return yield* Effect.fail(
+      new Error("Indexing failed for one or more docs (see statuses above) — aborting the grounded prompt."),
+    )
+  }
+  if (outcome === "timeout") {
     yield* Console.log(
       "Timed out waiting for indexing — AI Search indexes asynchronously (minutes). Prompting anyway to show partial state.",
     )

@@ -24,7 +24,7 @@ export const uploadKnowledge = Effect.fn("uploadKnowledge")(function* (
   return { name: info.key, id: info.id, status: info.status }
 })
 
-/** List every item with its indexing status, for polling until `completed`. */
+/** List items with their indexing status (first page at AI Search's default page size — not paginated in v1), for polling until `completed`. */
 export const listKnowledge = Effect.fn("listKnowledge")(function* (): Effect.fn.Return<
   ReadonlyArray<{ name: string; id: string; status: string }>,
   AgentError,
