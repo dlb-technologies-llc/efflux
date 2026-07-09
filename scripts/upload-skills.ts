@@ -1,8 +1,4 @@
-// Uploads every skill and role markdown file to the effect-flue-skills R2
-// bucket via `wrangler r2 object put`. No hash/diff machinery — always uploads
-// everything. Run with --dry-run to list what would be uploaded.
-//
-// The work is one Effect; the process edge (argv, exit code) is the boundary.
+/** Uploads every skill/role markdown file to the effect-flue-skills R2 bucket via `wrangler r2 object put` (always full upload, no diff). Pass --dry-run to list only. */
 
 import { $ } from "bun"
 import { Cause, Console, Effect, Exit } from "effect"
@@ -12,19 +8,17 @@ import * as path from "node:path"
 const isEnoent = (e: unknown): boolean =>
   e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT"
 
+/** Sorted `.md` filenames in `dir`; a missing directory is an empty catalog, not a failure. */
 const listMarkdown = (dir: string): Effect.Effect<ReadonlyArray<string>, unknown> =>
   Effect.tryPromise({ try: () => readdir(dir), catch: (e: unknown) => e }).pipe(
     Effect.map((entries) => entries.filter((entry) => entry.endsWith(".md")).sort()),
-    // A missing directory is an empty catalog, not a failure; anything else
-    // stays in the error channel.
     Effect.catchIf(
       (e: unknown) => isEnoent(e),
       () => Effect.succeed<ReadonlyArray<string>>([]),
     ),
   )
 
-// Anchor to this script's location, not `process.cwd()`, so discovery works
-// from any invocation directory. This file lives at <repoRoot>/scripts/.
+/** Repo root, anchored to this script's dir (`<repoRoot>/scripts/`), not `process.cwd()`, so discovery works from any invocation directory. */
 const repoRoot = path.dirname(import.meta.dirname)
 const SKILLS_DIR = path.join(repoRoot, "apps", "api", "skills")
 const ROLES_DIR = path.join(repoRoot, "apps", "api", "roles")
@@ -39,8 +33,6 @@ const main = Effect.gen(function*() {
     ...roleFiles.map((entry) => ({ key: `roles/${entry}`, file: path.join(ROLES_DIR, entry) })),
   ]
 
-  // Zero markdown files is almost certainly a path-resolution bug, not an
-  // intentional empty catalog — fail loudly rather than ship an empty bucket.
   if (uploads.length === 0) {
     return yield* Effect.fail(
       new Error(
@@ -81,5 +73,4 @@ if (Exit.isFailure(result)) {
       : Cause.pretty(result.cause),
   )
 }
-// Normalize to 0/1 — never forward a subprocess's mod-256 code verbatim.
 process.exitCode = Exit.isSuccess(result) ? 0 : 1

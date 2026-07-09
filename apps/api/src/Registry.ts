@@ -2,18 +2,13 @@ import type { SessionInfo } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Context } from "effect"
 
-// Plain (RPC-safe) row shape derived from the SessionInfo schema's encoded
-// side — no hand-written parallel type to drift from the wire contract.
+/** Plain RPC-safe row shape from SessionInfo's encoded side — no parallel type to drift from the wire contract. */
 type SessionRow = typeof SessionInfo.Encoded
 
 /**
- * Session registry Durable Object — a singleton (addressed via
- * `idFromName("global")`) indexing every agent session so `GET /agents` can
- * enumerate them without touching each session DO.
- *
- * The `Agent` DO upserts here when a turn's `user-message` event is
- * journaled. The DO RPC boundary requires `structuredClone`-able values, so
- * every method accepts and returns plain objects. See ISSUES.md.
+ * Session registry Durable Object — a singleton (`idFromName("global")`) indexing
+ * every session so `GET /agents` can enumerate without touching each session DO.
+ * The RPC boundary requires structuredClone-able values, so methods take/return plain objects.
  */
 export class Registry extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -46,9 +41,6 @@ export class Registry extends DurableObject<Env> {
   }
 
   async list(input?: { limit?: number }): Promise<Array<SessionRow>> {
-    // Clamp to a bounded page (default 100) so the singleton Registry DO never
-    // serializes an unbounded table across the RPC fence — mirrors the journal
-    // endpoint's 1..500 clamp. Callers that pass nothing get the first 100.
     const requested = input?.limit ?? 100
     const limit = Math.min(500, Math.max(1, Math.trunc(requested)))
     const rows = this.ctx.storage.sql
@@ -69,9 +61,7 @@ export class Registry extends DurableObject<Env> {
   }
 }
 
-// Native DO namespace binding for the registry (global type from
-// worker-configuration.d.ts). Lives here rather than handlers.ts so the
-// Agent DO and the handlers can both reference it without a cycle.
+/** Native DO namespace binding for the registry; lives here (not handlers.ts) so the Agent DO and handlers share it without a cycle. */
 export type RegistryNamespace = DurableObjectNamespace<Registry>
 
 export class RegistryStub extends Context.Service<

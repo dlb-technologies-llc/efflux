@@ -10,14 +10,11 @@ import { Context, Effect, Layer, ManagedRuntime, Schema, Stream } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
 
-// Re-export the schema-derived overrides type so command/CLI code has one
-// source of truth (no parallel hand-written definition).
 export type { PromptOverrides }
 
 const encodePromptRequest = Schema.encodeSync(PromptRequest)
 
-// Typed AgentApi client, provided from the same FetchHttpClient the streaming
-// path uses (provideMerge keeps HttpClient in the output context too).
+/** Typed AgentApi client, provided from the same FetchHttpClient the streaming path uses. */
 class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
   "@effect-flue/tui/ApiClient",
 ) {}
@@ -29,13 +26,7 @@ const clientLayer = (
     Layer.provideMerge(FetchHttpClient.layer),
   )
 
-/**
- * Effect-native client for one worker base URL. `history`/`reset` are Effects
- * and `streamPrompt` is a `Stream` — the transport is `HttpClient` + the shared
- * `streamAgentSse` (no raw fetch, no hand-rolled SSE parser, no Promise facade
- * discarding the typed error channel). Callers run them through `runtime`
- * (`runPromiseExit`/`runFork`); disposing the runtime interrupts in-flight work.
- */
+/** Effect-native client for one worker base URL: `history`/`reset` are Effects, `streamPrompt` a `Stream`; callers run them through `runtime` (disposing it interrupts in-flight work). */
 export const makeAgentClient = (baseUrl: string) => {
   const base = baseUrl.replace(/\/$/, "")
   const runtime = ManagedRuntime.make(clientLayer(base))

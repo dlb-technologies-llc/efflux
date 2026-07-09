@@ -25,3 +25,20 @@ export class RoleNotFoundError extends Schema.TaggedErrorClass<RoleNotFoundError
   },
   { httpApiStatus: 404 },
 ) {}
+
+export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFoundError>()(
+  "ApprovalNotFoundError",
+  {
+    eventId: Schema.Number,
+  },
+  { httpApiStatus: 404 },
+) {}
+
+export class ApprovalConflictError extends Schema.TaggedErrorClass<ApprovalConflictError>()(
+  "ApprovalConflictError",
+  {
+    eventId: Schema.Number,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}

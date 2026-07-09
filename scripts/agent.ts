@@ -1,10 +1,5 @@
 #!/usr/bin/env bun
-// CLI wrapper around the deployed Worker's agent endpoints. The work is one
-// Effect over the typed AgentApi client; argv/exit code is the process edge.
-// Usage:
-//   bun run agent <name> <id> --message "hi" [--url URL] [--model M] [--skill S] [--role R]
-//   bun run agent <name> <id> --journal [--url URL]
-//   bun run agent --sessions [--url URL]
+/** CLI wrapper around the deployed Worker's agent endpoints, over the typed AgentApi client. */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { makePromptRequest } from "../packages/shared/src/index.ts"
@@ -31,6 +26,10 @@ const formatEvent = ({ createdAt, event, seq }: JournalEvent): string => {
       return `${head}  turn=${event.turn} hop=${event.hop}  ${event.part.name}(${truncate(JSON.stringify(event.part.params), 80)})  callId=${event.part.id}`
     case "tool-result":
       return `${head}  turn=${event.turn} hop=${event.hop}  ${event.part.name} ${event.part.isFailure ? "FAILED" : "ok"}  callId=${event.part.id}`
+    case "approval-requested":
+      return `${head}  turn=${event.turn} hop=${event.hop}  approvalId=${event.approvalId} callId=${event.toolCallId}`
+    case "approval-resolved":
+      return `${head}  turn=${event.turn}  ${event.approved ? "APPROVED" : "DENIED"} approvalId=${event.approvalId}${event.reason !== undefined ? `  ${truncate(event.reason, 100)}` : ""}`
     case "hop-messages":
       return `${head}  turn=${event.turn} hop=${event.hop}  ${event.messages.length} prompt message(s): ${event.messages.map((m) => m.role).join(", ")}`
     case "usage":

@@ -1,5 +1,4 @@
-// Shared plumbing for the CLI scripts. The typed AgentApi client + journal
-// pagination are Effect; argv parsing is process-boundary plumbing.
+/** Shared plumbing for the CLI scripts: typed AgentApi client, journal pagination, and argv parsing. */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { AgentApi } from "../packages/shared/src/index.ts"
@@ -30,11 +29,7 @@ export interface ParsedArgs {
   readonly flags: Readonly<Record<string, string>>
 }
 
-/**
- * Parse `[positionals] [--flag value] [--boolFlag]` argv (process-boundary
- * plumbing). Returns `{ error }` for a missing flag value instead of exiting,
- * so the caller decides how to surface it.
- */
+/** Parse `[positionals] [--flag value] [--boolFlag]` argv; returns `{ error }` (not exit) on a missing flag value. */
 export const parseArgs = (
   argv: ReadonlyArray<string>,
   booleanFlags: ReadonlySet<string>,
@@ -63,11 +58,7 @@ export const parseArgs = (
   return { positional, flags }
 }
 
-/**
- * Fetch a session's entire journal, following pagination. Recurses in the
- * Effect channel (no mutable cursor); the client decodes each page through the
- * shared JournalResponse schema.
- */
+/** Fetch a session's entire journal, following pagination; recurses in the Effect channel (no mutable cursor). */
 export const fetchAllEvents = (
   api: HttpApiClient.ForApi<typeof AgentApi>,
   name: string,

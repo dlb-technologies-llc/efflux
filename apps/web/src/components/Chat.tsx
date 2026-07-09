@@ -13,8 +13,7 @@ export interface ChatProps {
 
 const noParts: ReadonlyArray<StreamPart> = []
 
-// The stream's error channel is a union (HttpClientError | SchemaError |
-// Sse.Retry | NoSuchElementError); not all members carry a string `message`.
+/** Extract a string `message` from the stream's union error channel (not every member carries one). */
 const messageOf = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = error.message
@@ -23,12 +22,11 @@ const messageOf = (error: unknown): string => {
   return String(error)
 }
 
+/** Live chat view: renders session history and streams the current assistant turn. */
 export function Chat({ name, id }: ChatProps) {
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
-  // The streaming atom accumulates, so the whole transcript-so-far arrives in
-  // one array — no manual token concatenation.
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
 
   const sessionAtom = historyAtom({ name, id })
@@ -36,7 +34,6 @@ export function Chat({ name, id }: ChatProps) {
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
 
-  // Stable subscriber: each success emit carries the accumulated `StreamPart[]`.
   const onResult = React.useCallback(
     (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
       if (AsyncResult.isSuccess(result)) setParts(result.value)
@@ -45,8 +42,6 @@ export function Chat({ name, id }: ChatProps) {
   )
   useAtomSubscribe(streamAtom, onResult)
 
-  // Derive the live view from the accumulated parts (Effect owns accumulation;
-  // React just renders it).
   const streamingText = parts.reduce(
     (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
     "",
@@ -72,13 +67,8 @@ export function Chat({ name, id }: ChatProps) {
       onFailure: (cause) => {
         const failReason = cause.reasons.find(Cause.isFailReason)
         setSubmitError(failReason ? messageOf(failReason.error) : "Stream failed")
-        // Collapse the failed turn to just the error — don't leave a stale
-        // half-streamed bubble on screen.
         setParts(noParts)
       },
-      // Keep the streamed parts until the refreshed history contains the new
-      // assistant turn (the effect below clears them), avoiding a
-      // disappear-then-reappear flicker.
       onSuccess: () => {
         refreshHistory()
       },

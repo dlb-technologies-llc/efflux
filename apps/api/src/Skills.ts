@@ -5,32 +5,19 @@ import {
 } from "@effect-flue/shared"
 import { Context, Effect } from "effect"
 
-/**
- * Runtime handle to the skills bucket inside the Worker.
- *
- * Typed as the native `R2Bucket` binding (from the generated
- * `worker-configuration.d.ts` globals) and provided per-isolate from
- * `env.SKILLS`, so `loadSkillBody`'s requirement is just `SkillsBucket`.
- */
+/** Runtime handle to the skills R2 bucket, provided per-isolate from `env.SKILLS`. */
 export class SkillsBucket extends Context.Service<SkillsBucket, R2Bucket>()(
   "api/SkillsBucket",
 ) {}
 
-// Per-isolate cache. Markdown bodies don't change without a redeploy
-// (which mints a new isolate), so caching for the lifetime of the isolate
-// is safe and avoids a round-trip to R2 on every prompt.
+/** Per-isolate cache: markdown bodies change only on redeploy (new isolate), so caching for the isolate's life avoids an R2 round-trip per prompt. */
 const bodyCache = new Map<string, string>()
 
+/** Strip leading YAML frontmatter; the `endsWith("\n---")` guard handles a frontmatter-only file with no trailing newline so YAML never leaks into the system prompt. */
 const stripFrontmatter = (text: string): string => {
   if (!text.startsWith("---\n")) return text.trim()
   const end = text.indexOf("\n---\n", 4)
   if (end !== -1) return text.slice(end + 5).trim()
-  // Closing fence at EOF with no trailing newline (e.g. a frontmatter-only
-  // file `---\n…\n---`). Without this, `indexOf("\n---\n")` misses the
-  // closing delimiter and the whole file — YAML frontmatter included — would
-  // be returned verbatim as the system prompt. The leading `---\n` already
-  // matched, so a trailing `\n---` can only be the closing fence; everything
-  // after it (nothing) is the body.
   if (text.endsWith("\n---")) return ""
   return text.trim()
 }

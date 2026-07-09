@@ -1,26 +1,6 @@
 /**
- * Tools exposed to the parent prompt loop.
- *
- * Defines the tools the model can call:
- *  - `GetCurrentTime` — no-parameter clock read, returns an ISO 8601 string.
- *  - `SpawnSubagent`  — delegate a focused subtask to a stateless subagent
- *                       (no parent history, returns only final response text).
- *  - `Bash`           — arbitrary shell command in the session's sandbox
- *                       container.
- *  - `read_file` / `write_file` / `edit_file` / `glob` / `grep` — file and
- *    search operations against the container's `/workspace` (all ride the
- *    same exec seam as `Bash`; arbitrary content travels base64-encoded
- *    through env vars into `bun -e` scripts to sidestep shell quoting).
- *  - `web_fetch`      — Worker-side HTTP GET with a size cap (no container
- *                       round-trip, no extra service dependencies).
- *
- * The handlers' R-channel requirements (`LanguageModel | SkillsBucket`, via
- * `runSubagent`) bubble through `AgentToolkit.toLayer(...)` as the layer's
- * `RIn`. They are satisfied at the Worker root by `aiLayer` (Wave 1) and the
- * `SkillsBucket` layer already provided in `Api.ts`.
- *
- * Subagents intentionally have no toolkit attached, so they cannot themselves
- * spawn further subagents — see `runSubagent` for the anti-recursion note.
+ * Tools exposed to the parent prompt loop: clock, subagent spawn, Bash, and the
+ * file/search ops (all on the same exec seam as Bash) plus Worker-side web_fetch.
  */
 import { SubagentTaskRequest } from "@effect-flue/shared"
 import { Cause, Context, Effect, Encoding, Schema } from "effect"
@@ -28,9 +8,7 @@ import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 
-// The shape every exec-backed tool returns (Bash + the file/search tools).
-// Declared ABOVE `BashRunner` so `exec`'s success type derives from the schema
-// (`typeof BashResult.Type`) instead of duplicating the object shape by hand.
+/** Shape every exec-backed tool returns (Bash + file/search tools). */
 const BashResult = Schema.Struct({
   exitCode: Schema.Number,
   stdout: Schema.String,
@@ -39,8 +17,7 @@ const BashResult = Schema.Struct({
 
 type BashResultValue = typeof BashResult.Type
 
-// Per-request handle to the DO's `exec(command)` RPC. Provided in the
-// `prompt` and `stream` handlers from the resolved Agent stub.
+/** Per-request handle to the DO's exec(command) RPC, provided per-request from the resolved Agent stub. */
 export class BashRunner extends Context.Service<
   BashRunner,
   {
@@ -50,12 +27,10 @@ export class BashRunner extends Context.Service<
 
 export const GetCurrentTimeTool = Tool.make("GetCurrentTime", {
   description: "Returns the current UTC date and time as an ISO 8601 string.",
-  // No parameters — Tool.make defaults to an empty-object schema (EmptyParams).
   success: Schema.String,
 })
 
-// Derive parameters from `SubagentTaskRequest.fields` so the tool surface
-// stays in lockstep with the `POST /tasks` HTTP endpoint.
+/** Parameters derived from SubagentTaskRequest.fields to stay in lockstep with POST /tasks. */
 const SpawnSubagentParameters = Schema.Struct(SubagentTaskRequest.fields)
 
 export const SpawnSubagentTool = Tool.make("SpawnSubagent", {
@@ -63,10 +38,6 @@ export const SpawnSubagentTool = Tool.make("SpawnSubagent", {
     "Delegate a focused subtask to a stateless subagent. The subagent has no access to this conversation's history and returns only its final response text. Use for classification, summarization, or KB lookups without polluting the parent's context.",
   parameters: SpawnSubagentParameters,
   success: Schema.String,
-  // Declare the services the handler needs at construction time so the
-  // handler's R-channel may legally reference them. They bubble up through
-  // `AgentToolkit.toLayer(...)` as the layer's `RIn`, where the Worker root
-  // satisfies them via `aiLayer` (LanguageModel) and the SkillsBucket layer.
   dependencies: [LanguageModel.LanguageModel, SkillsBucket],
 })
 
@@ -82,28 +53,14 @@ export const BashTool = Tool.make("Bash", {
     "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. The working directory is /workspace — a writable but EPHEMERAL scratch space, wiped when the sandbox idles out (~10 minutes) or redeploys. Use this for devops-style operations the dedicated file tools do not cover.",
   parameters: BashParameters,
   success: BashResult,
-  // Declare BashRunner so the handler's R-channel may legally reference
-  // it. Bubbles up through `AgentToolkit.toLayer(...)` as the layer's
-  // `RIn`, satisfied per-request in `handlers.ts`.
   dependencies: [BashRunner],
+  needsApproval: true,
 })
 
-// ---------------------------------------------------------------------------
-// File & search tools (container-side, via the same exec seam as `Bash`)
-// ---------------------------------------------------------------------------
-
-/**
- * Tool results feed straight back into the prompt on the next hop, so cap
- * them — one runaway `cat` must not dwarf the rest of the context.
- */
+/** Cap tool output — results feed back into the prompt next hop, so one runaway `cat` must not dwarf the context. */
 const MAX_TOOL_OUTPUT_CHARS = 30_000
 
-/**
- * The whole command travels as ONE `sh -c` argv string; Linux caps a single
- * argv element at MAX_ARG_STRLEN (131,072 bytes). Exceeding it surfaces as a
- * cryptic spawn failure (E2BIG → exitCode -1), so pre-empt with a clear
- * error. Commands are pure ASCII (base64 payloads), so chars == bytes here.
- */
+/** Pre-empt E2BIG: the whole command rides as one `sh -c` argv element, capped at MAX_ARG_STRLEN (131,072 bytes); commands are pure ASCII so chars == bytes. */
 const MAX_COMMAND_CHARS = 90_000
 
 const EPHEMERAL_NOTE =
@@ -131,16 +88,11 @@ const commandTooLarge = (what: string): BashResultValue => ({
   stderr: `${what} too large for a single call (~64KB UTF-8 max) — split it into smaller pieces`,
 })
 
-// POSIX single-quote escaping for path/pattern arguments in plain shell
-// commands. Arbitrary CONTENT never goes through this — it travels base64.
+/** POSIX single-quote escaping for path/pattern args; arbitrary CONTENT never rides this — it travels base64. */
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", "'\\''")}'`
 
-/**
- * Build `FLUE_X=<base64> ... bun -e '<script>'`. Base64 values are shell-safe
- * unquoted (`A-Za-z0-9+/=`); scripts must contain no single quotes (double
- * quotes only) so the outer single-quoted wrapper stays intact.
- */
+/** Build `FLUE_X=<base64> ... bun -e '<script>'`; base64 values are shell-safe unquoted and scripts use double quotes only so the single-quoted wrapper holds. */
 const bunEval = (env: Record<string, string>, script: string): string => {
   const assignments = Object.entries(env)
     .map(([key, value]) => `${key}=${value}`)
@@ -277,10 +229,6 @@ export const GrepTool = Tool.make("grep", {
   dependencies: [BashRunner],
 })
 
-// ---------------------------------------------------------------------------
-// web_fetch (Worker-side — no container round-trip, no service dependencies)
-// ---------------------------------------------------------------------------
-
 /** Network read ceiling; the returned body is further capped for the prompt. */
 const MAX_FETCH_BYTES = 100_000
 
@@ -288,30 +236,21 @@ const MAX_FETCH_BYTES = 100_000
 const MAX_REDIRECT_HOPS = 5
 
 /**
- * SSRF guard. Rejects hostnames that point at the Worker's own network
- * neighborhood: `localhost`, IP literals in private / loopback / link-local /
- * unique-local ranges, and the `.internal` / `.local` suffixes (Cloudflare
- * service bindings and mDNS). Applied to the initial URL and re-applied to
- * every redirect target so a public URL cannot 302 into an internal one.
- *
- * NOTE: this does NOT fully prevent DNS rebinding — a public hostname whose A
- * record resolves to a private IP still passes, because Workers exposes no
- * resolver to check the resolved address before `fetch`. It blocks the obvious
- * literal cases; a resolver-based check would be needed for the rest.
+ * SSRF guard: reject hostnames pointing at the Worker's own network (localhost,
+ * private/loopback/link-local/unique-local IP literals, `.internal`/`.local`),
+ * re-applied to every redirect. Does NOT stop DNS rebinding — Workers exposes no
+ * resolver to check a public hostname's resolved address before fetch.
  */
 const isBlockedHost = (hostname: string): boolean => {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
   if (host === "" || host === "localhost") return true
   if (host.endsWith(".internal") || host.endsWith(".local")) return true
-  // IPv6: loopback (::1), unspecified (::), link-local (fe80::/10), and
-  // unique-local (fc00::/7).
   if (host.includes(":")) {
     if (host === "::1" || host === "::") return true
     if (/^fe[89ab]/.test(host)) return true
     if (/^f[cd]/.test(host)) return true
     return false
   }
-  // IPv4 dotted-quad in a loopback / private / link-local / unspecified range.
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
   if (v4 !== null) {
     const a = Number(v4[1])
@@ -350,8 +289,7 @@ const webFetchError = (message: string): WebFetchResultValue => ({
   truncated: false,
 })
 
-// Modeled on the cause walk in index.ts's worker-level catchCause: surface
-// the first failure/defect as readable text for the model.
+/** Surface the first failure/defect in a cause as readable text for the model. */
 const causeMessage = (cause: Cause.Cause<unknown>): string => {
   for (const reason of cause.reasons) {
     const value = Cause.isFailReason(reason)
@@ -365,11 +303,7 @@ const causeMessage = (cause: Cause.Cause<unknown>): string => {
   return "unknown error"
 }
 
-/**
- * Read the response body up to `MAX_FETCH_BYTES`. The reader is cancelled on
- * early exit (Workers requires bodies consumed or cancelled) and decoding is
- * streamed so a hard byte cut cannot split a multibyte character.
- */
+/** Read the response body up to MAX_FETCH_BYTES; cancels the reader on early exit and streams decode so a byte cut can't split a multibyte char. */
 const readBody = (
   response: Response,
 ): Effect.Effect<{ text: string; truncated: boolean }, Cause.UnknownError> =>
@@ -400,14 +334,7 @@ const readBody = (
     return { text, truncated }
   })
 
-// Follow redirects manually (never `redirect: "follow"`): re-validate the host
-// of every hop so a public URL cannot 302 into an internal one, and drain each
-// intermediate 3xx body (Workers requires every response body consumed or
-// cancelled; `readBody` only runs on the final response). Recurses in the
-// Effect channel — the terminal `Response` is the success value and every
-// rejection is a typed failure the caller collapses to a model-readable
-// message; no mutable accumulator, no sentinel. The AbortSignal wiring is
-// load-bearing: without it the 15s timeout leaves the subrequest dangling.
+/** Follow redirects manually, re-validating each hop's host and draining intermediate 3xx bodies; the AbortSignal wiring is load-bearing or the 15s timeout leaves the subrequest dangling. */
 const followRedirects = (
   target: URL,
   hopsLeft: number,
@@ -416,8 +343,6 @@ const followRedirects = (
     const res = yield* Effect.tryPromise((signal) =>
       fetch(target.href, { redirect: "manual", signal }),
     )
-    // A 3xx WITH a Location is a redirect to follow; a 3xx without (e.g. 304)
-    // is terminal and is returned as the final response.
     const location =
       res.status >= 300 && res.status < 400 ? res.headers.get("location") : null
     if (location === null) return res
@@ -471,9 +396,6 @@ const runWebFetch = (url: string): Effect.Effect<WebFetchResultValue> =>
     }
   }).pipe(
     Effect.timeout("15 seconds"),
-    // Collapse ALL failures (blocked host, bad scheme, too many redirects,
-    // network error, timeout) into a model-readable success value — the model
-    // should see the message and react, not fail the whole loop.
     Effect.catchCause((cause) =>
       Effect.succeed(webFetchError(causeMessage(cause))),
     ),
@@ -501,9 +423,6 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       ...(params.model !== undefined ? { model: params.model } : {}),
     }).pipe(
       Effect.map((r) => r.text),
-      // Log the typed failure so operators see it in `wrangler tail` even
-      // when the model recovers gracefully. Done BEFORE the catch so the
-      // log fires regardless of how we choose to surface the error.
       Effect.tapErrorTag("SkillNotFoundError", (e) =>
         Effect.logWarning(`SpawnSubagent: skill not found: ${e.skill}`),
       ),
@@ -513,10 +432,6 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       Effect.tapErrorTag("AgentError", (e) =>
         Effect.logWarning(`SpawnSubagent: agent error: ${e.message}`),
       ),
-      // The Tool.Failure channel is AiError | AiErrorReason by default; we
-      // collapse typed Skill/Role-not-found into success-text errors so the
-      // model sees the message and can retry/apologize without failing the
-      // whole loop. Exhaustive over runSubagent's typed errors via catchTags.
       Effect.catchTags({
         SkillNotFoundError: (e) =>
           Effect.succeed(`Error: Skill not found: ${e.skill}`),

@@ -1,23 +1,17 @@
 #!/usr/bin/env bun
-// Executable proof of the event journal's hard criterion: a session's journal
-// must be PROMPT-RECONSTRUCTIBLE — the parked-turn prompt rebuilds from journal
-// events through the real `effect/unstable/ai` Prompt schemas, not
-// display-shaped stream parts.
-//
-// Checks, per (turn, hop):
-//   a. every `tool-call` has a matching `tool-result` (same call id) — a
-//      dangling call is a parked/incomplete turn: fatal unless --allow-parked;
-//   b. every granular tool-call/tool-result part also appears (by call id)
-//      inside that hop's authoritative `hop-messages` event;
-//   c. the hop's messages survive a Prompt.Message encode→decode→encode
-//      round-trip byte-for-byte;
-// and globally: the rebuilt prompt is non-empty for any session with a
-// user-message event.
-//
-// The fetch + entrypoint are Effect (typed AgentApi client); the verification
-// is pure computation over the decoded events. argv/exit is the process edge.
-//
-// Usage: bun scripts/verify-journal.ts <name> <id> [--url URL] [--allow-parked]
+/**
+ * Proves a session's journal is PROMPT-RECONSTRUCTIBLE: the parked-turn prompt
+ * rebuilds from journal events through the real effect/unstable/ai Prompt
+ * schemas, not display-shaped stream parts. Checks: (a) tool-call ↔ tool-result
+ * pairing is TURN-WIDE across hops (#40 approve-and-continue resolves a parked
+ * call in a LATER hop of the same turn) — an unresolved call is classified by
+ * approval state (awaiting / denied / approved-without-result → all PARKED,
+ * never FAIL); (b) every granular tool part appears in that hop's authoritative
+ * hop-messages event; (c) hop messages round-trip through Prompt.Message
+ * byte-for-byte. PARKED is fatal unless --allow-parked.
+ *
+ * Usage: bun scripts/verify-journal.ts <name> <id> [--url URL] [--allow-parked]
+ */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
 import { Cause, Console, Effect, Exit, Schema } from "effect"
@@ -35,6 +29,17 @@ interface HopData {
   messages: ReadonlyArray<Prompt.Message> | undefined
 }
 
+/** Turn-level state so call↔result pairing spans hops and gated calls classify against approval events. */
+interface TurnData {
+  readonly hops: Map<number, HopData>
+  /** Every tool-result id seen anywhere in this turn — enables cross-hop pairing (a). */
+  readonly resultIds: Set<string>
+  /** toolCallId → approvalId, from this turn's `approval-requested` events. */
+  readonly gatedCalls: Map<string, string>
+  /** approvalId → resolution, from this turn's `approval-resolved` events. */
+  readonly resolutions: Map<string, { readonly approved: boolean }>
+}
+
 interface VerifyResult {
   readonly failures: ReadonlyArray<string>
   readonly parked: ReadonlyArray<string>
@@ -43,16 +48,23 @@ interface VerifyResult {
   readonly rebuiltCount: number
 }
 
-// Pure: group events by (turn, hop), run checks a/b/c, rebuild the prompt.
+/**
+ * Pure: group events by (turn, hop), run checks a/b/c, rebuild the prompt.
+ * Pairing (a) is turn-wide; `hopHasDanglingCall` stays hop-local to drive (b).
+ */
 const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
-  const turns = new Map<number, Map<number, HopData>>()
+  const turns = new Map<number, TurnData>()
   const userMessages: Array<{ seq: number; content: string }> = []
-  const hopData = (turn: number, hop: number): HopData => {
-    let hops = turns.get(turn)
-    if (hops === undefined) {
-      hops = new Map()
-      turns.set(turn, hops)
+  const turnData = (turn: number): TurnData => {
+    let data = turns.get(turn)
+    if (data === undefined) {
+      data = { hops: new Map(), resultIds: new Set(), gatedCalls: new Map(), resolutions: new Map() }
+      turns.set(turn, data)
     }
+    return data
+  }
+  const hopData = (turn: number, hop: number): HopData => {
+    const { hops } = turnData(turn)
     let data = hops.get(hop)
     if (data === undefined) {
       data = { toolCallIds: new Map(), toolResultIds: new Set(), messages: undefined }
@@ -71,6 +83,13 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
         break
       case "tool-result":
         hopData(event.turn, event.hop).toolResultIds.add(event.part.id)
+        turnData(event.turn).resultIds.add(event.part.id)
+        break
+      case "approval-requested":
+        turnData(event.turn).gatedCalls.set(event.toolCallId, event.approvalId)
+        break
+      case "approval-resolved":
+        turnData(event.turn).resolutions.set(event.approvalId, { approved: event.approved })
         break
       case "hop-messages":
         hopData(event.turn, event.hop).messages = event.messages
@@ -83,25 +102,37 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
   const failures: Array<string> = []
   const parked: Array<string> = []
 
-  for (const [turn, hops] of turns) {
-    for (const [hop, data] of hops) {
+  for (const [turn, turnInfo] of turns) {
+    for (const [hop, data] of turnInfo.hops) {
       const where = `turn=${turn} hop=${hop}`
 
-      // a. call/result pairing
       let hopHasDanglingCall = false
       for (const [callId, toolName] of data.toolCallIds) {
-        if (!data.toolResultIds.has(callId)) {
-          hopHasDanglingCall = true
+        if (!data.toolResultIds.has(callId)) hopHasDanglingCall = true
+        if (turnInfo.resultIds.has(callId)) continue
+        const approvalId = turnInfo.gatedCalls.get(callId)
+        if (approvalId === undefined) {
           parked.push(`${where}: tool-call ${toolName} (${callId}) has no tool-result — parked/incomplete turn`)
+        } else {
+          const resolution = turnInfo.resolutions.get(approvalId)
+          if (resolution === undefined) {
+            parked.push(
+              `${where}: tool-call ${toolName} (${callId}) awaiting approval (${approvalId}) — parked/incomplete turn`,
+            )
+          } else if (resolution.approved === false) {
+            parked.push(
+              `${where}: tool-call ${toolName} (${callId}) approval DENIED (${approvalId}) — no tool-result, parked/incomplete turn`,
+            )
+          } else {
+            parked.push(
+              `${where}: tool-call ${toolName} (${callId}) APPROVED (${approvalId}) but continuation has no tool-result yet — parked/incomplete turn`,
+            )
+          }
         }
       }
 
-      // b. granular ↔ authoritative consistency
       if (data.toolCallIds.size > 0 || data.toolResultIds.size > 0) {
         if (data.messages === undefined) {
-          // A parked hop (one with a dangling call) necessarily lacks the
-          // hop-end-batched hop-messages — expected, record as PARKED. A hop
-          // whose calls ALL resolved but lacks hop-messages is corrupt: FAIL.
           if (hopHasDanglingCall) {
             parked.push(`${where}: no hop-messages event — parked hop (batched only at hop end)`)
           } else {
@@ -129,7 +160,6 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
         }
       }
 
-      // c. Prompt.Message round-trip
       if (data.messages !== undefined) {
         for (const message of data.messages) {
           try {
@@ -150,12 +180,12 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
     }
   }
 
-  // Rebuild the full prompt: user + hop messages in seq order.
   const rebuilt: Array<Prompt.Message> = []
   for (const user of userMessages) {
     rebuilt.push(Prompt.userMessage({ content: [Prompt.textPart({ text: user.content })] }))
-    const hops = turns.get(user.seq)
-    if (hops !== undefined) {
+    const turnInfo = turns.get(user.seq)
+    if (turnInfo !== undefined) {
+      const { hops } = turnInfo
       for (const hop of [...hops.keys()].sort((a, b) => a - b)) {
         const messages = hops.get(hop)?.messages
         if (messages !== undefined) rebuilt.push(...messages)
@@ -174,12 +204,11 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
     failures,
     parked,
     turnCount: userMessages.length,
-    hopGroups: [...turns.values()].reduce((n, hops) => n + hops.size, 0),
+    hopGroups: [...turns.values()].reduce((n, t) => n + t.hops.size, 0),
     rebuiltCount: rebuilt.length,
   }
 }
 
-// --- process boundary: parse args, then run the Effect ---
 const parsed = parseArgs(process.argv.slice(2), new Set(["allow-parked"]))
 if ("error" in parsed) {
   console.error(parsed.error)

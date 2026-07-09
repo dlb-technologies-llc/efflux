@@ -1,30 +1,12 @@
-// Bash sandbox HTTP server — runs INSIDE the container. The socket is served
-// by Bun.serve (the CF→container boundary); everything the routes DO is Effect
-// (an HttpRouter served via toWebHandler). The exec/tar OS I/O lives in
-// Effect-wrapped boundary helpers, the same seam pattern as the Worker's
-// readBody. The Sandbox Durable Object forwards requests here on port 8080.
-//
-// Error contract: nothing fails across `/exec` — spawn failures, malformed
-// bodies, and non-string commands all respond HTTP 200 with
-// `{exitCode: -1, stdout: "", stderr: <message>}`. A command that runs and
-// exits non-zero is NOT an error. The durable-workspace routes
-// (`/status`, `/restore`, `/snapshot`, `/reset`) use real HTTP status codes.
-//
-// NOTE: this image bundles `effect` (see package.json) — a deliberate size /
-// cold-start cost so the container is an Effect app like the rest of the stack.
-
 import { Effect, Result } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 
-// All commands run here; snapshot/restore tar exactly this directory. Created
-// and chowned to `bun` in the Dockerfile, separate from /app so a snapshot
-// never captures server.ts itself.
+/** Workspace root — all commands run here and snapshot/restore tar exactly this directory (separate from /app so a snapshot never captures server.ts). */
 const WORKSPACE = "/workspace"
 
-// In-memory hydration marker. Container death resets it — that reset IS the
-// "workspace needs restoring from R2" signal the Agent DO reads via GET /status.
+/** In-memory hydration marker; container death resets it, and that reset IS the "workspace needs restoring from R2" signal read via GET /status. */
 let hydrated = false
 
 interface ExecResult {
@@ -33,20 +15,16 @@ interface ExecResult {
   readonly stderr: string
 }
 
+/** In-band failure shape — nothing fails across `/exec`; every error responds HTTP 200 with exitCode -1. */
 const execFailure = (message: string): ExecResult => ({ exitCode: -1, stdout: "", stderr: message })
 
-// Per-command wall-clock ceiling; runaways (`sleep 600`, `yes`, busy-loops) are
-// SIGTERM'd at expiry and reported in-band. Accepted gap: SIGTERM hits the `sh`
-// child, so a deliberately backgrounded grandchild (`cmd &`) can outlive it.
+/** Per-command wall-clock ceiling; runaways are SIGTERM'd at expiry (a deliberately backgrounded grandchild can outlive it). */
 const TIMEOUT_MS = 120_000
-// Hard cumulative (stdout+stderr) output ceiling, enforced by draining the
-// pipes as streams. Stops a `yes` / `cat /dev/urandom` flood from OOMing the
-// container. Safety backstop; Tools.ts applies the smaller ~30k prompt cap.
+/** Cumulative stdout+stderr ceiling, enforced by draining the pipes as streams — stops a flood from OOMing the container. */
 const MAX_OUTPUT_BYTES = 1_000_000
 const TRUNCATION_MARKER = "\n[output truncated at 1MB]"
 
-// OS-process I/O boundary (Bun.spawn + Web streams). Never rejects — maps every
-// failure into the in-band ExecResult shape; wrapped in Effect by the handler.
+/** OS-process I/O boundary (Bun.spawn + Web streams); never rejects — maps every failure into the in-band ExecResult shape. */
 const runCommand = async (command: string): Promise<ExecResult> => {
   const proc = Bun.spawn(["sh", "-c", command], { cwd: WORKSPACE, stdout: "pipe", stderr: "pipe" })
   let timedOut = false
@@ -116,8 +94,7 @@ const snapshotWorkspace = async (): Promise<{ bytes: Uint8Array } | { error: str
   return exitCode === 0 ? { bytes: new Uint8Array(buf) } : { error: `tar create failed (exit ${exitCode}): ${stderr}` }
 }
 
-// Wipe /workspace contents (dotfiles included), best-effort — backs the Agent
-// DO's reset() clean-slate contract.
+/** Best-effort wipe of /workspace contents (dotfiles included) — backs the Agent DO's reset() clean-slate contract. */
 const resetWorkspace = async (): Promise<void> => {
   await Bun.spawn(["sh", "-c", "rm -rf /workspace/* /workspace/.[!.]* 2>/dev/null || true"], {
     cwd: WORKSPACE,
@@ -160,8 +137,7 @@ const handleRestore = (request: HttpServerRequest.HttpServerRequest) =>
     return yield* HttpServerResponse.json({ ok: true })
   })
 
-// Refuses until hydrated: a snapshot of a fresh container must never overwrite
-// a good R2 object.
+/** Snapshot handler — refuses until hydrated so a snapshot of a fresh container never overwrites a good R2 object. */
 const handleSnapshot = Effect.gen(function*() {
   if (!hydrated) return HttpServerResponse.text("workspace not hydrated; refusing to snapshot", { status: 409 })
   const result = yield* Effect.promise(() => snapshotWorkspace())
@@ -195,9 +171,6 @@ const port = portEnv !== undefined && portEnv !== "" ? Number(portEnv) : 8080
 
 Bun.serve({
   port,
-  // Bun's default idleTimeout (~10s) would sever /exec for any command longer
-  // than the idle window. 0 disables it; the per-command TIMEOUT_MS in
-  // runCommand bounds a single exec (with Cloudflare's request limits behind).
   idleTimeout: 0,
   fetch: (request) => handler(request),
 })
