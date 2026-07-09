@@ -22,7 +22,7 @@ export const historyAtom = Atom.family((args: SessionArgs) =>
 )
 
 /** Empty typed seed for the streaming accumulator (avoids an `as` cast). */
-const noParts: ReadonlyArray<StreamPart> = []
+export const noParts: ReadonlyArray<StreamPart> = []
 
 /**
  * Stream atom: POST the prompt to `/agents/:name/:id/stream` and emit the

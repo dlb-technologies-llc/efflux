@@ -1,5 +1,6 @@
 import {
   AgentApi,
+  ApprovalDecision,
   makePromptRequest,
   PromptRequest,
   StreamPart,
@@ -18,6 +19,7 @@ import { HttpApiClient } from "effect/unstable/httpapi"
 export type { PromptOverrides }
 
 const encodePromptRequest = Schema.encodeSync(PromptRequest)
+const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)
 
 /** Typed AgentApi client, provided from the same FetchHttpClient the streaming path uses. */
 class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
@@ -48,6 +50,8 @@ export const makeAgentClient = (baseUrl: string) => {
   const runtime = ManagedRuntime.make(clientLayer(base))
   const streamUrl = (name: string, id: string): string =>
     `${base}/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}/stream`
+  const approveUrl = (name: string, id: string, eventId: number): string =>
+    `${base}/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}/approve/${eventId}`
   return {
     runtime,
     history: (name: string, id: string) =>
@@ -66,6 +70,24 @@ export const makeAgentClient = (baseUrl: string) => {
             http.post(streamUrl(name, id), {
               body: HttpBody.text(
                 JSON.stringify(encodePromptRequest(makePromptRequest(message, overrides))),
+                "application/json",
+              ),
+            }),
+            StreamPart,
+          )),
+      ),
+    streamApprove: (
+      name: string,
+      id: string,
+      eventId: number,
+      decision: ApprovalDecision,
+    ) =>
+      Stream.unwrap(
+        Effect.map(HttpClient.HttpClient, (http) =>
+          streamAgentSse(
+            http.post(approveUrl(name, id, eventId), {
+              body: HttpBody.text(
+                JSON.stringify(encodeApprovalDecision(decision)),
                 "application/json",
               ),
             }),
