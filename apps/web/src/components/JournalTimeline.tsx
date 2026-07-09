@@ -1,11 +1,11 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react"
+import { useAtomValue } from "@effect/atom-react"
 import { type JournalEvent } from "@effect-flue/shared"
-import { Cause } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { formatParams, journalAtom } from "../atoms/journal.ts"
-import { formatTokens, formatUsd } from "../format.ts"
-import { currentSessionAtom, journalVersionAtom } from "../session.ts"
+import { failureMessage } from "../errors.ts"
+import { formatParams, formatTokens, formatUsd } from "../format.ts"
+import { currentSessionAtom } from "../session.ts"
+import { useJournal } from "../useJournal.ts"
 import styles from "./JournalTimeline.module.css"
 
 /** One turn's events grouped under the `user-message` whose envelope `seq` equals `turn` (the turn header); `events` holds every other envelope carrying `event.turn === turn`, in seq order. */
@@ -27,7 +27,7 @@ const groupByTurn = (events: ReadonlyArray<JournalEvent>): ReadonlyArray<TurnGro
   }
   for (const envelope of events) {
     if (envelope.event._tag === "user-message") ensure(envelope.seq).header = envelope
-    else ensure(envelope.event.turn).events.push(envelope)
+    else if (envelope.event._tag !== "hop-messages") ensure(envelope.event.turn).events.push(envelope)
   }
   return Array.from(byTurn.values()).sort((a, b) => a.turn - b.turn)
 }
@@ -124,13 +124,7 @@ const renderEvent = (envelope: JournalEvent): React.ReactNode => {
  */
 export function JournalTimeline() {
   const session = useAtomValue(currentSessionAtom)
-  const version = useAtomValue(journalVersionAtom)
-  const journalResult = useAtomValue(journalAtom(session))
-  const refresh = useAtomRefresh(journalAtom(session))
-
-  React.useEffect(() => {
-    refresh()
-  }, [version, session, refresh])
+  const { result: journalResult, refresh } = useJournal(session)
 
   return (
     <section className={styles.timeline}>
@@ -142,14 +136,11 @@ export function JournalTimeline() {
       </header>
       {AsyncResult.match(journalResult, {
         onInitial: () => <p className={styles.pending}>Loading journal...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className={styles.error}>
-              Failed to load journal: {failReason ? failReason.error.message : "Something went wrong"}
-            </p>
-          )
-        },
+        onFailure: (failure) => (
+          <p className={styles.error}>
+            Failed to load journal: {failureMessage(failure.cause, "Something went wrong")}
+          </p>
+        ),
         onSuccess: (success) => {
           const turns = groupByTurn(success.value)
           if (turns.length === 0) return <p className={styles.pending}>No events yet.</p>

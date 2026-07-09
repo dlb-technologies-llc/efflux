@@ -1,15 +1,16 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { SessionInfo } from "@effect-flue/shared"
-import { Cause } from "effect"
+import { SafeId, type SessionInfo } from "@effect-flue/shared"
+import { Schema } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { sessionsAtom } from "../atoms/sessions.ts"
+import { failureMessage } from "../errors.ts"
 import { formatRelativeTime } from "../format.ts"
 import { currentSessionAtom, selectedModelAtom } from "../session.ts"
 import styles from "./SessionSwitcher.module.css"
 
-/** Session `name`/`id` segments accepted by the Worker's DO key (kept in sync with the server-side validation). */
-const SEGMENT_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
+/** Session `name`/`id` segment validator, derived from the shared `SafeId` schema the Worker's DO key uses. */
+const isSegment = Schema.is(SafeId)
 
 /**
  * Left-rail control: lists known sessions, lets the user switch to or create
@@ -28,8 +29,8 @@ export function SessionSwitcher() {
   const [newName, setNewName] = React.useState("")
   const [newId, setNewId] = React.useState("")
 
-  const nameValid = SEGMENT_PATTERN.test(newName)
-  const idValid = SEGMENT_PATTERN.test(newId)
+  const nameValid = isSegment(newName)
+  const idValid = isSegment(newId)
 
   const isActive = (session: SessionInfo): boolean =>
     session.name === current.name && session.id === current.id
@@ -53,14 +54,11 @@ export function SessionSwitcher() {
 
       {AsyncResult.match(sessions, {
         onInitial: () => <p className={styles.hint}>Loading sessions...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className={styles.error}>
-              Failed to load sessions: {failReason ? failReason.error.message : "Something went wrong"}
-            </p>
-          )
-        },
+        onFailure: (failure) => (
+          <p className={styles.error}>
+            Failed to load sessions: {failureMessage(failure.cause, "Something went wrong")}
+          </p>
+        ),
         onSuccess: (success) =>
           success.value.sessions.length === 0 ? (
             <p className={styles.hint}>No sessions yet.</p>

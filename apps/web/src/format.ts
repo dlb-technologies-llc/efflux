@@ -16,3 +16,6 @@ export const formatRelativeTime = (epochMs: number): string => {
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
 }
+
+/** Compact one-line JSON of decoded tool params (already JSON round-tripped at append time, so `JSON.stringify` never throws); absent params render as their `String` form. */
+export const formatParams = (params: unknown): string => JSON.stringify(params) ?? String(params)

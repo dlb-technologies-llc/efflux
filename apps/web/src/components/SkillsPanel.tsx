@@ -1,27 +1,14 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { Cause, Exit } from "effect"
+import { SafeName } from "@effect-flue/shared"
+import { Exit, Schema } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { deleteSkillFn, putSkillFn, skillContentAtom, skillsListAtom } from "../atoms/skills.ts"
+import { failureMessage } from "../errors.ts"
 import styles from "./SkillsPanel.module.css"
 
-/** Valid skill name: alphanumerics, underscore, hyphen; 1–64 chars (mirrors the server `SafeId`). */
-const SKILL_NAME = /^[a-zA-Z0-9_-]{1,64}$/
-
-/** Extract a string `message` from an unknown error (not every union member carries one). */
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message
-    if (typeof message === "string") return message
-  }
-  return String(error)
-}
-
-/** Pull the first fail-reason error out of a mutation's `Exit` cause, or a fallback message. */
-const failureMessage = (cause: Cause.Cause<unknown>, fallback: string): string => {
-  const failReason = cause.reasons.find(Cause.isFailReason)
-  return failReason ? messageOf(failReason.error) : fallback
-}
+/** Valid skill name, derived from the shared `SafeName` schema (alphanumerics, underscore, hyphen; 1–64 chars). */
+const isSkillName = Schema.is(SafeName)
 
 interface SkillEditorProps {
   readonly name: string
@@ -129,8 +116,8 @@ export function SkillsPanel() {
   const handleAdd = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const name = newName.trim()
-    if (!SKILL_NAME.test(name)) {
-      setAddError("Name must match /^[a-zA-Z0-9_-]{1,64}$/")
+    if (!isSkillName(name)) {
+      setAddError("Name must be alphanumerics, underscore, or hyphen; 1–64 chars")
       return
     }
     setAdding(true)

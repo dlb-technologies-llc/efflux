@@ -1,9 +1,10 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
 import type { StreamPart } from "@effect-flue/shared"
-import { Cause, Exit } from "effect"
+import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { historyAtom, streamAtom } from "../atoms.ts"
+import { failureMessage } from "../errors.ts"
 import { currentSessionAtom, journalVersionAtom, selectedModelAtom } from "../session.ts"
 import { MessageList } from "./MessageList.tsx"
 
@@ -13,15 +14,6 @@ export interface ChatProps {
 }
 
 const noParts: ReadonlyArray<StreamPart> = []
-
-/** Extract a string `message` from the stream's union error channel (not every member carries one). */
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message
-    if (typeof message === "string") return message
-  }
-  return String(error)
-}
 
 /** Live chat view: renders session history and streams the current assistant turn. */
 export function Chat(props: ChatProps) {
@@ -72,8 +64,7 @@ export function Chat(props: ChatProps) {
     setPending(false)
     Exit.match(exit, {
       onFailure: (cause) => {
-        const failReason = cause.reasons.find(Cause.isFailReason)
-        setSubmitError(failReason ? messageOf(failReason.error) : "Stream failed")
+        setSubmitError(failureMessage(cause, "Stream failed"))
         setParts(noParts)
       },
       onSuccess: () => {
@@ -101,15 +92,11 @@ export function Chat(props: ChatProps) {
       </p>
       {AsyncResult.match(historyResult, {
         onInitial: () => <p className="pending">Loading history...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className="error">
-              Failed to load history:{" "}
-              {failReason ? failReason.error.message : "Something went wrong"}
-            </p>
-          )
-        },
+        onFailure: (failure) => (
+          <p className="error">
+            Failed to load history: {failureMessage(failure.cause, "Something went wrong")}
+          </p>
+        ),
         onSuccess: (success) => <MessageList messages={success.value.history} />,
       })}
       {streamActive || pending ? (

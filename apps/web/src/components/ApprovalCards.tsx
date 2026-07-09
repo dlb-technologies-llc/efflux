@@ -1,20 +1,14 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { Cause, Exit } from "effect"
+import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { approveStreamAtom, historyAtom } from "../atoms.ts"
-import { formatParams, journalAtom, type PendingApproval, pendingApprovals } from "../atoms/journal.ts"
+import { type PendingApproval, pendingApprovals } from "../atoms/journal.ts"
+import { failureMessage } from "../errors.ts"
+import { formatParams } from "../format.ts"
 import { currentSessionAtom, journalVersionAtom, type SessionArgs } from "../session.ts"
+import { useJournal } from "../useJournal.ts"
 import styles from "./ApprovalCards.module.css"
-
-/** Extract a string `message` from the approval stream's union error channel (not every member carries one). */
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message
-    if (typeof message === "string") return message
-  }
-  return String(error)
-}
 
 interface ApprovalCardProps {
   readonly session: SessionArgs
@@ -51,13 +45,13 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
     })
     Exit.match(exit, {
       onFailure: (cause) => {
-        const failReason = cause.reasons.find(Cause.isFailReason)
-        setError(failReason ? messageOf(failReason.error) : "Approval failed")
+        setError(failureMessage(cause, "Approval failed"))
         setBusy(false)
       },
       onSuccess: () => {
         bump((v) => v + 1)
         refreshHistory()
+        setBusy(false)
       },
     })
   }
@@ -110,21 +104,18 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
  */
 export function ApprovalCards() {
   const session = useAtomValue(currentSessionAtom)
-  const journalResult = useAtomValue(journalAtom(session))
+  const { result: journalResult } = useJournal(session)
 
   return (
     <section className={styles.panel}>
       <h2 className={styles.title}>Approvals</h2>
       {AsyncResult.match(journalResult, {
         onInitial: () => <p className={styles.pending}>Loading approvals...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className={styles.error}>
-              Failed to load approvals: {failReason ? failReason.error.message : "Something went wrong"}
-            </p>
-          )
-        },
+        onFailure: (failure) => (
+          <p className={styles.error}>
+            Failed to load approvals: {failureMessage(failure.cause, "Something went wrong")}
+          </p>
+        ),
         onSuccess: (success) => {
           const pending = pendingApprovals(success.value)
           if (pending.length === 0) return <p className={styles.empty}>No pending approvals.</p>

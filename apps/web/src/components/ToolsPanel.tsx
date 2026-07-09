@@ -1,9 +1,9 @@
 import { useAtomValue } from "@effect/atom-react"
 import { type RulesMap, resolveRule, ToolRule } from "@effect-flue/shared"
-import { Cause } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { sessionConfigAtom, toolsAtom } from "../atoms/tools.ts"
+import { failureMessage } from "../errors.ts"
 import { currentSessionAtom } from "../session.ts"
 import styles from "./ToolsPanel.module.css"
 
@@ -12,15 +12,6 @@ const gate: Record<typeof ToolRule.Type, { readonly label: string; readonly clas
   allow: { label: "allow", className: styles.gateAllow ?? "" },
   ask: { label: "parks", className: styles.gateAsk ?? "" },
   deny: { label: "blocked", className: styles.gateDeny ?? "" },
-}
-
-/** Safely extract a `message` string from an unknown error channel value. */
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message
-    if (typeof message === "string") return message
-  }
-  return String(error)
 }
 
 /** The per-tool gate badge, resolved from the session's rules table. */
@@ -48,14 +39,11 @@ export function ToolsPanel() {
       <h2 className={styles.heading}>Tools</h2>
       {AsyncResult.match(toolsResult, {
         onInitial: () => <p className={styles.pending}>Loading tools...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className={styles.error}>
-              Failed to load tools: {failReason ? messageOf(failReason.error) : "Something went wrong"}
-            </p>
-          )
-        },
+        onFailure: (failure) => (
+          <p className={styles.error}>
+            Failed to load tools: {failureMessage(failure.cause, "Something went wrong")}
+          </p>
+        ),
         onSuccess: (success) => (
           <ul className={styles.list}>
             {success.value.tools.map((tool) => {

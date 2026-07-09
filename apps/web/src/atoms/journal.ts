@@ -76,6 +76,3 @@ export const pendingApprovals = (events: ReadonlyArray<JournalEvent>): ReadonlyA
   }
   return pending
 }
-
-/** Compact one-line JSON of decoded tool params (already JSON round-tripped at append time, so `JSON.stringify` never throws); absent params render as their `String` form. */
-export const formatParams = (params: unknown): string => JSON.stringify(params) ?? String(params)
