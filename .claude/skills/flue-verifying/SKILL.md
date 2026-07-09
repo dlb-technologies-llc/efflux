@@ -39,6 +39,20 @@ Concurrent sessions share this ONE worker — last deploy wins. If another sessi
 
 **New-route changes:** if the diff adds a path to `run_worker_first` (wrangler.jsonc) or `isApiPath` (index.ts), the asset-routing config can lag ONE deploy — a GET to the new path returns the SPA `index.html` (200, `content-type: text/html`) and a non-GET 405s from the asset handler, even when the Worker code is correct. Redeploy once and re-probe the **exact new path**; the route is verified only when it returns the Worker's JSON, not SPA HTML. (Seen #41: `GET /skills` served the SPA after the first deploy; a second deploy fixed it.)
 
+### 1b. Frontend render — MANDATORY when the diff touches `apps/web/**`
+
+Curling endpoints does NOT verify the UI. A frontend change is verified only when the actual page RENDERS — that `index.html` serves and the JS bundle 200s proves nothing about whether React mounted. Endpoint-only "verification" of an FE PR is a known miss (showcase-ui #67 was declared verified via curl; the UI was never loaded in a browser until the user asked "have you tested this?"). Load the deployed SPA headless and assert it mounts:
+
+```bash
+google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+  --user-data-dir="$(mktemp -d)" --window-size=1440,900 --virtual-time-budget=9000 \
+  --screenshot=/tmp/render.png --dump-dom "<URL>/?cb=$RANDOM" > /tmp/dom.html
+```
+
+Then `grep` the dumped DOM for markers unique to your change (panel headings, new component text, expected data values) and `Read` `/tmp/render.png` to eyeball the layout. A near-empty `#root`, a DOM missing your markers, or the old bundle name = the app crashed on mount or a stale build is live — a FAIL even though every endpoint passed.
+
+Run this against the DEPLOYED worker, not local: `wrangler dev` (local) uses the placeholder `.dev.vars` key so model turns fail, and `wrangler dev --remote` no longer supports Durable Objects (`/agents`, `/journal`, chat, approvals all 500) — neither gives a full-fidelity FE demo. Confirm YOUR build is live first via the clobber-signature check in step 1 (poll a branch-unique route for a stable 200), then redeploy-and-recheck if a sibling session may have shipped over you.
+
 ### 2. Smoke a session
 
 ```bash
@@ -97,7 +111,11 @@ bun scripts/agent.ts support smoke-<YYYYMMDD-HHMM> \
   --message "Run \`uname -a\` in your sandbox and tell me the output." --url <URL>
 ```
 
-Expect real command output in the reply. Pass `--model` with a capable tool-calling model (e.g. `openai/gpt-4o-mini`) — the default `tencent/hy3:free` flakes at tool choice, and a no-tool reply then looks like a code failure when it isn't. Model tool choice is still nondeterministic — retry once with a more explicit instruction (AFTER pinning the model) before declaring failure.
+Pass `--model` with a capable tool-calling model (e.g. `openai/gpt-4o-mini`) — the default `tencent/hy3:free` flakes at tool choice, and a no-tool reply then looks like a code failure when it isn't. Model tool choice is still nondeterministic — retry once with a more explicit instruction (AFTER pinning the model) before declaring failure.
+
+**`Bash` PARKS by default (since #40) — a plain smoke turn will NOT print command output.** The default rules are `{ Bash: "ask" }`, so the model's Bash call ends the turn with an `approval-requested` journal event and no output (the CLI renders something like `(Bash completed with no output)`). That is CORRECT behavior, not a failure — don't chase it as a code bug. To actually exercise the sandbox, either:
+- (a) allow Bash for the smoke session first — `curl -X PUT <URL>/agents/support/smoke-<...>/config -H 'content-type: application/json' -d '{"rules":{"Bash":"allow"}}'` — then run the turn and expect real `uname -a` output; or
+- (b) drive the approval, which doubles as approval-flow verification: read the `approval-requested` event's `seq` from `GET <URL>/agents/support/smoke-<...>/journal`, then `curl -X POST <URL>/agents/support/smoke-<...>/approve/<seq> -H 'content-type: application/json' -d '{"approved":true}'` and expect the continuation SSE to carry the command output plus a `tool-result` frame.
 
 ### 7. Cleanup
 
