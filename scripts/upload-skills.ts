@@ -1,9 +1,10 @@
 /** Uploads every skill/role markdown file to the effect-flue-skills R2 bucket via `wrangler r2 object put` (always full upload, no diff). Pass --dry-run to list only. */
 
 import { $ } from "bun"
-import { Cause, Console, Effect, Exit } from "effect"
+import { Console, Effect } from "effect"
 import { readdir } from "node:fs/promises"
 import * as path from "node:path"
+import { reportExit } from "./lib.ts"
 
 const isEnoent = (e: unknown): boolean =>
   e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT"
@@ -64,13 +65,4 @@ const main = Effect.gen(function*() {
   yield* Console.log(`uploaded ${uploads.length} object(s) to ${BUCKET}`)
 })
 
-const result = await Effect.runPromiseExit(main)
-if (Exit.isFailure(result)) {
-  const failReason = result.cause.reasons.find(Cause.isFailReason)
-  console.error(
-    failReason !== undefined
-      ? (failReason.error instanceof Error ? failReason.error.message : String(failReason.error))
-      : Cause.pretty(result.cause),
-  )
-}
-process.exitCode = Exit.isSuccess(result) ? 0 : 1
+reportExit(await Effect.runPromiseExit(main))

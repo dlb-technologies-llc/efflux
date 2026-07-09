@@ -14,9 +14,9 @@
  */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
-import { Cause, Console, Effect, Exit, Schema } from "effect"
+import { Console, Effect, Schema } from "effect"
 import { Prompt } from "effect/unstable/ai"
-import { ApiClient, fetchAllEvents, makeRuntime, parseArgs, resolveBaseUrl } from "./lib.ts"
+import { ApiClient, bootstrap, fetchAllEvents, runMain } from "./lib.ts"
 
 const USAGE = "Usage: bun scripts/verify-journal.ts <name> <id> [--url URL] [--allow-parked]"
 
@@ -51,8 +51,11 @@ interface VerifyResult {
 /**
  * Pure: group events by (turn, hop), run checks a/b/c, rebuild the prompt.
  * Pairing (a) is turn-wide; `hopHasDanglingCall` stays hop-local to drive (b).
+ * Rebuild (final block) keys each user-message's continuation by `turns.get(user.seq)`,
+ * so it is correct ONLY while a turn's number equals its originating user-message's
+ * seq — the journal's `turn === user-message.seq` invariant.
  */
-const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
+export const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
   const turns = new Map<number, TurnData>()
   const userMessages: Array<{ seq: number; content: string }> = []
   const turnData = (turn: number): TurnData => {
@@ -209,54 +212,39 @@ const verify = (events: ReadonlyArray<JournalEvent>): VerifyResult => {
   }
 }
 
-const parsed = parseArgs(process.argv.slice(2), new Set(["allow-parked"]))
-if ("error" in parsed) {
-  console.error(parsed.error)
-  console.error(USAGE)
-  process.exit(1)
-}
-const name = parsed.positional[0]
-const id = parsed.positional[1]
-const base = resolveBaseUrl(parsed.flags["url"])
-if (name === undefined || id === undefined || base === undefined) {
-  console.error(USAGE)
-  process.exit(1)
-}
-const allowParked = parsed.flags["allow-parked"] === "true"
-const runtime = makeRuntime(base)
-
-const main = Effect.gen(function*() {
-  const api = yield* ApiClient
-  const events = yield* fetchAllEvents(api, name, id)
-  if (events.length === 0) {
-    yield* Console.error("FAIL: journal is empty — run a tool-calling session first")
-    return false
+/** CLI entry — skipped when imported (e.g. by tests). */
+if (import.meta.main) {
+  const { parsed, runtime } = bootstrap(process.argv.slice(2), new Set(["allow-parked"]), USAGE)
+  const name = parsed.positional[0]
+  const id = parsed.positional[1]
+  if (name === undefined || id === undefined) {
+    console.error(USAGE)
+    process.exit(1)
   }
-  const result = verify(events)
-  yield* Effect.forEach(result.parked, (note) => Console.error(`PARKED  ${note}`))
-  yield* Effect.forEach(result.failures, (failure) => Console.error(`FAIL    ${failure}`))
-  const parkedFatal = result.parked.length > 0 && !allowParked
-  if (result.failures.length > 0 || parkedFatal) {
-    if (parkedFatal) yield* Console.error("(dangling tool calls are fatal without --allow-parked)")
-    return false
-  }
-  yield* Console.log(
-    `OK: ${events.length} events, ${result.turnCount} turn(s), ${result.hopGroups} hop group(s) — prompt rebuilds through effect/unstable/ai Prompt schemas (${result.rebuiltCount} messages)`,
-  )
-  return true
-})
+  const allowParked = parsed.flags["allow-parked"] === "true"
 
-const outcome = await runtime.runPromiseExit(main)
-await runtime.dispose()
-let exitCode = 1
-if (Exit.isSuccess(outcome)) {
-  exitCode = outcome.value ? 0 : 1
-} else {
-  const failReason = outcome.cause.reasons.find(Cause.isFailReason)
-  console.error(
-    failReason !== undefined
-      ? `FAIL journal fetch: ${failReason.error instanceof Error ? failReason.error.message : String(failReason.error)}`
-      : Cause.pretty(outcome.cause),
-  )
+  const main = Effect.gen(function*() {
+    const api = yield* ApiClient
+    const events = yield* fetchAllEvents(api, name, id)
+    if (events.length === 0) {
+      return yield* Effect.fail(new Error("journal is empty — run a tool-calling session first"))
+    }
+    const result = verify(events)
+    yield* Effect.forEach(result.parked, (note) => Console.error(`PARKED  ${note}`))
+    yield* Effect.forEach(result.failures, (failure) => Console.error(`FAIL    ${failure}`))
+    const parkedFatal = result.parked.length > 0 && !allowParked
+    if (result.failures.length > 0 || parkedFatal) {
+      if (parkedFatal) yield* Console.error("(dangling tool calls are fatal without --allow-parked)")
+      return yield* Effect.fail(
+        new Error(
+          `journal verification failed: ${result.failures.length} failure(s), ${result.parked.length} parked`,
+        ),
+      )
+    }
+    yield* Console.log(
+      `OK: ${events.length} events, ${result.turnCount} turn(s), ${result.hopGroups} hop group(s) — prompt rebuilds through effect/unstable/ai Prompt schemas (${result.rebuiltCount} messages)`,
+    )
+  })
+
+  await runMain(main, runtime)
 }
-process.exitCode = exitCode

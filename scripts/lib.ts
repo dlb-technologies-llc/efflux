@@ -1,8 +1,8 @@
 /** Shared plumbing for the CLI scripts: typed AgentApi client, journal pagination, and argv parsing. */
 
 import type { JournalEvent } from "../packages/shared/src/index.ts"
-import { AgentApi } from "../packages/shared/src/index.ts"
-import { Context, Effect, Layer, ManagedRuntime } from "effect"
+import { AgentApi, failureMessage } from "../packages/shared/src/index.ts"
+import { Cause, Context, Effect, Exit, Layer, ManagedRuntime } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
 
@@ -86,4 +86,45 @@ export const fetchAllEvents = (
       }),
     )
   return go(0, [])
+}
+
+/** Parse argv, resolve the base URL, build the runtime — the head every session script shares; prints `usage` and exits 1 on a parse error or missing base URL. */
+export const bootstrap = (
+  argv: ReadonlyArray<string>,
+  booleanFlags: ReadonlySet<string>,
+  usage: string,
+): { readonly parsed: ParsedArgs; readonly base: string; readonly runtime: ReturnType<typeof makeRuntime> } => {
+  const parsed = parseArgs(argv, booleanFlags)
+  if ("error" in parsed) {
+    console.error(parsed.error)
+    console.error(usage)
+    process.exit(1)
+  }
+  const base = resolveBaseUrl(parsed.flags["url"])
+  if (base === undefined) {
+    console.error("BASE_URL or --url required")
+    console.error(usage)
+    process.exit(1)
+  }
+  return { parsed, base, runtime: makeRuntime(base) }
+}
+
+/** Print the first failure (or the whole `Cause`) and set `process.exitCode` from an `Exit`; a `false` success value maps to 1 (scripts whose main returns a pass/fail boolean). */
+export const reportExit = <A>(exit: Exit.Exit<A, unknown>): void => {
+  if (Exit.isFailure(exit)) {
+    console.error(failureMessage(exit.cause, Cause.pretty(exit.cause)))
+    process.exitCode = 1
+    return
+  }
+  process.exitCode = exit.value === false ? 1 : 0
+}
+
+/** Run a session script's main through its runtime, dispose it, then report the exit. */
+export const runMain = async <A>(
+  main: Effect.Effect<A, unknown, ApiClient>,
+  runtime: ReturnType<typeof makeRuntime>,
+): Promise<void> => {
+  const exit = await runtime.runPromiseExit(main)
+  await runtime.dispose()
+  reportExit(exit)
 }
