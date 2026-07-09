@@ -92,6 +92,15 @@ const jsonRpcErrorMessage = (error: unknown): string => {
 }
 
 /** POST a JSON-RPC payload; a network/fetch failure becomes an `McpError`. */
+/** Hostname of a (possibly post-redirect) response URL, or undefined when it can't be parsed. */
+const responseHost = (rawUrl: string): string | undefined => {
+  try {
+    return new URL(rawUrl).hostname
+  } catch {
+    return undefined
+  }
+}
+
 const sendFetch = (
   server: McpServer,
   headers: Record<string, string>,
@@ -111,7 +120,19 @@ const sendFetch = (
       }),
     catch: (error) =>
       new McpError({ server: server.name, message: `request failed: ${describe(error)}` }),
-  })
+  }).pipe(
+    Effect.flatMap((response) => {
+      const host = responseHost(response.url)
+      return host !== undefined && isBlockedHost(host)
+        ? Effect.fail(
+            new McpError({
+              server: server.name,
+              message: `response host blocked after redirect: ${host} (private/internal address)`,
+            }),
+          )
+        : Effect.succeed(response)
+    }),
+  )
 
 /** Fail with an `McpError` carrying status + body text on a non-2xx response; otherwise pass the response through. */
 const ensureOk = (server: McpServer, response: Response): Effect.Effect<Response, McpError> =>
@@ -196,6 +217,10 @@ const readSseReply = (
           }
           newline = buffer.indexOf("\n")
         }
+      }
+      const tail = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer
+      if (tail.startsWith("data:")) {
+        dataLines.push(tail.slice(5).replace(/^ /, ""))
       }
       return takeEvent()
     },
@@ -347,11 +372,15 @@ const flattenLenient = (result: unknown): McpCallResult => {
   return { text, isError: readField(result, "isError") === true }
 }
 
-/** Strict decode first; on any decode failure degrade to the lenient path so a binary block still returns text. */
+/** Strict decode first; on a decode FAILURE degrade to the lenient path so a binary block still returns text. Narrowed to the failure channel so defects/interrupts are not masked. */
 const flattenCallResult = (result: unknown): Effect.Effect<McpCallResult> =>
   decodeCallToolResult(result).pipe(
     Effect.map(flattenStrict),
-    Effect.catchCause(() => Effect.succeed(flattenLenient(result))),
+    Effect.catch(() =>
+      Effect.logDebug("mcp callTool result failed strict decode; using lenient text extraction").pipe(
+        Effect.map(() => flattenLenient(result)),
+      ),
+    ),
   )
 
 /** Connect to an MCP server: SSRF-check, run the handshake, and return a client bound to the negotiated session. */

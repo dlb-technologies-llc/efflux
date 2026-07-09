@@ -45,16 +45,18 @@ const dedupeServers = (servers: ReadonlyArray<McpServer>): Array<McpServer> => {
 }
 
 /**
- * Connect to one server and list its tools, bounded by a timeout; any failure
- * (SSRF reject, handshake error, dead/slow server) collapses to a warning plus
- * an empty tool set so a broken server can never fail the whole build.
+ * Connect to one server and list its tools, bounded by a short discovery
+ * timeout (kept tight so a dead/slow server degrades fast — this runs on the
+ * turn's critical path, before the driver, with no cross-turn cache); any
+ * failure (SSRF reject, handshake error, dead/slow server) collapses to a
+ * warning plus an empty tool set so a broken server can never fail the build.
  */
 const discoverServer = (server: McpServer) =>
   connect(server).pipe(
     Effect.flatMap((client) =>
       client.listTools.pipe(Effect.map((tools) => ({ server, client, tools }))),
     ),
-    Effect.timeout("15 seconds"),
+    Effect.timeout("5 seconds"),
     Effect.catchCause((cause) =>
       Effect.logWarning(`MCP discovery failed for server "${server.name}"`, cause).pipe(
         Effect.as({ server, client: undefined, tools: [] }),

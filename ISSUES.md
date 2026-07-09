@@ -658,9 +658,17 @@ quirk below cost real debugging when it was missed.
   servers 400 without them.
 - **Handshake order.** `notifications/initialized` must be sent AFTER
   `initialize` and BEFORE the first `tools/list`.
-- **Follow redirects.** Real servers 307/308 to their canonical path; the
-  fetch must use `redirect: "follow"` — `redirect: "manual"` breaks the
-  handshake.
+- **Follow redirects, then re-validate the destination (SSRF).** Real servers
+  307/308 to their canonical path, so the fetch uses `redirect: "follow"`
+  (`redirect: "manual"` breaks the handshake). But `follow` means the initial
+  `isBlockedHost` check on `server.url` no longer covers the FINAL host — a
+  public URL that redirects to a private/internal host would otherwise sail
+  through. `sendFetch` therefore re-checks `isBlockedHost(response.url)` after
+  every fetch and fails closed. Residual (accepted for v1): the redirected
+  request still *reaches* the internal host once before we reject its response;
+  full per-hop revalidation (like `web_fetch` in `Tools.ts`) is the follow-up
+  hardening. MCP URLs are operator-configured, not model-chosen, so the blast
+  radius is smaller than `web_fetch`'s.
 - **Read the JSON-RPC `.error` object, not just `.result`.** A well-formed
   error envelope carries no `result`; treating a missing `.result` as
   success yields an opaque `undefined`-decode failure instead of the
