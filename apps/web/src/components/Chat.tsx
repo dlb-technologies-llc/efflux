@@ -4,11 +4,12 @@ import { Cause, Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
 import { historyAtom, streamAtom } from "../atoms.ts"
+import { currentSessionAtom, journalVersionAtom, selectedModelAtom } from "../session.ts"
 import { MessageList } from "./MessageList.tsx"
 
 export interface ChatProps {
-  readonly name: string
-  readonly id: string
+  readonly name?: string
+  readonly id?: string
 }
 
 const noParts: ReadonlyArray<StreamPart> = []
@@ -23,13 +24,18 @@ const messageOf = (error: unknown): string => {
 }
 
 /** Live chat view: renders session history and streams the current assistant turn. */
-export function Chat({ name, id }: ChatProps) {
+export function Chat(props: ChatProps) {
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
 
-  const sessionAtom = historyAtom({ name, id })
+  const current = useAtomValue(currentSessionAtom)
+  const session = { name: props.name ?? current.name, id: props.id ?? current.id }
+  const model = useAtomValue(selectedModelAtom)
+  const bumpJournal = useAtomSet(journalVersionAtom)
+
+  const sessionAtom = historyAtom(session)
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
@@ -52,6 +58,7 @@ export function Chat({ name, id }: ChatProps) {
   const errorPart = parts.find((part) => part._tag === "error")
   const streamError = errorPart !== undefined ? errorPart.message : submitError
   const streamActive = parts.length > 0
+  const awaitingApproval = parts.some((part) => part._tag === "approval-request")
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -61,7 +68,7 @@ export function Chat({ name, id }: ChatProps) {
     setSubmitError(null)
     setInput("")
     setPending(true)
-    const exit = await runStream({ name, id, message })
+    const exit = await runStream({ ...session, message, ...(model !== "" ? { model } : {}) })
     setPending(false)
     Exit.match(exit, {
       onFailure: (cause) => {
@@ -71,6 +78,7 @@ export function Chat({ name, id }: ChatProps) {
       },
       onSuccess: () => {
         refreshHistory()
+        bumpJournal((v) => v + 1)
       },
     })
   }
@@ -89,7 +97,7 @@ export function Chat({ name, id }: ChatProps) {
     <main className="chat">
       <h1>effect-flue chat</h1>
       <p style={{ opacity: 0.6, fontSize: 13 }}>
-        session: <code>{name}/{id}</code>
+        session: <code>{session.name}/{session.id}</code>
       </p>
       {AsyncResult.match(historyResult, {
         onInitial: () => <p className="pending">Loading history...</p>,
@@ -123,6 +131,11 @@ export function Chat({ name, id }: ChatProps) {
           )}
           {streamingText}
           {pending ? <span className="streaming-cursor" aria-hidden /> : null}
+          {awaitingApproval ? (
+            <div className="tool-frame tool-running">
+              ⏸ Awaiting approval — act on it in the Approvals panel
+            </div>
+          ) : null}
         </div>
       ) : null}
       {streamError !== null ? <p className="error">{streamError}</p> : null}
