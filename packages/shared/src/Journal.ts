@@ -1,9 +1,6 @@
 import { Schema } from "effect"
 import { Prompt, Response as AiResponse } from "effect/unstable/ai"
-import { SafeName } from "./Schemas.ts"
-
-/** Non-negative integer — for seq, timestamps, turn/hop, and token counts (rejects NaN, negatives, and floats). */
-const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+import { NonNegativeInt, SafeName } from "./Schemas.ts"
 
 /** Turn-opening user message; snapshots the overlay (skill/role/model) so a parked turn's system messages reload by name. */
 export class JournalUserMessage extends Schema.TaggedClass<JournalUserMessage>()(

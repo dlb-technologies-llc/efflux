@@ -1,5 +1,6 @@
 import {
   AgentError,
+  ApprovalHandle,
   JournalApprovalRequested,
   JournalErrorEvent,
   type RulesMap,
@@ -15,12 +16,8 @@ import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { ApprovalRules } from "./Tools.ts"
 
-/** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. */
-export interface PromptApproval {
-  eventId: number
-  approvalId: string
-  toolCallId: string
-}
+/** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. Derived from the shared `ApprovalHandle` schema so the coordinates never drift from the contract. */
+export type PromptApproval = typeof ApprovalHandle.Type
 
 export interface PromptTurnResult {
   finalText: string

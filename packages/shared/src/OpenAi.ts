@@ -1,4 +1,5 @@
-import { Schema } from "effect"
+import { Result, Schema } from "effect"
+import { SafeId } from "./Schemas.ts"
 
 /** One OpenAI chat message. Only `role`+`content` are consumed; `content` may be null on assistant tool-call turns some clients replay. */
 export class ChatMessage extends Schema.Class<ChatMessage>("ChatMessage")({
@@ -69,13 +70,16 @@ export class ModelsResponse extends Schema.Class<ModelsResponse>("ModelsResponse
   data: Schema.Array(ModelObject),
 }) {}
 
-const AGENT_MODEL_PATTERN = /^agent:([a-zA-Z0-9_-]{1,128}):([a-zA-Z0-9_-]{1,128})$/
+const decodeSafeId = Schema.decodeUnknownResult(SafeId)
 
-/** Parse a `model` field into a session address, or `undefined` when it is not a well-formed `agent:<name>:<id>`. */
+/** Parse a `model` field into a session address, or `undefined` when it is not a well-formed `agent:<name>:<id>`; `name`/`id` are validated through the `SafeId` schema (no re-listed char class). */
 export const parseAgentModel = (model: string): { name: string; id: string } | undefined => {
-  const match = AGENT_MODEL_PATTERN.exec(model)
-  return match !== null && match[1] !== undefined && match[2] !== undefined
-    ? { name: match[1], id: match[2] }
+  const parts = model.split(":")
+  if (parts.length !== 3 || parts[0] !== "agent") return undefined
+  const name = decodeSafeId(parts[1])
+  const id = decodeSafeId(parts[2])
+  return Result.isSuccess(name) && Result.isSuccess(id)
+    ? { name: name.success, id: id.success }
     : undefined
 }
 

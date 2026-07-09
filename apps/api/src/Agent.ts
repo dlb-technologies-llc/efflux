@@ -26,6 +26,10 @@ type ExecResult = (typeof ExecResultSchema)["Type"]
 
 const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
 
+/** Shape of the container's `GET /status` reply; only `hydrated` is consumed (excess keys stripped on decode). */
+const StatusSchema = Schema.Struct({ hydrated: Schema.Boolean })
+const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
+
 /**
  * Per-session storage + sandbox Durable Object: holds the append-only event journal
  * (DO SQLite) and the sandbox exec/hydrate seam. RPC fence — every method takes/returns
@@ -330,12 +334,8 @@ export class Agent extends DurableObject<Env> {
     if (!status.ok) {
       throw new Error(`sandbox status failed ${status.status}: ${statusText}`)
     }
-    const parsed: unknown = JSON.parse(statusText)
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      Reflect.get(parsed, "hydrated") === true
-    ) {
+    const parsed = decodeStatus(JSON.parse(statusText))
+    if (Result.isSuccess(parsed) && parsed.success.hydrated) {
       return
     }
     const object = await this.env.SESSIONS.get(Agent.#workspaceKey(name))

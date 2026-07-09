@@ -48,5 +48,5 @@ export const ResolvedConfig = Schema.Struct({
   mcpServers: Schema.Array(McpServerConfig),
 })
 
-/** Decoded shape of `ResolvedConfig` — the fully-populated effective session config. */
-export type ResolvedConfigType = typeof ResolvedConfig.Type
+/** Decoded shape of the `ResolvedConfig` schema — the fully-populated effective session config. */
+export type ResolvedConfig = typeof ResolvedConfig.Type

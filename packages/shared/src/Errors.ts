@@ -1,4 +1,5 @@
 import { Cause, Schema } from "effect"
+import { NonNegativeInt } from "./Schemas.ts"
 
 export class AgentError extends Schema.TaggedErrorClass<AgentError>()(
   "AgentError",
@@ -29,7 +30,7 @@ export class RoleNotFoundError extends Schema.TaggedErrorClass<RoleNotFoundError
 export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFoundError>()(
   "ApprovalNotFoundError",
   {
-    eventId: Schema.Number,
+    eventId: NonNegativeInt,
   },
   { httpApiStatus: 404 },
 ) {}
@@ -37,7 +38,7 @@ export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFo
 export class ApprovalConflictError extends Schema.TaggedErrorClass<ApprovalConflictError>()(
   "ApprovalConflictError",
   {
-    eventId: Schema.Number,
+    eventId: NonNegativeInt,
     message: Schema.String,
   },
   { httpApiStatus: 409 },

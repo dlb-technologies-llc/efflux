@@ -27,6 +27,7 @@ import {
   PromptRequest,
   PromptResponse,
   SafeId,
+  SafeName,
   SubagentTaskRequest,
   SubagentTaskResponse,
 } from "./Schemas.ts"
@@ -137,14 +138,14 @@ const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
 
 /** One skill's full markdown by name. */
 const getSkill = HttpApiEndpoint.get("getSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   success: SkillContentResponse,
   error: [AgentError, SkillNotFoundError],
 })
 
 /** Upsert a skill's markdown by name. */
 const putSkill = HttpApiEndpoint.put("putSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   payload: PutSkillRequest,
   success: SkillContentResponse,
   error: AgentError,
@@ -152,7 +153,7 @@ const putSkill = HttpApiEndpoint.put("putSkill", "/skills/:name", {
 
 /** Remove a skill by name. */
 const deleteSkill = HttpApiEndpoint.delete("deleteSkill", "/skills/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   success: Schema.Void,
   error: [AgentError, SkillNotFoundError],
 })
@@ -181,7 +182,7 @@ const listKnowledge = HttpApiEndpoint.get("listKnowledge", "/knowledge", {
 
 /** Upsert a knowledge document's text by name. */
 const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
-  params: Schema.Struct({ name: SafeId }),
+  params: Schema.Struct({ name: SafeName }),
   payload: PutKnowledgeRequest,
   success: KnowledgeItemResponse,
   error: AgentError,

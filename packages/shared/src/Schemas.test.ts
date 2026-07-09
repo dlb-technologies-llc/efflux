@@ -29,7 +29,6 @@ import { Effect, Schema } from "effect"
 import {
   AgentConfig,
   ResolvedConfig,
-  type ResolvedConfigType,
   StreamPart,
   ToolRule,
 } from "@effect-flue/shared"
@@ -68,7 +67,7 @@ describe("ToolRule codec", () => {
   )
 })
 
-const resolvedConfigPins: ReadonlyArray<ResolvedConfigType> = [
+const resolvedConfigPins: ReadonlyArray<ResolvedConfig> = [
   {
     defaultModel: "tencent/hy3:free",
     rules: {},

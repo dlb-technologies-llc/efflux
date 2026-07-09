@@ -10,6 +10,7 @@ import {
   ModelsResponse,
   parseAgentModel,
   type RulesMap,
+  ToolRule,
 } from "@effect-flue/shared"
 import { Effect, Schema } from "effect"
 import { LanguageModel, Prompt } from "effect/unstable/ai"
@@ -29,7 +30,7 @@ import type { SkillsBucket } from "./Skills.ts"
 const autoApproveRules = (rules: RulesMap): RulesMap =>
   Object.fromEntries(
     Object.entries(rules).map(
-      ([name, rule]): [string, "allow" | "ask" | "deny"] => [name, rule === "ask" ? "allow" : rule],
+      ([name, rule]): [string, typeof ToolRule.Type] => [name, rule === "ask" ? "allow" : rule],
     ),
   )
 
