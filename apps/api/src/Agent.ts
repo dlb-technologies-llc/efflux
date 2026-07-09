@@ -194,16 +194,17 @@ export class Agent extends DurableObject<Env> {
     if (decoded._tag !== "approval-requested") {
       return { status: "not-approval-event" }
     }
-    // Reject if any approval-resolved already exists for this approvalId.
-    const resolvedRows = this.ctx.storage.sql
-      .exec("SELECT payload FROM journal WHERE type = 'approval-resolved'")
+    // Idempotency: reject if an approval-resolved already exists for this
+    // approvalId. One in-engine SQL check via json_extract on the payload —
+    // NOT a scan-and-schema-decode of every resolved row in JS. Still no
+    // `await`, so the check-and-insert stays atomic.
+    const alreadyResolved = this.ctx.storage.sql
+      .exec(
+        "SELECT 1 FROM journal WHERE type = 'approval-resolved' AND json_extract(payload, '$.approvalId') = ? LIMIT 1",
+        decoded.approvalId,
+      )
       .toArray()
-    for (const r of resolvedRows) {
-      const d = decodeEventPayloadSync(JSON.parse(String(r.payload)))
-      if (d._tag === "approval-resolved" && d.approvalId === decoded.approvalId) {
-        return { status: "already-resolved" }
-      }
-    }
+    if (alreadyResolved.length > 0) return { status: "already-resolved" }
     const resolved = new JournalApprovalResolved({
       turn: decoded.turn,
       approvalId: decoded.approvalId,
