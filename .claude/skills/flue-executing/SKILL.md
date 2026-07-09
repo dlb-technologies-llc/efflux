@@ -123,9 +123,7 @@ sibling agents share this worktree. Do NOT run `bun run typecheck` or deploy —
 cd <WORKTREE_PATH> && bun run typecheck
 ```
 
-Fix failures before moving on.
-
-**Expected-red windows (contract-first ordering).** If the plan header declares an `> **Expected-red:**` typecheck error (a group/endpoint registered in an early wave whose handlers are wired in a later wave), match it EXACTLY — same `file:line` + message — and treat only that one error as tolerated for the intervening waves; ANY other error is a real failure to fix now. The tree MUST be fully green by the declared wiring wave; if it is not, stop and investigate. Commit these intervening waves with a message line noting the expected-until-wave-N error so the red typecheck isn't mistaken for a broken commit.
+Fix failures before moving on. A wave boundary should be typecheck-clean by construction — `/flue-planning` co-locates an interface with its consumers in one wave precisely so no boundary is left red; a failure here is a real defect, not an expected structural gap.
 
 **4b. Post-wave compliance check** — sub-agent self-audits are unreliable; grep the wave's changed `.ts`/`.tsx` files centrally:
 
@@ -173,3 +171,17 @@ If the diff has any runtime surface, run `/flue-verifying` from the worktree (`c
 4. `cd <WORKTREE_PATH> && gh pr create` against `staging`. The body uses **`Refs #N`** for related issues — NEVER `Closes #N` here: issues close when `/flue-releasing`'s staging→main promotion PR (which carries the `Closes #N` lines) merges, not when the feature lands on staging. The self-contained rule extends here: no other project/client/codebase named in commit messages or the PR body.
 5. Update the plan: Status → `PR_CREATED` and record a `> **PR:** <url>` line — edit ONLY the header block with an anchored edit (status strings like `DRAFT` can legitimately appear inside task bodies; a global replace once corrupted a plan).
 6. Display the PR URL and the worktree path — the worktree stays alive until `/flue-cleaning-up` removes it post-merge.
+
+### Step 7: If the PR later conflicts with staging
+
+Feature PRs stack on `staging` and sessions run concurrently, so a PR routinely flips to CONFLICTING when another feature merges first. When asked to fix conflicts (or when `gh pr view <n> --json mergeable` reports `CONFLICTING`), resolve from the SAME still-alive worktree — NEVER the main checkout:
+
+```bash
+git -C <WORKTREE_PATH> fetch origin staging
+git -C <WORKTREE_PATH> merge origin/staging   # a MERGE commit — never rebase/squash
+```
+
+- **Both-added conflicts are the common case and almost always "keep BOTH sides":** two features each appended an endpoint/handler/import at the same spot. Merge the import lists into one, keep both endpoint blocks, keep both handlers (and preserve YOUR wrapping — e.g. if you wrapped a handler the other side left bare, keep your wrapped version, not theirs).
+- **Trust the central `bun run typecheck` over mid-merge editor diagnostics** — the LSP reports stale phantom errors (missing exports, unread imports, conflict-marker leftovers) until the merge is fully staged and reprocessed; a clean `bun run typecheck` (EXIT 0) is the authority.
+- **RE-VERIFY the merged runtime live**, not just typecheck: the merge pulls in the other feature's runtime code, so redeploy from the worktree and re-smoke YOUR surface plus one cross-feature sanity hit (per `/flue-verifying`, including the deploy-clobber guard). Typecheck-green is not verification.
+- Push (`git -C <WORKTREE_PATH> push`); the PR recomputes to `MERGEABLE`.
