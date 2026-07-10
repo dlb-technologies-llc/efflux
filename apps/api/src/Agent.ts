@@ -1,4 +1,4 @@
-import { JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@effect-flue/shared"
+import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"
@@ -243,6 +243,29 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
+  /** Input-token count of the most recent `usage` event — the current-context-size proxy the compaction trigger reads — or null when no turn has recorded usage yet. */
+  async latestUsageTokens(): Promise<number | null> {
+    const row = this.ctx.storage.sql
+      .exec("SELECT payload FROM journal WHERE type = 'usage' ORDER BY seq DESC LIMIT 1")
+      .toArray()[0]
+    if (row === undefined) return null
+    const decoded = decodeEventPayloadSync(JSON.parse(String(row.payload)))
+    if (decoded._tag !== "usage") return null
+    return decoded.inputTokens ?? decoded.totalTokens ?? null
+  }
+
+  /** Items of the latest `todo-write` event (empty when none), as PLAIN objects across the RPC fence (Schema.Class instances cannot cross it — see ISSUES.md). */
+  async latestTodos(): Promise<Array<{ content: string; status: string }>> {
+    const row = this.ctx.storage.sql
+      .exec("SELECT payload FROM journal WHERE type = 'todo-write' ORDER BY seq DESC LIMIT 1")
+      .toArray()[0]
+    if (row === undefined) return []
+    const decoded = decodeEventPayloadSync(JSON.parse(String(row.payload)))
+    return decoded._tag === "todo-write"
+      ? decoded.items.map((i) => ({ content: i.content, status: i.status }))
+      : []
+  }
+
   /**
    * History as a fold over journal events grouped by turn (never by seq adjacency — concurrent
    * prompts interleave appends): each turn's user message, then its `assistant-text` concatenated.
@@ -275,8 +298,24 @@ export class Agent extends DurableObject<Env> {
         }
       }
     }
+    const compRow = this.ctx.storage.sql
+      .exec("SELECT payload FROM journal WHERE type = 'compaction' ORDER BY seq DESC LIMIT 1")
+      .toArray()[0]
+    let throughSeq = -1
+    let summary: string | undefined
+    if (compRow !== undefined) {
+      const d = decodeEventPayloadSync(JSON.parse(String(compRow.payload)))
+      if (d._tag === "compaction") {
+        throughSeq = d.throughSeq
+        summary = d.summary
+      }
+    }
     const out: Array<PlainMessage> = []
+    if (summary !== undefined) {
+      out.push({ role: "user", content: COMPACTION_SUMMARY_PREFIX + summary })
+    }
     for (const key of order) {
+      if (key <= throughSeq) continue
       const turn = turns.get(key)
       if (turn === undefined) continue
       if (turn.userContent !== undefined) {

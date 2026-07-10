@@ -16,9 +16,10 @@ import { Effect, Schema } from "effect"
 import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
-import type { AgentNamespace } from "./AgentStub.ts"
 import { AgentStub } from "./AgentStub.ts"
+import { compactIfNeeded } from "./Compaction.ts"
 import { loadResolvedConfig, resolveConfig } from "./Defaults.ts"
+import { fetchAllEvents } from "./JournalRead.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
@@ -28,24 +29,7 @@ import { buildSessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 import { runStreamingTurn } from "./StreamingTurn.ts"
 import { runSubagent } from "./Subagent.ts"
-
-/** Read the whole journal as decoded events (paged). Decode failures die: rows were validated at append time, so corruption is a bug. */
-const fetchAllEvents = (
-  agent: ReturnType<AgentNamespace["getByName"]>,
-): Effect.Effect<Array<ReconstructEvent>> =>
-  Effect.gen(function* () {
-    const events: Array<ReconstructEvent> = []
-    let after = 0
-    for (;;) {
-      const page = yield* Effect.promise(() => agent.readJournal({ after, limit: 500 }))
-      for (const row of page.events) {
-        const event = yield* decodeEventPayload(JSON.parse(row.payload)).pipe(Effect.orDie)
-        events.push({ seq: row.seq, event })
-      }
-      if (page.nextAfter === null) return events
-      after = page.nextAfter
-    }
-  })
+import { formatTodos } from "./Todo.ts"
 
 /** The turn's `user-message` snapshot (skill/role/model), narrowed, if present. */
 const findUserMessage = (events: ReadonlyArray<ReconstructEvent>, turn: number) => {
@@ -60,12 +44,21 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const resolved = yield* loadResolvedConfig(agent)
+        const effectiveModel = payload.model ?? resolved.defaultModel
+        yield* compactIfNeeded(agent, effectiveModel, resolved.compactionThreshold)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
+        const todoItems = yield* Effect.promise(() => agent.latestTodos())
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
-        const messages = composeMessages({ skillBody, roleBody, history, message: payload.message })
+        const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
+        const messages = composeMessages({
+          skillBody,
+          roleBody,
+          ...(todos !== undefined ? { todos } : {}),
+          history,
+          message: payload.message,
+        })
         const turn = yield* openTurn(agent, payload)
-        const effectiveModel = payload.model ?? resolved.defaultModel
 
         const result = yield* runPromptTurn({
           agent,
@@ -166,13 +159,22 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const resolved = yield* loadResolvedConfig(agent)
+        const effectiveModel = payload.model ?? resolved.defaultModel
+        yield* compactIfNeeded(agent, effectiveModel, resolved.compactionThreshold)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
+        const todoItems = yield* Effect.promise(() => agent.latestTodos())
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
-        const messages = composeMessages({ skillBody, roleBody, history, message: payload.message })
+        const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
+        const messages = composeMessages({
+          skillBody,
+          roleBody,
+          ...(todos !== undefined ? { todos } : {}),
+          history,
+          message: payload.message,
+        })
         const turn = yield* openTurn(agent, payload)
-        const effectiveModel = payload.model ?? resolved.defaultModel
 
         return runStreamingTurn({
           agent,
@@ -214,6 +216,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const userMsg = findUserMessage(events, res.turn)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
         const effectiveModel = userMsg?.model ?? resolved.defaultModel
+        const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
 
         const initialPrompt = reconstructForContinuation({
           events,
@@ -223,6 +227,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
           skillBody,
           roleBody,
+          ...(todos !== undefined ? { todos } : {}),
         })
 
         return runStreamingTurn({

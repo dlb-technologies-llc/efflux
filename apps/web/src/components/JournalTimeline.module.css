@@ -240,3 +240,47 @@
   font-variant-numeric: tabular-nums;
   opacity: 0.75;
 }
+
+.rowTodo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-left: 2px solid rgba(127, 127, 127, 0.4);
+}
+
+.todoItems {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.todoItem {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.todoMark {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.todoContent {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.compactionDivider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  border-top: 1px dashed rgba(127, 127, 127, 0.35);
+  border-bottom: 1px dashed rgba(127, 127, 127, 0.35);
+}

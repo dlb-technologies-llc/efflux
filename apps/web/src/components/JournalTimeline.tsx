@@ -27,7 +27,11 @@ const groupByTurn = (events: ReadonlyArray<JournalEvent>): ReadonlyArray<TurnGro
   }
   for (const envelope of events) {
     if (envelope.event._tag === "user-message") ensure(envelope.seq).header = envelope
-    else if (envelope.event._tag !== "hop-messages" && envelope.event._tag !== "session-closed")
+    else if (
+      envelope.event._tag !== "hop-messages" &&
+      envelope.event._tag !== "session-closed" &&
+      envelope.event._tag !== "compaction"
+    )
       ensure(envelope.event.turn).events.push(envelope)
   }
   return Array.from(byTurn.values()).sort((a, b) => a.turn - b.turn)
@@ -46,6 +50,13 @@ const turnTotals = (events: ReadonlyArray<JournalEvent>): { tokens: number; cost
     cost += event.cost ?? 0
   }
   return { tokens, cost, hasUsage }
+}
+
+/** Status glyph for a `todo-write` item; indexed with `?? ""` so an unknown status degrades to no marker. */
+const todoGlyphs: Record<string, string> = {
+  pending: "☐",
+  in_progress: "◐",
+  completed: "☑",
 }
 
 /** Render one journal envelope by its payload `_tag`; the union narrows through the `switch`, no casts. */
@@ -112,7 +123,23 @@ const renderEvent = (envelope: JournalEvent): React.ReactNode => {
       return <div className={styles.rowDone}>done — {event.finishReason}</div>
     case "error":
       return <div className={styles.rowError}>error: {event.message}</div>
+    case "todo-write":
+      return (
+        <div className={styles.rowTodo ?? ""}>
+          <span className={styles.label ?? ""}>todo</span>
+          <div className={styles.todoItems ?? ""}>
+            {event.items.map((item, index) => (
+              <div key={index} className={styles.todoItem ?? ""}>
+                <span className={styles.todoMark ?? ""}>{todoGlyphs[item.status] ?? ""}</span>
+                <span className={styles.todoContent ?? ""}>{item.content}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
     case "hop-messages":
+      return null
+    case "compaction":
       return null
   }
 }
@@ -144,32 +171,48 @@ export function JournalTimeline() {
         ),
         onSuccess: (success) => {
           const turns = groupByTurn(success.value)
-          if (turns.length === 0) return <p className={styles.pending}>No events yet.</p>
+          const compactions = success.value.flatMap((envelope) =>
+            envelope.event._tag === "compaction"
+              ? [
+                  <div key={envelope.seq} className={styles.compactionDivider ?? ""}>
+                    🗜 context compacted through #{envelope.event.throughSeq}
+                  </div>,
+                ]
+              : [],
+          )
+          if (turns.length === 0 && compactions.length === 0) {
+            return <p className={styles.pending}>No events yet.</p>
+          }
           return (
-            <ol className={styles.turns}>
-              {turns.map((turn) => {
-                const totals = turnTotals(turn.events)
-                return (
-                  <li key={turn.turn} className={styles.turn}>
-                    <div className={styles.turnLabel}>turn {turn.turn}</div>
-                    {turn.header !== undefined ? (
-                      <div className={styles.row}>{renderEvent(turn.header)}</div>
-                    ) : null}
-                    {turn.events.map((envelope) => (
-                      <div key={envelope.seq} className={styles.row}>
-                        {renderEvent(envelope)}
-                      </div>
-                    ))}
-                    {totals.hasUsage ? (
-                      <div className={styles.turnFooter}>
-                        <span>{formatTokens(totals.tokens)} tokens</span>
-                        <span>{formatUsd(totals.cost)}</span>
-                      </div>
-                    ) : null}
-                  </li>
-                )
-              })}
-            </ol>
+            <>
+              {compactions}
+              {turns.length === 0 ? null : (
+                <ol className={styles.turns}>
+                  {turns.map((turn) => {
+                    const totals = turnTotals(turn.events)
+                    return (
+                      <li key={turn.turn} className={styles.turn}>
+                        <div className={styles.turnLabel}>turn {turn.turn}</div>
+                        {turn.header !== undefined ? (
+                          <div className={styles.row}>{renderEvent(turn.header)}</div>
+                        ) : null}
+                        {turn.events.map((envelope) => (
+                          <div key={envelope.seq} className={styles.row}>
+                            {renderEvent(envelope)}
+                          </div>
+                        ))}
+                        {totals.hasUsage ? (
+                          <div className={styles.turnFooter}>
+                            <span>{formatTokens(totals.tokens)} tokens</span>
+                            <span>{formatUsd(totals.cost)}</span>
+                          </div>
+                        ) : null}
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+            </>
           )
         },
       })}

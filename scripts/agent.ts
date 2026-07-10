@@ -41,6 +41,10 @@ export const formatEvent = ({ createdAt, event, seq }: JournalEvent): string => 
       return `${head}  turn=${event.turn}  ${truncate(event.message, 200)}`
     case "session-closed":
       return `${head}  reason=${event.reason}`
+    case "todo-write":
+      return `${head}  turn=${event.turn}  ${event.items.length} item(s): ${truncate(event.items.map((item) => `[${item.status}] ${item.content}`).join("; "), 160)}`
+    case "compaction":
+      return `${head}  throughSeq=${event.throughSeq}  ${truncate(JSON.stringify(event.summary), 160)}`
   }
 }
 
