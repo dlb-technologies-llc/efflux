@@ -71,6 +71,45 @@ const recordAttachFrame = (
   })
 
 /**
+ * Bounded, replace-not-append `/attach` reconnect loop shared by `streamAtom`
+ * (POST-drop resume) and `resumeAtom` (load-time resume). Each attempt opens a
+ * bare `GET /attach`, `Stream.scan`s from a FRESH `noParts` seed so it REPLACES
+ * the transcript (appending would double-render the dropped hop), and recurses
+ * only while the attempt made progress and saw no terminal/park. `sawTerminal`
+ * is threaded so a `done`/`error` frame permanently halts reconnects.
+ */
+const attachTail = (
+  client: HttpClient.HttpClient,
+  attachUrl: string,
+  sawTerminal: Ref.Ref<boolean>,
+  attemptsLeft: number,
+): Stream.Stream<ReadonlyArray<StreamPart>> =>
+  Stream.unwrap(
+    Effect.gen(function*() {
+      if (attemptsLeft <= 0) return Stream.empty
+      if (yield* Ref.get(sawTerminal)) return Stream.empty
+      yield* Effect.sleep(ATTACH_BACKOFF)
+      const progress = yield* Ref.make(false)
+      const stopped = yield* Ref.make(false)
+      const segment = streamAgentSseFramed(client.get(attachUrl), StreamPart).pipe(
+        Stream.tap((frame) => recordAttachFrame(frame.data, sawTerminal, stopped, progress)),
+        Stream.map((frame) => frame.data),
+        Stream.scan(noParts, appendPart),
+        Stream.catchCause(() => Stream.empty),
+      )
+      const continuation = Stream.unwrap(
+        Effect.gen(function*() {
+          if (yield* Ref.get(sawTerminal)) return Stream.empty
+          if (yield* Ref.get(stopped)) return Stream.empty
+          if (!(yield* Ref.get(progress))) return Stream.empty
+          return attachTail(client, attachUrl, sawTerminal, attemptsLeft - 1)
+        }),
+      )
+      return Stream.concat(segment, continuation)
+    }),
+  )
+
+/**
  * Stream atom: POST the prompt to `/agents/:name/:id/stream` and emit the
  * accumulated `StreamPart[]` after each event, transparently resuming an
  * in-flight turn if the POST stream drops before a terminal frame.
@@ -119,34 +158,27 @@ export const streamAtom = runtime.fn(
           Stream.scan(noParts, appendPart),
           Stream.catchCause(() => Stream.empty),
         )
-        const attachTail = (attemptsLeft: number): typeof postSegment =>
-          Stream.unwrap(
-            Effect.gen(function*() {
-              if (attemptsLeft <= 0) return Stream.empty
-              if (yield* Ref.get(sawTerminal)) return Stream.empty
-              yield* Effect.sleep(ATTACH_BACKOFF)
-              const progress = yield* Ref.make(false)
-              const stopped = yield* Ref.make(false)
-              const segment = streamAgentSseFramed(client.get(attachUrl), StreamPart).pipe(
-                Stream.tap((frame) => recordAttachFrame(frame.data, sawTerminal, stopped, progress)),
-                Stream.map((frame) => frame.data),
-                Stream.scan(noParts, appendPart),
-                Stream.catchCause(() => Stream.empty),
-              )
-              const continuation = Stream.unwrap(
-                Effect.gen(function*() {
-                  if (yield* Ref.get(sawTerminal)) return Stream.empty
-                  if (yield* Ref.get(stopped)) return Stream.empty
-                  if (!(yield* Ref.get(progress))) return Stream.empty
-                  return attachTail(attemptsLeft - 1)
-                }),
-              )
-              return Stream.concat(segment, continuation)
-            }),
-          )
-        return Stream.concat(postSegment, attachTail(MAX_ATTACH_ATTEMPTS))
+        return Stream.concat(postSegment, attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS))
       }),
     ),
+)
+
+/**
+ * Load-time resume: open a bare `GET /attach` and live-tail the session's latest
+ * turn into an accumulated `StreamPart[]`, sharing `streamAtom`'s replace-not-
+ * append `attachTail` loop (fresh `sawTerminal`, so the first attach fires). The
+ * caller starts this only when `latestTurnInFlight` says the newest turn has no
+ * terminal in the journal, so a completed session never replays.
+ */
+export const resumeAtom = runtime.fn((args: SessionArgs) =>
+  Stream.unwrap(
+    Effect.gen(function*() {
+      const client = yield* HttpClient.HttpClient
+      const sawTerminal = yield* Ref.make(false)
+      const attachUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/attach`
+      return attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS)
+    }),
+  ),
 )
 
 const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)

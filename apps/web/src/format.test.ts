@@ -22,9 +22,17 @@
  *
  * @module
  */
+import { Message } from "@efflux/shared"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { formatParams, formatRelativeTime, formatTokens, formatUsd, prettyParams } from "./format.ts"
+import {
+  formatParams,
+  formatRelativeTime,
+  formatTokens,
+  formatUsd,
+  historyForResume,
+  prettyParams,
+} from "./format.ts"
 
 const usdCases: ReadonlyArray<readonly [number, string]> = [
   [0, "$0.0000"],
@@ -110,5 +118,44 @@ describe("formatRelativeTime", () => {
       const now = Date.now()
       const labels = relativeOffsetCases.map(([offsetMs]) => formatRelativeTime(now - offsetMs))
       expect(labels).toEqual(["just now", "just now", "5m ago", "59m ago", "2h ago", "23h ago", "5d ago"])
+    }))
+})
+
+describe("historyForResume", () => {
+  it.effect("empty -> empty (identity)", () =>
+    Effect.sync(() => expect(historyForResume([])).toStrictEqual([])))
+
+  it.effect("no user message -> identity (unchanged)", () =>
+    Effect.sync(() => {
+      const a = new Message({ role: "assistant", content: "summary" })
+      expect(historyForResume([a])).toStrictEqual([a])
+    }))
+
+  it.effect("ends with user prompt only -> keeps everything up to the last user", () =>
+    Effect.sync(() => {
+      const u1 = new Message({ role: "user", content: "u1" })
+      const a1 = new Message({ role: "assistant", content: "a1" })
+      const u2 = new Message({ role: "user", content: "u2" })
+      expect(historyForResume([u1, a1, u2])).toStrictEqual([u1, a1, u2])
+    }))
+
+  it.effect("ends with user + partial assistant -> drops the trailing assistant", () =>
+    Effect.sync(() => {
+      const u1 = new Message({ role: "user", content: "u1" })
+      const a1 = new Message({ role: "assistant", content: "a1" })
+      const u2 = new Message({ role: "user", content: "u2" })
+      const a2 = new Message({ role: "assistant", content: "a2" })
+      expect(historyForResume([u1, a1, u2, a2])).toStrictEqual([u1, a1, u2])
+    }))
+
+  it.effect("prior completed turns preserved -> only the last turn's assistant dropped", () =>
+    Effect.sync(() => {
+      const u1 = new Message({ role: "user", content: "u1" })
+      const a1 = new Message({ role: "assistant", content: "a1" })
+      const u2 = new Message({ role: "user", content: "u2" })
+      const a2 = new Message({ role: "assistant", content: "a2" })
+      const u3 = new Message({ role: "user", content: "u3" })
+      const a3 = new Message({ role: "assistant", content: "a3" })
+      expect(historyForResume([u1, a1, u2, a2, u3, a3])).toStrictEqual([u1, a1, u2, a2, u3])
     }))
 })
