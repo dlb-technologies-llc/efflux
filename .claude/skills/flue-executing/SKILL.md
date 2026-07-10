@@ -60,11 +60,12 @@ Task IDs are unique; no two tasks in the same wave touch the same file; every de
    ```bash
    (cd .claude/worktrees/<plan-name> && bun install)
    ```
-5. Copy local secrets — **REQUIRED, not best-effort**: the generated `Env` derives `OPENROUTER_API_KEY` from `.dev.vars`, so `bun run typecheck` FAILS in a worktree that lacks it:
+5. Copy local secrets — **REQUIRED, not best-effort**: `cf-typegen` derives the generated `Env` from `.dev.vars`'s KEYS (`OPENROUTER_API_KEY`, `API_TOKEN`, …), so `bun run typecheck` FAILS in a worktree whose `.dev.vars` is missing OR merely stale — a present-but-incomplete `.dev.vars` breaks on an `env.<MISSING>` reference (e.g. `index.ts`'s `env.API_TOKEN`), not just `wrangler dev`. Copy AND verify completeness against `.dev.vars.example`:
    ```bash
    cp .dev.vars .claude/worktrees/<plan-name>/.dev.vars
+   comm -23 <(grep -oE '^[A-Z_]+' .dev.vars.example | sort -u) <(grep -oE '^[A-Z_]+' .claude/worktrees/<plan-name>/.dev.vars | sort -u)
    ```
-   If the main checkout has no `.dev.vars`, STOP and have the user create it from `.dev.vars.example` — don't proceed to a guaranteed-broken typecheck.
+   If the main checkout has no `.dev.vars`, OR the `comm` prints any key (present in `.dev.vars.example` but missing locally — the compaction-todo #76 run hit exactly this: `API_TOKEN`, added with auth in #73, was absent from a pre-#73 `.dev.vars` and reddened the worktree typecheck), STOP and have the user add it from `.dev.vars.example` — existence alone is insufficient; `.dev.vars` must be COMPLETE. Don't proceed to a guaranteed-broken typecheck.
 6. **Init the pinned Effect submodule** — a fresh worktree has an empty `.claude/effect-smol`, which silently breaks the Effect-API-truth lookup:
    ```bash
    git -C .claude/worktrees/<plan-name> submodule update --init .claude/effect-smol
