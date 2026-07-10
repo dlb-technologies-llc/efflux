@@ -40,7 +40,7 @@ function ToolRow({ tool, rules }: { readonly tool: ToolInfo; readonly rules: Rul
       onOpenChange={setOpen}
       className="border border-border rounded-lg bg-surface-2 overflow-hidden"
     >
-      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md">
         <ChevronRightIcon
           className={cn(
             "size-3.5 shrink-0 text-muted-foreground transition-transform",

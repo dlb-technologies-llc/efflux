@@ -6,6 +6,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
+import { formatParams, prettyParams } from "../format.ts"
 import { StatusPill } from "./StatusPill.tsx"
 
 /** Schema-agnostic view of a single tool invocation; callers map their own shapes to this. */
@@ -20,9 +21,8 @@ export interface ToolCallView {
 /** A collapsible mono card summarizing a tool call, expanding to its output well. */
 export function ToolCallCard({ call }: { call: ToolCallView }) {
   const [open, setOpen] = React.useState(false)
-  const preview = call.params !== undefined ? JSON.stringify(call.params) : ""
-  const payload = call.result ?? call.params
-  const body = payload !== undefined ? JSON.stringify(payload, null, 2) : ""
+  const preview = formatParams(call.params)
+  const body = prettyParams(call.result ?? call.params)
   const pill = call.running ? (
     <StatusPill state="accent" label="running" dot />
   ) : call.isFailure ? (
@@ -36,7 +36,7 @@ export function ToolCallCard({ call }: { call: ToolCallView }) {
       onOpenChange={setOpen}
       className="border border-border rounded-lg bg-surface-2 overflow-hidden"
     >
-      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 font-mono text-xs text-left">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 font-mono text-xs text-left outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md">
         <ChevronRightIcon
           className={cn(
             "size-3.5 shrink-0 text-muted-foreground transition-transform",

@@ -77,8 +77,6 @@ export function Chat() {
     return [view]
   })
 
-  const isThinking = pending && streamingText === "" && toolViews.length === 0
-
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
@@ -172,20 +170,11 @@ export function Chat() {
       <div ref={scrollRegionRef} className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="flex-1 min-h-0">
           <div className="flex flex-col gap-4 p-4">
-            <AsyncBoundary
-              result={historyResult}
-              empty={
-                <p className="text-muted-foreground text-sm">No messages yet — say hello below.</p>
-              }
-            >
+            <AsyncBoundary result={historyResult}>
               {(value) => <MessageList messages={value.history} />}
             </AsyncBoundary>
             {streamActive || pending ? (
-              isThinking ? (
-                <p className="text-muted-foreground text-sm">thinking…</p>
-              ) : (
-                <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
-              )
+              <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
             ) : null}
             {awaitingApproval ? (
               <StatusPill state="warning" dot label="awaiting approval — act in Approvals" />

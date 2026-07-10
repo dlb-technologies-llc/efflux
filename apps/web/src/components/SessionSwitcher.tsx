@@ -179,6 +179,17 @@ function ModelCombobox() {
   const model = useAtomValue(selectedModelAtom)
   const setModel = useAtomSet(selectedModelAtom)
   const [open, setOpen] = React.useState(false)
+  const [draft, setDraft] = React.useState(model)
+
+  const commit = (value: string) => {
+    setModel(value.slice(0, 128))
+    setOpen(false)
+  }
+
+  const toggleOpen = () => {
+    if (!open) setDraft(model)
+    setOpen((value) => !value)
+  }
 
   return (
     <div className="grid gap-1.5">
@@ -189,7 +200,7 @@ function ModelCombobox() {
         role="combobox"
         aria-expanded={open}
         className="w-full justify-between font-mono text-xs"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggleOpen}
       >
         <span className={cn("truncate", model === "" && "text-muted-foreground")}>
           {model === "" ? "session default" : model}
@@ -199,21 +210,27 @@ function ModelCombobox() {
       {open ? (
         <Command className="rounded-md border border-border bg-surface-2">
           <CommandInput
-            value={model}
-            onValueChange={setModel}
+            value={draft}
+            onValueChange={setDraft}
+            onBlur={() => commit(draft)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault()
+                event.stopPropagation()
+                commit(draft)
+              }
+            }}
             placeholder="Search or type any model id"
           />
           <CommandList>
             <CommandEmpty>
-              <span className="font-mono text-xs">Using “{model}”</span>
+              <span className="font-mono text-xs">Using “{draft}”</span>
             </CommandEmpty>
             <CommandGroup>
               <CommandItem
                 value={MODEL_DEFAULT}
-                onSelect={() => {
-                  setModel("")
-                  setOpen(false)
-                }}
+                onMouseDown={(event) => event.preventDefault()}
+                onSelect={() => commit("")}
               >
                 <span className="text-muted-foreground">session default</span>
                 <CheckIcon className={cn("ml-auto", model === "" ? "opacity-100" : "opacity-0")} />
@@ -222,10 +239,8 @@ function ModelCombobox() {
                 <CommandItem
                   key={id}
                   value={id}
-                  onSelect={() => {
-                    setModel(id)
-                    setOpen(false)
-                  }}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onSelect={() => commit(id)}
                 >
                   <span className="font-mono text-xs">{id}</span>
                   <CheckIcon className={cn("ml-auto", model === id ? "opacity-100" : "opacity-0")} />

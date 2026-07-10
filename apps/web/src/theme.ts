@@ -18,8 +18,12 @@ function isTheme(value: string | null): value is Theme {
 /** Seeds the theme from persisted `localStorage`, defaulting to `"dark"` when unset, invalid, or unavailable. */
 function readSeed(): Theme {
   if (typeof localStorage === "undefined") return "dark"
-  const stored = localStorage.getItem(STORAGE_KEY)
-  return isTheme(stored) ? stored : "dark"
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    return isTheme(stored) ? stored : "dark"
+  } catch {
+    return "dark"
+  }
 }
 
 /** Resolves `"system"` to a concrete appearance via `prefers-color-scheme`; explicit modes pass through. */
@@ -41,7 +45,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       document.documentElement.classList.remove("dark")
     }
-    localStorage.setItem(STORAGE_KEY, theme)
+    try {
+      localStorage.setItem(STORAGE_KEY, theme)
+    } catch {}
   }, [theme])
   return React.createElement(React.Fragment, null, children)
 }

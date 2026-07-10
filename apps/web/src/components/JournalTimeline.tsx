@@ -249,18 +249,29 @@ export function JournalTimeline() {
       <AsyncBoundary result={journalResult} onRetry={refresh}>
         {(events) => {
           const turns = groupByTurn(events)
-          const compactions = events.flatMap((envelope) =>
-            envelope.event._tag === "compaction"
-              ? [<CompactionDivider key={envelope.seq} throughSeq={envelope.event.throughSeq} />]
-              : [],
-          )
-          if (turns.length === 0 && compactions.length === 0) {
+          const items: Array<
+            | { readonly kind: "turn"; readonly seq: number; readonly turn: TurnGroup }
+            | { readonly kind: "compaction"; readonly seq: number; readonly throughSeq: number }
+          > = []
+          for (const turn of turns) {
+            items.push({ kind: "turn", seq: turn.turn, turn })
+          }
+          for (const envelope of events) {
+            if (envelope.event._tag === "compaction") {
+              items.push({ kind: "compaction", seq: envelope.seq, throughSeq: envelope.event.throughSeq })
+            }
+          }
+          items.sort((a, b) => a.seq - b.seq)
+          if (items.length === 0) {
             return <p className="m-0 text-sm text-muted-foreground">No events yet.</p>
           }
           return (
             <div className="flex flex-col gap-4">
-              {compactions}
-              {turns.map((turn) => {
+              {items.map((item) => {
+                if (item.kind === "compaction") {
+                  return <CompactionDivider key={`compaction-${item.seq}`} throughSeq={item.throughSeq} />
+                }
+                const turn = item.turn
                 const totals = turnTotals(turn.events)
                 const resultByCallId = new Map<string, JournalToolResult>()
                 for (const pair of toolCallResults(turn.events)) {
@@ -276,7 +287,7 @@ export function JournalTimeline() {
                   if (rendered !== null) rows.push({ key: String(envelope.seq), ...rendered })
                 }
                 return (
-                  <div key={turn.turn} className="grid gap-3 rounded-lg border border-border bg-surface-2 p-4">
+                  <div key={`turn-${turn.turn}`} className="grid gap-3 rounded-lg border border-border bg-surface-2 p-4">
                     <div className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                       turn {turn.turn}
                     </div>
