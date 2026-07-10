@@ -57,6 +57,13 @@ Then `grep` the dumped DOM for markers unique to your change (panel headings, ne
 
 Run this against the DEPLOYED worker, not local: `wrangler dev` (local) uses the placeholder `.dev.vars` key so model turns fail, and `wrangler dev --remote` no longer supports Durable Objects (`/agents`, `/journal`, chat, approvals all 500) — neither gives a full-fidelity FE demo. Confirm YOUR build is live first via the clobber-signature check in step 1 (poll a branch-unique route for a stable 200), then redeploy-and-recheck if a sibling session may have shipped over you.
 
+**Authed-data caveat (since #73's auth) — the deployed-SPA headless load verifies MOUNT ONLY.** The public bundle carries no token (`VITE_API_TOKEN` is empty in the deployed build), so a headless load of the deployed SPA 401s on every authed call (`/agents`, `/journal`, sessions) — it proves React mounted, NEVER that a new authed-data component (a journal timeline, a session list, an approvals card) actually *renders its data*. To verify that, run a **local Vite dev build pointed at the deployed worker**:
+- Temporarily set `apps/web/vite.config.ts`'s `server.proxy` targets to the deployed URL — `"/agents": { target: "<worker-url>", changeOrigin: true, secure: true }` (repeat for `/skills`, `/tasks`, `/meta`). This edit is TEMPORARY and NOT part of the PR — revert it after (`git checkout apps/web/vite.config.ts`).
+- Start it with the real token: `cd apps/web && VITE_API_TOKEN=<API_TOKEN> bunx vite --port 5173 --strictPort`.
+- Seed the session's data via the API (the CLI / curl), then headless-load `http://localhost:5173/?cb=$RANDOM`, `--dump-dom`, grep for the change's data markers (todo rows, a "context compacted" divider, …), and `Read` the screenshot. Zero "Failed to load" in the DOM = the token reached the worker.
+
+Footgun: kill the dev server by PORT (`lsof -ti tcp:5173 | xargs -r kill`), NEVER `pkill -f "vite --port 5173"` — that pattern also matches the shell command you're running it from and kills your own turn. And local `wrangler dev` binds `:8787`, which a sibling worktree's session may already hold ("Address already in use") — the local-Vite→deployed-worker path sidesteps that entirely. (Technique proven on compaction-todo #76, where the deployed SPA 401'd all journal data and only the local-Vite build rendered the new todo/compaction timeline.)
+
 ### 2. Smoke a session
 
 ```bash
