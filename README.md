@@ -75,28 +75,33 @@ OpenRouter's `LanguageModel` is provided at the Worker root (`aiLayer`) and cons
 
 ## How it's used
 
-Every endpoint is a method on the `AgentApi` HttpApi:
+Every endpoint is a method on the `AgentApi` HttpApi. All endpoints require an `Authorization: Bearer $API_TOKEN` header (the `API_TOKEN` deploy secret); requests without it get a 401.
 
 ```sh
 # Start (or continue) a session — default model
 curl https://<your-worker>/agents/support/user-abc \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"message": "How do I reset my password?"}'
 
 # Same id continues the conversation; caller picks the model
 curl https://<your-worker>/agents/support/user-abc \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{
     "message": "Summarize what we discussed",
     "model": "openai/gpt-5.2"
   }'
 
 # Inspect history
-curl https://<your-worker>/agents/support/user-abc
+curl https://<your-worker>/agents/support/user-abc \
+  -H "Authorization: Bearer $API_TOKEN"
 
-# Reset
-curl -X DELETE https://<your-worker>/agents/support/user-abc
+# Reset (clean slate; the session stays alive)
+curl -X DELETE https://<your-worker>/agents/support/user-abc \
+  -H "Authorization: Bearer $API_TOKEN"
 
 # Stream the next reply as SSE
 curl -N https://<your-worker>/agents/support/user-abc/stream \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"message": "Walk me through this slowly"}'
 ```
 
@@ -109,18 +114,22 @@ A separate top-level endpoint runs a one-shot "subagent" prompt and returns just
 ```sh
 # Raw passthrough — no system prompt
 curl https://<your-worker>/tasks \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"prompt": "echo: hello"}'
 
 # Overlay a skill (loaded from apps/api/skills/<name>.md in R2)
 curl https://<your-worker>/tasks \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"prompt": "Customer wants to know about refunds", "skill": "support"}'
 
 # Overlay both a skill and a role (loaded from apps/api/roles/<name>.md)
 curl https://<your-worker>/tasks \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{"prompt": "My login broke", "skill": "support", "role": "triager"}'
 
 # Override the model
 curl https://<your-worker>/tasks \
+  -H "Authorization: Bearer $API_TOKEN" \
   -d '{
     "prompt": "Summarize the password reset flow",
     "skill": "support",
@@ -129,6 +138,46 @@ curl https://<your-worker>/tasks \
 ```
 
 `skill` and `role` are both optional `SafeName`-bounded strings (alphanumeric / `-` / `_`, 1–64 chars) and resolve to **independent R2 keyspaces**: `skills/<name>.md` and `roles/<name>.md`. Passing the same string for both — e.g. `{"skill":"support","role":"support"}` — is legal and overlays two system messages from two distinct files. The R2 bucket is the same source the per-session `POST /agents/:name/:id` prompt path uses. Unknown values produce a structured 404 JSON body (`SkillNotFoundError` / `RoleNotFoundError`). Missing values produce a raw passthrough (no system message) — **note** that this differs from the `/agents/:name/:id` paths, which default `skill` to `"support"` when omitted. Adding a new skill or role is a file drop: write `apps/api/<skills|roles>/<name>.md` and redeploy — `scripts/upload-skills.ts` (run by the `predeploy` hook) uploads all `.md` files to R2 on every deploy (idempotent puts, no diffing).
+
+### Per-session config & tool approvals
+
+`GET /agents/:name/:id/config` returns the session's effective config — stored overrides merged over defaults — and `PUT` replaces those overrides wholesale. The config sets the default `model`, per-tool approval `rules`, the idle `ttlSeconds`, the `compactionThreshold`, and external `mcpServers`:
+
+```sh
+curl -X PUT https://<your-worker>/agents/support/user-abc/config \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -d '{
+    "defaultModel": "openai/gpt-5.2",
+    "rules": { "Bash": "ask", "web_fetch": "deny" },
+    "compactionThreshold": 40000
+  }'
+```
+
+Every tool carries an `allow` / `ask` / `deny` rule (default: `Bash` is `ask`, everything else `allow`). A `deny` tool refuses the call in-band. An `ask` tool **parks** the turn — the stream/prompt surfaces an approval request carrying the journal `eventId` of the parked call — and the caller resumes it with `POST /agents/:name/:id/approve/:eventId`, posting an `ApprovalDecision` (`approved` defaults true; a denial `reason` is fed back to the model). The approve call returns SSE and continues the parked turn from where it stopped.
+
+### The rest of the toolkit
+
+Beyond `Bash` and the file/search ops (`read_file`, `write_file`, `edit_file`, `glob`, `grep`, all on the same container exec seam), each session's model can call:
+
+- **`search_knowledge`** — queries the `efflux-knowledge` AI-Search index and grounds answers in the matching passages. Documents are uploaded with `PUT /knowledge/:name` and listed with their indexing status via `GET /knowledge` (indexing is asynchronous — poll until `completed`).
+- **`todo_write` / `todo_read`** — a task list the model maintains across turns, persisted in the journal as `todo-write` events and re-injected at the start of every turn.
+- **External MCP tools** — every server in the session's `mcpServers` config is connected on the turn's critical path and its `tools/list` merged into the toolkit as namespaced `mcp__<server>__<tool>` tools (subject to the same approval rules).
+
+**Context compaction** is automatic: once a turn's estimated token count crosses the session `compactionThreshold`, older turns are folded into prose and written as a `compaction` journal event; later prompts serve that summary plus the turns after the checkpoint, keeping long sessions within the model's context window.
+
+### Session lifecycle
+
+`DELETE /agents/:name/:id` takes an optional `?mode=`:
+
+- `reset` (default) — clean slate: clears the journal, config overrides, and the R2 workspace snapshot; the session stays alive.
+- `archive` — flushes the journal and workspace snapshot to R2 under `archives/<name>/<id>/…`, then destroys the container and wipes storage.
+- `purge` — the same teardown without writing an archive.
+
+An idle-TTL reaper backs this: the `Agent` DO slides a reaper alarm to `now + ttlSeconds` (default one day) on every activity, and when the alarm fires it archives-and-purges the session.
+
+### OpenAI-compatible `/v1` facade
+
+`POST /v1/chat/completions` (streaming and non-stream) and `GET /v1/models` drive a session through a stock OpenAI SDK — point the client's `baseURL` at `<your-worker>/v1`. The `model` field encodes the session address as `agent:<name>:<id>`; `GET /v1/models` lists every registered session in that form. `bun run openai-smoke <name> <id>` exercises the whole facade end to end.
 
 ## Working on this repo
 
@@ -166,7 +215,7 @@ In dev, Vite's proxy forwards `/agents/*` to the local Worker at `http://localho
 
 The **Worker handler** (not the DO) drives the stream: a hop-capped loop runs `LanguageModel.streamText`, encodes each `StreamPart` with `Sse.encoder`, and hands the frames to `HttpServerResponse.stream`. There is no `streamPrompt` method on the `Agent` DO.
 
-Persistence is **write-as-it-happens**, not flush-on-finalizer: the `user-message` event is journaled before the model call and each tool/hop event is appended to the DO journal as it occurs. This is deliberate — `workerd` runs **no** disconnect callbacks (no `abort` event, no stream `cancel()`) at the current compatibility date, so a `Stream.ensuring`/`Effect.ensuring` "persist on disconnect" finalizer would silently never run (see `ISSUES.md`). On a mid-stream client drop, no finalizer fires and the turn is left with no terminal `done` event — a legitimate **parked/incomplete** state that `scripts/verify-journal.ts` reports as PARKED (stream re-attach is #49's territory). The `flushPartialHopText` finalizer in `handlers.ts` covers only mid-hop *failures* (the model API dying between deltas), which interrupt through normal Effect channels and do run finalizers.
+Persistence is **write-as-it-happens**, not flush-on-finalizer: the `user-message` event is journaled before the model call and each tool/hop event is appended to the DO journal as it occurs. This is deliberate — `workerd` runs **no** disconnect callbacks (no `abort` event, no stream `cancel()`) at the current compatibility date, so a `Stream.ensuring`/`Effect.ensuring` "persist on disconnect" finalizer would silently never run (see `ISSUES.md`). On a mid-stream client drop, no finalizer fires and the turn is left with no terminal `done` event — a legitimate **parked/incomplete** state that `scripts/verify-journal.ts` reports as PARKED. Reattach is a live feature, so that drop is recoverable with zero lost frames: a returning client hits `GET /agents/:name/:id/attach` and resumes from the `Last-Event-ID` header (else `?after=`, else the latest turn in full), which replays the journaled frames as SSE and then live-tails the turn to completion. The `flushPartialHopText` finalizer in `handlers.ts` covers only mid-hop *failures* (the model API dying between deltas), which interrupt through normal Effect channels and do run finalizers.
 
 On the browser side the same `StreamPart` schema decodes each SSE frame. Unknown tags are filtered out, so a server that emits a new variant won't crash the UI — old clients just stop rendering the new frames.
 
@@ -187,7 +236,7 @@ bun run build                                 # builds the FE then typechecks th
 
 `.claude/effect-smol` is an optional pinned Effect-source submodule for AI-assisted development — `git submodule update --init .claude/effect-smol` to populate it; it is not a build prerequisite.
 
-`bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on `/agents/*` and `/tasks*`, so the same Worker serves both the HttpApi and the built FE on deploy.
+`bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on the API prefixes `/agents`, `/tasks`, `/skills`, `/v1`, `/knowledge`, and `/meta`, so the same Worker serves both the HttpApi and the built FE on deploy.
 
 ## Deploy
 
