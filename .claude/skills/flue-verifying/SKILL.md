@@ -1,16 +1,52 @@
 ---
 name: flue-verifying
-description: The deploy-and-test checklist — a change counts as verified only after exercising it against the live worker.
+description: The exercise-it-for-real checklist — a change counts as verified only after driving it against a running worker (local `bun run dev` by default, deployed for a final pass).
 argument-hint: "[worker-url]"
 ---
 
 # Verifying Changes
 
-A change is verified only when it has been exercised against the LIVE worker. `bun run typecheck` or a successful build alone NEVER counts as verification.
+A change is verified only when it has been exercised against a RUNNING worker. `bun run typecheck` or a successful build alone NEVER counts.
 
-There are no lint or test scripts in this repo — the live checklist below is the whole verification story.
+**Default to LOCAL (`bun run dev`), not the shared deployed worker.** Local `wrangler dev` (Miniflare) fully supports Durable Objects, R2, SQLite, and container Bash — and once `.dev.vars` holds REAL keys (below) a local worker gives full-fidelity behavior: real model turns, working auth, a rendering FE. Iterate the whole checklist against `http://localhost:8787` first. It is faster and sidesteps every failure mode that burned real time on the shared worker: **deploy races** (last deploy wins across concurrent sessions), **edge caching** of `index.html` (a fresh build's new asset hash can appear "stale" for seconds), and **multi-account `wrangler r2 object get`** silently querying the wrong Cloudflare account (looks like "the object doesn't exist" when it's fine). Deploy to the shared worker only for the FINAL pre-PR pass (step D), and re-run the clobber-signature check when you do.
 
-## Checklist
+> Historical note (now corrected): earlier versions of this skill said to run FE/verification against the DEPLOYED worker because "`wrangler dev` uses the placeholder `.dev.vars` key so model turns fail." That was only true when `.dev.vars` held placeholders. Populate `.dev.vars` with real keys and local is the better default. Only `wrangler dev --remote` lacks DO support — plain local `bun run dev` has it.
+
+There IS a test runner now (`bun run test` → `vitest run`) and a linter (`bun run lint` → `biome check`); run `bun run test` when the diff has unit-testable pure logic. Neither replaces the running-worker checklist below.
+
+### `.dev.vars` prerequisites (do this BEFORE `bun run dev` or any build)
+
+`.dev.vars` (gitignored; template `.dev.vars.example`) must hold three REAL values — a missing one fails in a way that wastes a cycle:
+
+| key | consumed by | symptom if missing/placeholder |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | Worker (model calls) | model turns 401 / `InvalidKey` |
+| `API_TOKEN` | Worker `AuthMiddleware` (since #73) — bearer on every `/agents/*`, `/v1/*`, `/skills`, `/knowledge` | `bun run typecheck` fails (`env.API_TOKEN` absent from generated `Env`); every authed call 401s |
+| `VITE_API_TOKEN` | **build-time** — Vite inlines it into the FE bundle as the FE's bearer | the whole web UI 401s (`Failed to load sessions: … 401`). **Must equal `API_TOKEN`.** Set in the shell/`.dev.vars` env when `bun run build`/`bun run dev` runs, or the shipped bundle carries an empty token |
+
+`VITE_API_TOKEN` is a Vite var, not a Worker binding — it is read from the process env at build time (Vite does not read `.dev.vars` itself). Export it (or source `.dev.vars`) before building/dev, and keep it equal to `API_TOKEN`. A fresh checkout/worktree starts with NONE of these — copy `.dev.vars` in and confirm all three keys before proceeding.
+
+## Local checklist (default — run against `http://localhost:8787`)
+
+Local Miniflare state is SEPARATE from the deployed worker — its R2 buckets start EMPTY and its Worker env comes from `.dev.vars`, so two one-time setup steps are needed or model turns and skill-loading fail in confusing ways (a missing skill surfaces in the FE as a `NoSuchElementError` on send, not as `SkillNotFoundError`):
+
+- **A real `OPENROUTER_API_KEY` in `.dev.vars`.** The template ships the placeholder `sk-or-your-key-here` (19 chars); with it, every model turn 401s ("Missing Authentication header") and the SSE stream is EMPTY (200, zero frames). The deployed worker hides this because it uses a real `wrangler secret`. Verify: `curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep '^OPENROUTER_API_KEY=' .dev.vars | cut -d= -f2-)"` returns key metadata, not a 401.
+- **Skills uploaded to LOCAL R2.** `scripts/upload-skills.ts` uses `--remote` (deployed bucket only). Populate local R2 once per fresh Miniflare state:
+  ```bash
+  for f in apps/api/skills/*.md; do bunx wrangler r2 object put "effect-flue-skills/skills/$(basename "$f")" --file "$f" --local; done
+  for f in apps/api/roles/*.md;  do bunx wrangler r2 object put "effect-flue-skills/roles/$(basename "$f")"  --file "$f" --local; done
+  ```
+
+Then:
+
+1. `set -a; . .dev.vars; set +a` (exports `OPENROUTER_API_KEY`, `API_TOKEN`, `VITE_API_TOKEN` for the build + smokes).
+2. `bun run dev` — wait for `Ready on http://localhost:8787` (builds the Sandbox container image first; needs Docker). Restart it after any `.dev.vars` edit — env is read at boot.
+3. Run steps 2–7 below with `<URL>` = `http://localhost:8787` and the bearer `$API_TOKEN` on every authed curl (`-H "Authorization: Bearer $API_TOKEN"`). For the FE-render check (step 1b) point headless Chrome at `http://localhost:8787` — local now renders a real, authed UI.
+4. R2 side effects are inspectable locally with `--local`: `bunx wrangler r2 object get <bucket>/<key> --local` (reads Miniflare state — no account ambiguity).
+
+Only after the local pass is green, do the deployed pass:
+
+## Deployed checklist (final pre-PR pass)
 
 Run every step; report a per-check pass/fail table at the end.
 
@@ -55,7 +91,7 @@ Then `grep` the dumped DOM for markers unique to your change (panel headings, ne
 
 **"Mounts" is not "works" for an auth-gated or data-driven UI.** React mounts fine while every data fetch 401s or errors, so a shell full of "Failed to load …" still renders a non-empty `#root`. Grep the dumped DOM for error markers too — `Failed to load`, `401`, `Decode error`, `Unauthorized` — and assert they are ABSENT; their presence is a FAIL even though the page "rendered". A curl/CLI smoke NEVER substitutes for this load. (best-practices-refactor #73: the curl auth checks all passed while the deployed FE showed "Failed to load sessions/history/journal" on every panel — the FE sent an empty bearer because it wasn't rebuilt with `VITE_API_TOKEN`.)
 
-Run this against the DEPLOYED worker, not local: `wrangler dev` (local) uses the placeholder `.dev.vars` key so model turns fail, and `wrangler dev --remote` no longer supports Durable Objects (`/agents`, `/journal`, chat, approvals all 500) — neither gives a full-fidelity FE demo. Confirm YOUR build is live first via the clobber-signature check in step 1 (poll a branch-unique route for a stable 200), then redeploy-and-recheck if a sibling session may have shipped over you.
+Run the FE-render check LOCALLY (`http://localhost:8787`) once the local setup above is done — real `.dev.vars` key + skills in local R2 make it a full-fidelity, authed UI. (`wrangler dev --remote` is the one mode to avoid — it drops Durable Object support, so `/agents`, `/journal`, chat, and approvals all 500; plain local `bun run dev` keeps DO.) Repeat against the DEPLOYED worker for the final pass — there, confirm YOUR build is live first via the clobber-signature check (poll a branch-unique route for a stable 200), and cache-bust `index.html` (`?cb=$RANDOM`) because the edge can serve the prior bundle's asset hash for a few seconds after deploy.
 
 ### 2. Smoke a session
 
