@@ -8,14 +8,17 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 
-import { historyAtom, noParts, streamAtom } from "../atoms.ts"
+import { historyAtom, noParts, resumeAtom, streamAtom } from "../atoms.ts"
+import { latestTurnInFlight } from "../atoms/journal.ts"
 import { failureMessage } from "../errors.ts"
+import { historyForResume } from "../format.ts"
 import {
   currentSessionAtom,
   journalVersionAtom,
   selectedModelAtom,
   selectedSkillAtom,
 } from "../session.ts"
+import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
@@ -43,6 +46,18 @@ export function Chat() {
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
 
+  const [resuming, setResuming] = React.useState(false)
+  const resumingRef = React.useRef(false)
+  const resumeHandledRef = React.useRef<string | null>(null)
+  const currentKeyRef = React.useRef<string | null>(null)
+  const sessionKey = `${session.name}/${session.id}`
+  const { result: journalResult } = useJournal(session)
+  const runResume = useAtomSet(resumeAtom, { mode: "promiseExit" })
+
+  React.useEffect(() => {
+    currentKeyRef.current = sessionKey
+  })
+
   const onResult = React.useCallback(
     (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
       if (AsyncResult.isSuccess(result)) setParts(result.value)
@@ -50,6 +65,15 @@ export function Chat() {
     [],
   )
   useAtomSubscribe(streamAtom, onResult)
+
+  const onResumeResult = React.useCallback(
+    (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
+      if (!resumingRef.current) return
+      if (AsyncResult.isSuccess(result)) setParts(result.value)
+    },
+    [],
+  )
+  useAtomSubscribe(resumeAtom, onResumeResult)
 
   const streamingText = parts.reduce(
     (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
@@ -109,6 +133,8 @@ export function Chat() {
     setParts(noParts)
     setSubmitError(null)
     previousHistoryLengthRef.current = 0
+    setResuming(false)
+    resumingRef.current = false
   }, [session.name, session.id])
 
   React.useEffect(() => {
@@ -119,6 +145,25 @@ export function Chat() {
     }
     previousHistoryLengthRef.current = length
   }, [historyResult, parts.length])
+
+  React.useEffect(() => {
+    if (resumeHandledRef.current === sessionKey) return
+    if (!AsyncResult.isSuccess(historyResult)) return
+    if (!AsyncResult.isSuccess(journalResult)) return
+    resumeHandledRef.current = sessionKey
+    if (!latestTurnInFlight(journalResult.value)) return
+    const key = sessionKey
+    setResuming(true)
+    resumingRef.current = true
+    void runResume(session).then(() => {
+      if (currentKeyRef.current !== key) return
+      setResuming(false)
+      resumingRef.current = false
+      setParts(noParts)
+      refreshHistory()
+      bumpJournal((v) => v + 1)
+    })
+  }, [sessionKey, historyResult, journalResult, runResume, refreshHistory, bumpJournal])
 
   const scrollRegionRef = React.useRef<HTMLDivElement>(null)
   const getViewport = React.useCallback(
@@ -171,11 +216,16 @@ export function Chat() {
         <ScrollArea className="flex-1 min-h-0">
           <div className="flex flex-col gap-4 p-4">
             <AsyncBoundary result={historyResult}>
-              {(value) => <MessageList messages={value.history} />}
+              {(value) => (
+                <MessageList
+                  messages={resuming && parts.length > 0 ? historyForResume(value.history) : value.history}
+                />
+              )}
             </AsyncBoundary>
             {streamActive || pending ? (
               <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
             ) : null}
+            {resuming ? <StatusPill state="accent" dot label="resuming…" /> : null}
             {awaitingApproval ? (
               <StatusPill state="warning" dot label="awaiting approval — act in Approvals" />
             ) : null}
@@ -203,9 +253,9 @@ export function Chat() {
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={pending}
+          disabled={pending || resuming}
         />
-        <Button type="submit" disabled={pending || input.trim().length === 0}>
+        <Button type="submit" disabled={pending || resuming || input.trim().length === 0}>
           {pending ? "Sending…" : "Send"}
         </Button>
       </form>
