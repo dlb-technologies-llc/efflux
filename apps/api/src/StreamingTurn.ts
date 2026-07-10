@@ -339,7 +339,7 @@ export const runStreamingTurn = (
 }
 
 /** Map one Effect AI response part to an SSE StreamPart carrying its backing journal seq; unknown parts and a seq-less `tool-approval-request` are dropped. */
-const toFramedPart = (el: {
+export const toFramedPart = (el: {
   part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
   seq: number | undefined
 }): Result.Result<FramedPart, unknown> => {

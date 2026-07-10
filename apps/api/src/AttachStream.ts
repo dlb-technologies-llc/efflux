@@ -57,7 +57,22 @@ const POLL_BACKOFF_STEP_MILLIS = 200
 const PAGE_LIMIT = 500
 
 /** One SSE frame candidate: the display part plus its backing journal seq (the SSE frame id / Last-Event-ID). */
-type AttachFrame = { readonly sse: StreamPart; readonly seq: number }
+export type AttachFrame = { readonly sse: StreamPart; readonly seq: number }
+
+/**
+ * The minimal journal-reader seam `analyzeJournal` and `runTail` consume: one
+ * paged `readJournal` RPC returning raw rows (payloads stay JSON text across the
+ * RPC fence) plus the next-page cursor (null on the last page). The live `Agent`
+ * DO stub satisfies it structurally; unit tests supply a scripted page source.
+ * Narrowing to this seam keeps the pure replay/tail logic testable without a
+ * live Durable Object — it changes no behavior, only the accepted argument type.
+ */
+export type JournalReader = {
+  readJournal(input: { after: number; limit: number }): Promise<{
+    readonly events: ReadonlyArray<{ readonly seq: number; readonly payload: string }>
+    readonly nextAfter: number | null
+  }>
+}
 
 /**
  * Project one journaled event into its SSE `StreamPart`, or `undefined` when the
@@ -131,9 +146,7 @@ type JournalAnalysis = {
  * against the target turn at the end (the target is only known once the last
  * `user-message` is seen).
  */
-const analyzeJournal = (
-  agent: ReturnType<AgentNamespace["getByName"]>,
-): Effect.Effect<JournalAnalysis> =>
+export const analyzeJournal = (agent: JournalReader): Effect.Effect<JournalAnalysis> =>
   Effect.gen(function* () {
     let after = 0
     let targetTurn: number | undefined
@@ -185,8 +198,8 @@ const analyzeJournal = (
  * journal goes stale, or the absolute cap is hit. Ends by returning; the caller
  * closes the queue via `Effect.ensuring`.
  */
-const runTail = (input: {
-  agent: ReturnType<AgentNamespace["getByName"]>
+export const runTail = (input: {
+  agent: JournalReader
   queue: Queue.Enqueue<AttachFrame, Cause.Done>
   startCursor: number
   targetTurn: number | undefined

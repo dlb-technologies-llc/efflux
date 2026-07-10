@@ -17,6 +17,10 @@
  * `skill`/`model`, tool-result `ok` vs `FAILED`, approval `APPROVED` vs `DENIED`
  * with and without a reason, and usage with and without token/cost fields.
  *
+ * A final runtime guard asserts the pinned tag set equals `JournalEventPayload`'s
+ * full set of literal `_tag`s — derived from the schema's members, not a hand-typed
+ * list — so adding a 14th member without also pinning a case fails this test loudly.
+ *
  * @module
  */
 import { describe, expect, it } from "@effect/vitest"
@@ -26,14 +30,19 @@ import {
   JournalApprovalRequested,
   JournalApprovalResolved,
   JournalAssistantText,
+  JournalCompaction,
   JournalDone,
   JournalErrorEvent,
   JournalEvent,
+  JournalEventPayload,
   JournalHopMessages,
+  JournalSessionClosed,
+  JournalTodoWrite,
   JournalToolCall,
   JournalToolResult,
   JournalUsage,
   JournalUserMessage,
+  TodoItem,
 } from "../packages/shared/src/index.ts"
 import { formatEvent } from "./agent.ts"
 
@@ -111,10 +120,32 @@ const cases: ReadonlyArray<readonly [string, JournalEvent, string]> = [
     ev(14, new JournalErrorEvent({ turn: 1, message: "boom happened" })),
     `#14  1970-01-01T00:00:00.000Z  error  turn=1  boom happened`,
   ],
+  [
+    "session-closed reaped",
+    ev(15, new JournalSessionClosed({ reason: "reaped" })),
+    `#15  1970-01-01T00:00:00.000Z  session-closed  reason=reaped`,
+  ],
+  [
+    "todo-write",
+    ev(16, new JournalTodoWrite({ turn: 1, items: [new TodoItem({ content: "write tests", status: "in_progress" }), new TodoItem({ content: "ship it", status: "pending" })] })),
+    `#16  1970-01-01T00:00:00.000Z  todo-write  turn=1  2 item(s): [in_progress] write tests; [pending] ship it`,
+  ],
+  [
+    "compaction",
+    ev(17, new JournalCompaction({ throughSeq: 5, summary: "folded five turns" })),
+    `#17  1970-01-01T00:00:00.000Z  compaction  throughSeq=5  "folded five turns"`,
+  ],
 ]
 
 describe("formatEvent", () => {
   for (const [label, event, expected] of cases) {
     it.effect(label, () => Effect.sync(() => expect(formatEvent(event)).toBe(expected)))
   }
+
+  it.effect("pins one case for every JournalEventPayload member", () =>
+    Effect.sync(() => {
+      const covered = new Set(cases.map(([, journalEvent]) => journalEvent.event._tag))
+      const all = new Set(JournalEventPayload.members.map((member) => member.fields._tag.schema.literal))
+      expect([...covered].sort()).toEqual([...all].sort())
+    }))
 })
