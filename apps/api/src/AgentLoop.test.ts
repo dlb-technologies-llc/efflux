@@ -99,6 +99,46 @@ const composeCases: ReadonlyArray<{
       { role: "user", content: "MSG" },
     ],
   },
+  {
+    name: "todos present: [system(skill), system(role), system(todos), ...history, user]",
+    input: {
+      skillBody: "SKILL",
+      roleBody: "ROLE",
+      todos: "- [ ] a",
+      history: [
+        { role: "user", content: "h1" },
+        { role: "assistant", content: "h2" },
+      ],
+      message: "MSG",
+    },
+    expected: [
+      { role: "system", content: "SKILL" },
+      { role: "system", content: "ROLE" },
+      { role: "system", content: "Current task list:\n- [ ] a" },
+      { role: "user", content: "h1" },
+      { role: "assistant", content: "h2" },
+      { role: "user", content: "MSG" },
+    ],
+  },
+  {
+    name: "todos absent (redundant safety): [system(skill), system(role), ...history, user]",
+    input: {
+      skillBody: "SKILL",
+      roleBody: "ROLE",
+      history: [
+        { role: "user", content: "h1" },
+        { role: "assistant", content: "h2" },
+      ],
+      message: "MSG",
+    },
+    expected: [
+      { role: "system", content: "SKILL" },
+      { role: "system", content: "ROLE" },
+      { role: "user", content: "h1" },
+      { role: "assistant", content: "h2" },
+      { role: "user", content: "MSG" },
+    ],
+  },
 ]
 
 describe("composeMessages", () => {

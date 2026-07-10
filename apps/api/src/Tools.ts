@@ -8,12 +8,14 @@ import {
   type RulesMap,
   SkillSummary,
   SubagentTaskRequest,
+  TodoItem,
 } from "@effect-flue/shared"
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
+import { formatTodos, TodoStore } from "./Todo.ts"
 import { MAX_TOOL_OUTPUT_CHARS, capForPrompt } from "./Truncate.ts"
 import {
   MAX_FETCH_BYTES,
@@ -314,6 +316,23 @@ export const SearchKnowledgeTool = Tool.make("search_knowledge", {
   needsApproval: needsApprovalFor("search_knowledge"),
 })
 
+export const TodoWriteTool = Tool.make("todo_write", {
+  description:
+    "Replace the session task list with the given items (each: content + status pending|in_progress|completed). Use this to plan and track multi-step work; the list persists across turns and is shown to you at the start of every turn. Pass the FULL list each time — it overwrites the previous one.",
+  parameters: Schema.Struct({ items: Schema.Array(TodoItem) }),
+  success: Schema.String,
+  dependencies: [TodoStore],
+  needsApproval: needsApprovalFor("todo_write"),
+})
+
+export const TodoReadTool = Tool.make("todo_read", {
+  description:
+    "Return the current session task list as a checklist. The list is also injected at the start of each turn, so call this only to re-check it mid-turn.",
+  success: Schema.String,
+  dependencies: [TodoStore],
+  needsApproval: needsApprovalFor("todo_read"),
+})
+
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,
   SpawnSubagentTool,
@@ -327,6 +346,8 @@ export const AgentToolkit = Toolkit.make(
   GrepTool,
   WebFetchTool,
   SearchKnowledgeTool,
+  TodoWriteTool,
+  TodoReadTool,
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
@@ -459,5 +480,20 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
         Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
       )
+    }),
+  todo_write: (params) =>
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
+      const store = yield* TodoStore
+      yield* store.write(params.items)
+      return `Updated task list:\n${formatTodos(params.items)}`
+    }),
+  todo_read: () =>
+    Effect.gen(function* () {
+      const rules = yield* ApprovalRules
+      if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
+      const store = yield* TodoStore
+      return formatTodos(yield* store.read)
     }),
 })

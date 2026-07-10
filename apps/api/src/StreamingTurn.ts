@@ -34,6 +34,7 @@ import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
+import { makeTodoStoreLayer } from "./Todo.ts"
 import { ApprovalRules } from "./Tools.ts"
 
 /** The SSE-bound StreamPart union, kept in lockstep with the wire contract. */
@@ -88,6 +89,7 @@ export const runStreamingTurn = (
   const encodeStreamPart = Schema.encodeSync(StreamPart)
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
+  const todoStore = makeTodoStoreLayer(agent, turn)
 
   const sseFrames = Stream.unwrap(
     Effect.gen(function* () {
@@ -256,6 +258,7 @@ export const runStreamingTurn = (
       return loopedStream.pipe(
         Stream.provide(toolLayer),
         Stream.provide(bashRunner),
+        Stream.provide(todoStore),
         Stream.provide(Layer.succeed(ApprovalRules, rules)),
         Stream.provideContext(ambient),
         Stream.filterMap(Filter.make(toFramedPart)),
