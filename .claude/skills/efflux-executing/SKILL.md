@@ -17,7 +17,7 @@ This skill gets sharpened by `/efflux-postmortem` findings over future PRs.
 ## Stack (fixed)
 
 - **Install:** `bun install`.
-- **Verify:** `bun run typecheck`. There is NO lint script and NO test script today — do not attempt `bun run lint` or `bun run test`.
+- **Verify:** `bun run typecheck`. `bun run test` (root vitest) and `bun run lint` (`biome check .`) exist and are CI-gated. The per-wave gate here is `bun run typecheck` ONLY — so BEFORE opening the PR (Step 5), run `bun run lint` AND `bun run test` from the worktree, fix any failures, and commit an updated `bun.lock` on any dep change (CI installs `--frozen-lockfile`). A wave can be green while lint/test red the PR. Also: any skill/agent file the plan creates must be `git add`ed on the branch — files authored in the main checkout don't self-track into the worktree.
 - **Deploy + live verification:** via `/efflux-verifying`, run FROM the worktree (`cd <WORKTREE_PATH>`). The canonical deploy is `bun run deploy` (never bare `wrangler deploy` — only the script fires the predeploy FE build + skills upload; requires Docker); if a PreToolUse hook blocks it, run its exact steps instead per the `/efflux-verifying` fallback (`bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`). ⚠️ ALL sessions share ONE deployed worker — deploys race and last deploy wins; redeploy before smoking if another session may have deployed since. Treat the repo `CLAUDE.md` "Commands" section as the command authority.
 - **Base branch:** `origin/staging` (feature PRs target `staging`; only `/efflux-releasing`'s promotion PR targets `main`). **Worktree task agent:** `efflux-task-executor`.
 - **Plan status vocabulary (exact):** `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.

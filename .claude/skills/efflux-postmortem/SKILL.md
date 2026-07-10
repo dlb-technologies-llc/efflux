@@ -87,10 +87,10 @@ The output IS skill edits — apply them, don't leave them loose in the main che
 
 ```bash
 git fetch origin staging
-git worktree add .claude/worktrees/postmortem-skill-fixes -b chore/postmortem-<plan-name> origin/staging
+git worktree add .claude/worktrees/postmortem-<plan-name> -b chore/postmortem-<plan-name> origin/staging
 ```
 
-Skills are markdown — skip `bun install`/submodule/`.dev.vars`/`cf-typegen`; no typecheck needed. Edit the `.claude/skills/<skill>/SKILL.md` files IN the worktree, commit, push, and open a PR against `staging` with `Refs #N` — a clear title (`chore(skills): <plan-name> postmortem findings`) and a body that lists each fix and the churn it prevents. A larger reshape spins into its own `/efflux-planning` → `/efflux-executing` cycle instead. File project-specific root causes as GitHub issues (`gh issue create`). If nothing was discovered (clean run), skip.
+The worktree dir MUST be `postmortem-<plan-name>`, never a fixed literal — a hardcoded name collides with another plan's leftover worktree, and the stale-leftover `rm -rf` will then clobber it (a merged plan's worktree is a common leftover). Skills are markdown — skip `bun install`/submodule/`.dev.vars`/`cf-typegen`; no typecheck needed. Edit the `.claude/skills/<skill>/SKILL.md` files IN the worktree, commit, push, and open a PR against `staging` with `Refs #N` — a clear title (`chore(skills): <plan-name> postmortem findings`) and a body that lists each fix and the churn it prevents. A larger reshape spins into its own `/efflux-planning` → `/efflux-executing` cycle instead. File project-specific root causes as GitHub issues (`gh issue create`). If nothing was discovered (clean run), skip.
 
 ### 7. Close out
 
