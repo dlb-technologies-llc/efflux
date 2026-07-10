@@ -45,7 +45,7 @@ import {
   StreamPartToolResult,
   TodoItem,
 } from "@efflux/shared"
-import { Cause, Duration, Effect, Exit, Option, Queue, Schema } from "effect"
+import { type Cause, Duration, Effect, Exit, Option, Queue, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { Prompt } from "effect/unstable/ai"
 import {

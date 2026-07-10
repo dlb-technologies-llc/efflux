@@ -1,4 +1,4 @@
-import { JournalTodoWrite, TodoItem } from "@efflux/shared"
+import { JournalTodoWrite, type TodoItem } from "@efflux/shared"
 import { Context, Effect, Layer } from "effect"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson } from "./JournalWrite.ts"

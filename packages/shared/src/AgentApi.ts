@@ -122,7 +122,7 @@ const journal = HttpApiEndpoint.get("journal", "/agents/:name/:id/journal", {
 const attach = HttpApiEndpoint.get("attach", "/agents/:name/:id/attach", {
   params: AgentParams,
   headers: Schema.Struct({
-    "last-event-id": Schema.optionalKey(Schema.NumberFromString),
+    "last-event-id": Schema.optionalKey(SeqFromString),
   }),
   query: {
     after: Schema.optionalKey(SeqFromString),
