@@ -57,7 +57,7 @@ export const makeAgentClient = (baseUrl: string) => {
     history: (name: string, id: string) =>
       Effect.flatMap(ApiClient, (api) => api.agents.history({ params: { name, id } })),
     reset: (name: string, id: string) =>
-      Effect.flatMap(ApiClient, (api) => api.agents.reset({ params: { name, id } })),
+      Effect.flatMap(ApiClient, (api) => api.agents.reset({ params: { name, id }, query: {} })),
     streamPrompt: (
       name: string,
       id: string,

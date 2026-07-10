@@ -27,7 +27,11 @@ const groupByTurn = (events: ReadonlyArray<JournalEvent>): ReadonlyArray<TurnGro
   }
   for (const envelope of events) {
     if (envelope.event._tag === "user-message") ensure(envelope.seq).header = envelope
-    else if (envelope.event._tag !== "hop-messages" && envelope.event._tag !== "compaction")
+    else if (
+      envelope.event._tag !== "hop-messages" &&
+      envelope.event._tag !== "session-closed" &&
+      envelope.event._tag !== "compaction"
+    )
       ensure(envelope.event.turn).events.push(envelope)
   }
   return Array.from(byTurn.values()).sort((a, b) => a.turn - b.turn)

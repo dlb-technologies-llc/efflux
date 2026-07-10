@@ -102,6 +102,14 @@ export class JournalErrorEvent extends Schema.TaggedClass<JournalErrorEvent>()(
   },
 ) {}
 
+/** Terminal session-lifecycle event: the session was closed explicitly (`closed`) or reaped by the TTL alarm (`reaped`). Captured in the archived journal; never present in a live journal (close writes it, archives, then purges). */
+export class JournalSessionClosed extends Schema.TaggedClass<JournalSessionClosed>()(
+  "session-closed",
+  {
+    reason: Schema.Literals(["closed", "reaped"]),
+  },
+) {}
+
 /** One task-list entry the model maintains via the todo tools; `status` mirrors the standard todo lifecycle. */
 export class TodoItem extends Schema.Class<TodoItem>("TodoItem")({
   content: Schema.String.check(Schema.isMaxLength(2000)),
@@ -131,6 +139,8 @@ export const COMPACTION_SUMMARY_PREFIX = "Summary of the conversation so far:\n\
  * exact per-hop `Prompt.Message`s for lossless rebuild. Every event but
  * `user-message` and `compaction` carries `turn`; folds group by `(turn, hop)`,
  * never seq adjacency (concurrent prompts to one session interleave appends).
+ * The terminal `session-closed` member is archive-only — close writes it into
+ * the archived journal, then purges the live journal, so it never appears live.
  */
 export const JournalEventPayload = Schema.Union([
   JournalUserMessage,
@@ -143,6 +153,7 @@ export const JournalEventPayload = Schema.Union([
   JournalUsage,
   JournalDone,
   JournalErrorEvent,
+  JournalSessionClosed,
   JournalTodoWrite,
   JournalCompaction,
 ])
@@ -173,4 +184,13 @@ export class SessionInfo extends Schema.Class<SessionInfo>("SessionInfo")({
 /** All known sessions. */
 export class SessionsResponse extends Schema.Class<SessionsResponse>("SessionsResponse")({
   sessions: Schema.Array(SessionInfo),
+}) {}
+
+/** One archived session — the eval-corpus record written to `effect-flue-sessions/archives/<name>/<id>/<closedAt>/journal.json` on close or reap. `events` is the full journal at close time (including the terminal `session-closed` event). */
+export class SessionArchive extends Schema.Class<SessionArchive>("SessionArchive")({
+  name: Schema.String,
+  id: Schema.String,
+  closedAt: NonNegativeInt,
+  reason: Schema.Literals(["closed", "reaped"]),
+  events: Schema.Array(JournalEvent),
 }) {}

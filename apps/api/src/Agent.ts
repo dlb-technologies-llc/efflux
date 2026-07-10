@@ -1,6 +1,8 @@
-import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, Message } from "@effect-flue/shared"
+import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@effect-flue/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
+import { buildArchive } from "./Archive.ts"
+import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
 
 /** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
 const HistorySchema = Schema.Array(Message)
@@ -150,7 +152,10 @@ export class Agent extends DurableObject<Env> {
       seqs.push(this.#insert(now, decoded._tag, raw))
       if (decoded._tag === "user-message") sawUserMessage = true
     }
-    if (sawUserMessage) await this.#registerSession(now)
+    if (sawUserMessage) {
+      await this.#registerSession(now)
+      await this.#scheduleReap()
+    }
     return seqs
   }
 
@@ -195,6 +200,7 @@ export class Agent extends DurableObject<Env> {
       "approval-resolved",
       JSON.stringify(encodeEventPayload(resolved)),
     )
+    await this.#scheduleReap()
     return {
       status: "ok",
       turn: decoded.turn,
@@ -332,16 +338,28 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
   }
 
-  /** Clean-slate reset: clears the journal, dirty flag, config overrides, R2 snapshot, and a live container's /workspace. */
-  async reset(): Promise<void> {
+  /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
+  async #wipeStorage(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
     await this.ctx.storage.delete(Agent.#CONFIG_KEY)
+    await this.ctx.storage.deleteAlarm()
     await this.#unregisterSession()
     const name = this.ctx.id.name
     if (name === undefined) return
-    await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
+    try {
+      await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
+    } catch (error) {
+      console.error("wipe: workspace snapshot delete failed (orphaned R2 object)", error)
+    }
+  }
+
+  /** Clean-slate reset: clears the journal, dirty flag, config overrides, R2 snapshot, and a live container's /workspace; the session stays alive (a later user message re-arms the reaper alarm). */
+  async reset(): Promise<void> {
+    await this.#wipeStorage()
+    const name = this.ctx.id.name
+    if (name === undefined) return
     try {
       const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
       const response = await sandbox.fetch("http://sandbox/reset", { method: "POST" })
@@ -351,6 +369,70 @@ export class Agent extends DurableObject<Env> {
     } catch (error) {
       console.error("container reset failed (workspace clears on next hydrate)", error)
     }
+  }
+
+  /** Slide the idle-reaper alarm to `now + ttlSeconds` from the session's stored config (fallback `DEFAULT_TTL_SECONDS`). Called on every activity signal; `setAlarm` replaces the single DO alarm, so this is a sliding window from last activity. */
+  async #scheduleReap(): Promise<void> {
+    const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
+    const parsed = raw === undefined ? {} : JSON.parse(String(raw))
+    const ttl =
+      typeof parsed === "object" && parsed !== null && "ttlSeconds" in parsed && typeof parsed.ttlSeconds === "number" && parsed.ttlSeconds >= 1
+        ? parsed.ttlSeconds
+        : DEFAULT_TTL_SECONDS
+    await this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
+  }
+
+  /** DO alarm handler: the idle TTL elapsed with no activity. Archive-and-purge the session (reaped sessions feed the eval corpus). */
+  async alarm(): Promise<void> {
+    await this.close({ mode: "archive", reason: "reaped" })
+  }
+
+  /** End the session: on `archive`, flush + copy the journal and workspace snapshot to `archives/<name>/<id>/<closedAt>/…`; then (both modes) destroy the container and `#wipeStorage()`. Every external step (snapshot, archive write, container destroy, workspace delete) is best-effort so a dead sandbox or R2 hiccup never rejects `close()`/`alarm()` and never leaves the DO half-wiped. The archive reads the full journal + workspace tarball into memory unpaginated — bounded in practice by session size (future: streamed archive for pathologically large sessions). */
+  async close(input: { mode: "archive" | "purge"; reason: "closed" | "reaped" }): Promise<void> {
+    const name = this.ctx.id.name
+    const closedAt = Date.now()
+
+    if (input.mode === "archive" && name !== undefined) {
+      try {
+        await this.snapshotIfDirty()
+      } catch (error) {
+        console.error("close: snapshot flush failed; archiving last durable workspace", error)
+      }
+      const closedEvent = encodeEventPayload(new JournalSessionClosed({ reason: input.reason }))
+      this.#insert(closedAt, "session-closed", JSON.stringify(closedEvent))
+      try {
+        const slash = name.indexOf("/")
+        const rows = this.ctx.storage.sql
+          .exec("SELECT seq, created_at, type, payload FROM journal ORDER BY seq")
+          .toArray()
+          .map((row) => ({ seq: Number(row.seq), createdAt: Number(row.created_at), type: String(row.type), payload: String(row.payload) }))
+        const json = buildArchive({
+          name: slash === -1 ? name : name.slice(0, slash),
+          id: slash === -1 ? "" : name.slice(slash + 1),
+          closedAt,
+          reason: input.reason,
+          rows,
+        })
+        await this.env.SESSIONS.put(Agent.#archiveJournalKey(name, closedAt), json)
+        const workspace = await this.env.SESSIONS.get(Agent.#workspaceKey(name))
+        if (workspace !== null) {
+          await this.env.SESSIONS.put(Agent.#archiveWorkspaceKey(name, closedAt), await workspace.arrayBuffer())
+        }
+      } catch (error) {
+        console.error("close: archive write failed; purging session anyway", error)
+      }
+    }
+
+    if (name !== undefined) {
+      try {
+        const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
+        await sandbox.destroyContainer()
+      } catch (error) {
+        console.error("close: container destroy failed", error)
+      }
+    }
+
+    await this.#wipeStorage()
   }
 
   /** DO-storage key for the workspace dirty flag (storage-backed so DO eviction can't drop it mid-turn). */
@@ -378,6 +460,14 @@ export class Agent extends DurableObject<Env> {
 
   static #workspaceKey(name: string): string {
     return `workspaces/${name}.tar.gz`
+  }
+
+  static #archiveJournalKey(name: string, closedAt: number): string {
+    return `archives/${name}/${closedAt}/journal.json`
+  }
+
+  static #archiveWorkspaceKey(name: string, closedAt: number): string {
+    return `archives/${name}/${closedAt}/workspace.tar.gz`
   }
 
   /** Restore-on-wake: if the container isn't hydrated, pull the session's R2 snapshot (empty when none) before any command runs; any failure throws so a good snapshot can't be clobbered. */

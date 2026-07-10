@@ -58,6 +58,9 @@ const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
 
 const reset = HttpApiEndpoint.delete("reset", "/agents/:name/:id", {
   params: AgentParams,
+  query: {
+    mode: Schema.optionalKey(Schema.Literals(["reset", "archive", "purge"])),
+  },
   success: Schema.Void,
   error: AgentError,
 })
