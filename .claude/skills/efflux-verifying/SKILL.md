@@ -179,3 +179,7 @@ Emit a per-check pass/fail table. Any fail means the change is **NOT verified** 
 ## Cost note
 
 Each smoke turn spends real model tokens. Keep messages short and don't loop the checklist unnecessarily — one clean pass is enough.
+
+## Infra rename / renamed remote bindings
+
+A `remote: true` binding in `wrangler.jsonc` whose instance was renamed (e.g. `ai_search` `instance_name`) BLOCKS `wrangler dev` from booting until that instance exists — wrangler fetches a preview token for it at startup and errors (`instance ... was not found`). For a local smoke before provisioning, comment the binding out in the worktree `wrangler.jsonc` (uncommitted — the committed config keeps it), or provision it first (`wrangler ai-search create <name>`). Renaming the worker name + R2 buckets also creates NEW resources on deploy; existing DO/session data does not carry over.

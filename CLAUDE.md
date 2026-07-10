@@ -7,7 +7,7 @@ A deployable Cloudflare agent runtime built from Effect v4 on native Workers bin
 Single source of truth — the `efflux-*` skills defer here.
 
 - `bun install` — install (Bun workspaces).
-- `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the six tsconfigs (`packages/shared`, `apps/api`, `apps/web`, `apps/tui`, `scripts`, `apps/api/container`). There is NO lint or test script today.
+- `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the six tsconfigs (`packages/shared`, `apps/api`, `apps/web`, `apps/tui`, `scripts`, `apps/api/container`). `bun run test` (vitest) and `bun run lint` (`biome check .`) also exist and are CI-gated (`.github/workflows/ci.yml` runs typecheck + test + lint with `bun install --frozen-lockfile` on every PR).
 - `bun run build` — FE build + API typecheck.
 - `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + `bun scripts/upload-skills.ts`). Requires a local Docker daemon (builds the container image).
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
