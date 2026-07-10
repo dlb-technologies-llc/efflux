@@ -1,4 +1,4 @@
-import { AgentApi, KnowledgeItem, KnowledgeItemResponse, KnowledgeListResponse } from "@effect-flue/shared"
+import { AgentApi, KnowledgeItem, KnowledgeItemResponse, KnowledgeListResponse } from "@efflux/shared"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { listKnowledge, uploadKnowledge } from "./Knowledge.ts"

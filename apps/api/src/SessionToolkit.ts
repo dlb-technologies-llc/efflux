@@ -9,7 +9,7 @@
  * `AgentToolkitLayer` — an empty server list yields a faithful clone with no
  * network calls, so drivers get a single, stable return shape either way.
  */
-import { resolveRule, type McpServer } from "@effect-flue/shared"
+import { resolveRule, type McpServer } from "@efflux/shared"
 import { Effect, Layer, Schema } from "effect"
 import { Tool, Toolkit } from "effect/unstable/ai"
 import { connect, type McpToolDef } from "./Mcp.ts"

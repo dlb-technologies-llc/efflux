@@ -1,24 +1,17 @@
-import type { Message } from "@effect-flue/shared"
+import type { Message as ChatMessage } from "@efflux/shared"
 
-export interface MessageListProps {
-  readonly messages: ReadonlyArray<Message>
-}
+import { Message } from "./Message.tsx"
 
-export function MessageList({ messages }: MessageListProps) {
+/** Maps persisted history turns onto the shared {@link Message} render path; shows a muted prompt when the session is empty. */
+export function MessageList({ messages }: { messages: ReadonlyArray<ChatMessage> }) {
   if (messages.length === 0) {
-    return <p className="pending">No messages yet — say hello below.</p>
+    return <p className="text-muted-foreground text-sm">No messages yet — say hello below.</p>
   }
   return (
-    <ul className="messages">
-      {messages.map((m, i) => (
-        <li
-          key={`${m.role}-${i}`}
-          className={`message message-${m.role}`}
-        >
-          <div className="role">{m.role}</div>
-          {m.content}
-        </li>
+    <div className="flex flex-col gap-4">
+      {messages.map((message, index) => (
+        <Message key={`${message.role}-${index}`} variant={message.role} content={message.content} />
       ))}
-    </ul>
+    </div>
   )
 }

@@ -20,7 +20,7 @@ import {
   JournalCompaction,
   JournalHopMessages,
   JournalUserMessage,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect } from "effect"
 import { Prompt } from "effect/unstable/ai"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
@@ -362,7 +362,7 @@ describe("reconstructForContinuation", () => {
       expect(systemContents(prompt)).toStrictEqual(["SKILL", "ROLE", "Current task list:\n- [ ] x"])
       expect(systemContents(prompt)[2]?.startsWith("Current task list:")).toBe(true)
       expect(userTexts(prompt)).toStrictEqual([
-        COMPACTION_SUMMARY_PREFIX + "folded history",
+        `${COMPACTION_SUMMARY_PREFIX}folded history`,
         "kept prior",
         "parked turn msg",
       ])

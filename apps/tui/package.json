@@ -1,5 +1,5 @@
 {
-  "name": "@effect-flue/tui",
+  "name": "@efflux/tui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "start": "bun src/main.tsx"
   },
   "dependencies": {
-    "@effect-flue/shared": "workspace:*",
+    "@efflux/shared": "workspace:*",
     "effect": "4.0.0-beta.94",
     "ink": "^7.1.0",
     "ink-text-input": "^6.0.0",

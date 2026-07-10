@@ -1,34 +1,57 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
 import { Exit } from "effect"
-import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { approveStreamAtom, historyAtom } from "../atoms.ts"
 import { type PendingApproval, pendingApprovals } from "../atoms/journal.ts"
 import { failureMessage } from "../errors.ts"
-import { formatParams } from "../format.ts"
+import { prettyParams } from "../format.ts"
 import { currentSessionAtom, journalVersionAtom, type SessionArgs } from "../session.ts"
 import { useJournal } from "../useJournal.ts"
-import styles from "./ApprovalCards.module.css"
+import { AsyncBoundary } from "./AsyncBoundary.tsx"
+import { StatusPill } from "./StatusPill.tsx"
 
 interface ApprovalCardProps {
   readonly session: SessionArgs
   readonly approval: PendingApproval
 }
 
+/** The parked tool call's params in the shared mono well; renders nothing when the originating `tool-call` carried no params. */
+function CommandWell({ params }: { params: unknown }) {
+  if (params === undefined) return null
+  return (
+    <pre className="font-mono text-sm bg-bg-subtle border border-border rounded px-3 py-2 overflow-x-auto">
+      {prettyParams(params)}
+    </pre>
+  )
+}
+
 /**
  * One parked approval, rendered as its own component so every hook (`busy` /
- * `error` / deny-`reason` state, the approve-stream setter, the version bump,
- * the history refresh) lives at a stable top level — the parent never calls a
- * hook inside its `.map`. Deciding DRAINS the continuation SSE (the server loop
- * is pull-driven, so the `await` is load-bearing); on success it bumps the
- * journal version (the timeline and this list refetch, unmounting the card) and
- * refreshes history.
+ * `error` state, the approve-stream setter, the version bump, the history
+ * refresh) lives at a stable top level — the parent never calls a hook inside
+ * its `.map`. Deciding DRAINS the continuation SSE (the server loop is
+ * pull-driven, so the `await` is load-bearing); on success it bumps the journal
+ * version (the timeline and this list refetch, unmounting the card) and
+ * refreshes history. Approve is gated behind an `AlertDialog` echoing the exact
+ * command; Deny rejects in one step.
  */
 function ApprovalCard({ approval, session }: ApprovalCardProps) {
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-  const [denying, setDenying] = React.useState(false)
-  const [reason, setReason] = React.useState("")
   const run = useAtomSet(approveStreamAtom, { mode: "promiseExit" })
   const bump = useAtomSet(journalVersionAtom)
   const refreshHistory = useAtomRefresh(historyAtom(session))
@@ -36,13 +59,7 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
   const decide = async (approved: boolean) => {
     setBusy(true)
     setError(null)
-    const trimmed = reason.trim()
-    const exit = await run({
-      ...session,
-      eventId: approval.eventId,
-      approved,
-      ...(approved === false && trimmed.length > 0 ? { reason: trimmed } : {}),
-    })
+    const exit = await run({ ...session, eventId: approval.eventId, approved })
     Exit.match(exit, {
       onFailure: (cause) => {
         setError(failureMessage(cause, "Approval failed"))
@@ -56,43 +73,53 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
     })
   }
 
+  const toolName = approval.toolName ?? "tool call"
+
   return (
-    <div className={styles.card}>
-      <div className={styles.cardHeader}>
-        <span className={styles.toolName}>{approval.toolName ?? "tool call"}</span>
-        <span className={styles.badge}>turn {approval.turn} · hop {approval.hop}</span>
-      </div>
-      {approval.toolParams !== undefined ? (
-        <div className={styles.scroll}>
-          <code className={styles.params}>{formatParams(approval.toolParams)}</code>
+    <Card className="gap-3 py-4 border-l-[3px] border-l-warning bg-warning/5">
+      <CardHeader className="gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill state="warning" dot label="awaiting approval" />
+          <span className="font-mono text-sm font-semibold">{toolName}</span>
+          <span className="ml-auto font-mono text-xs text-muted-foreground">
+            turn {approval.turn} · hop {approval.hop}
+          </span>
         </div>
-      ) : null}
-      {error !== null ? <p className={styles.error}>{error}</p> : null}
-      <div className={styles.actions}>
-        <button type="button" className={styles.approve} disabled={busy} onClick={() => decide(true)}>
-          {busy ? <span className={styles.spinner} aria-hidden /> : null}Approve
-        </button>
-        {denying ? (
-          <div className={styles.denyRow}>
-            <input
-              type="text"
-              className={styles.reasonInput}
-              placeholder="Reason (optional)"
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              disabled={busy}
-            />
-            <button type="button" className={styles.deny} disabled={busy} onClick={() => decide(false)}>
-              Confirm deny
-            </button>
-          </div>
-        ) : (
-          <button type="button" className={styles.denyToggle} disabled={busy} onClick={() => setDenying(true)}>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <CommandWell params={approval.toolParams} />
+        {error !== null ? (
+          <p role="alert" className="m-0 text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button type="button" disabled={busy}>
+                Approve
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Approve {toolName}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This runs the following in the sandbox. Confirm to proceed.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <CommandWell params={approval.toolParams} />
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => decide(true)}>Approve</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <Button type="button" variant="destructive" disabled={busy} onClick={() => decide(false)}>
             Deny
-          </button>
-        )}
-      </div>
-    </div>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -100,34 +127,40 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
  * Actionable cards for every parked tool call in the active session's journal.
  * Reads the paged journal, computes the still-pending approvals, and renders one
  * `<ApprovalCard>` per approval (each owns its own hooks — the parent runs none
- * inside the map, keeping hook counts stable across renders).
+ * inside the map, keeping hook counts stable across renders). A count `Badge`
+ * surfaces when more than one approval is parked.
  */
 export function ApprovalCards() {
   const session = useAtomValue(currentSessionAtom)
-  const { result: journalResult } = useJournal(session)
+  const { result, refresh } = useJournal(session)
 
   return (
-    <section className={styles.panel}>
-      <h2 className={styles.title}>Approvals</h2>
-      {AsyncResult.match(journalResult, {
-        onInitial: () => <p className={styles.pending}>Loading approvals...</p>,
-        onFailure: (failure) => (
-          <p className={styles.error}>
-            Failed to load approvals: {failureMessage(failure.cause, "Something went wrong")}
-          </p>
-        ),
-        onSuccess: (success) => {
-          const pending = pendingApprovals(success.value)
-          if (pending.length === 0) return <p className={styles.empty}>No pending approvals.</p>
+    <section className="flex flex-col gap-3 p-4 min-w-0">
+      <h2 className="m-0 text-sm font-semibold tracking-wide">Approvals</h2>
+      <AsyncBoundary
+        result={result}
+        onRetry={refresh}
+        empty={<p className="m-0 text-sm text-muted-foreground">No pending approvals.</p>}
+      >
+        {(events) => {
+          const pending = pendingApprovals(events)
+          if (pending.length === 0) {
+            return <p className="m-0 text-sm text-muted-foreground">No pending approvals.</p>
+          }
           return (
-            <div className={styles.cards}>
+            <div className="flex flex-col gap-3">
+              {pending.length > 1 ? (
+                <Badge variant="secondary" className="w-fit font-mono">
+                  {pending.length} pending
+                </Badge>
+              ) : null}
               {pending.map((approval) => (
                 <ApprovalCard key={approval.eventId} session={session} approval={approval} />
               ))}
             </div>
           )
-        },
-      })}
+        }}
+      </AsyncBoundary>
     </section>
   )
 }

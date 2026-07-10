@@ -1,67 +1,46 @@
-import * as React from "react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
+import { AppShell } from "./components/AppShell.tsx"
 import { ApprovalCards } from "./components/ApprovalCards.tsx"
 import { Chat } from "./components/Chat.tsx"
 import { JournalTimeline } from "./components/JournalTimeline.tsx"
 import { SessionSwitcher } from "./components/SessionSwitcher.tsx"
 import { SkillsPanel } from "./components/SkillsPanel.tsx"
 import { ToolsPanel } from "./components/ToolsPanel.tsx"
-import styles from "./App.module.css"
-
-/** Right-rail tab identity — local UI state, not derived from any schema. */
-type RightTab = "journal" | "skills" | "tools"
-
-interface TabDef {
-  readonly id: RightTab
-  readonly label: string
-}
-
-/** Right-rail tabs in display order; Journal is the default so turn costs are visible immediately. */
-const RIGHT_TABS: ReadonlyArray<TabDef> = [
-  { id: "journal", label: "Journal" },
-  { id: "skills", label: "Skills" },
-  { id: "tools", label: "Tools" },
-]
 
 /**
- * One-screen demo console. A session switcher and model picker fill the left
- * rail, the live chat with its approval cards sit in the center, and a tabbed
- * skills/tools/journal region fills the right rail. Every panel self-drives off
- * `currentSessionAtom`, so App renders them with no props and owns nothing but
- * the responsive layout and the right-rail tab selection.
+ * The one-screen Efflux console. `AppShell` owns the TopBar (wordmark + theme toggle)
+ * and the responsive three-column frame; App only wires the propless panels into its
+ * slots. The sessions rail holds the switcher, the main column stacks the approval
+ * cards above a growing `Chat` (which owns its own transcript scroll and pinned
+ * composer), the inspector rail carries a Journal/Tools tabset, and skills live in the
+ * TopBar actions. Every panel self-drives off `currentSessionAtom`.
  */
 export function App() {
-  const [tab, setTab] = React.useState<RightTab>("journal")
-
   return (
-    <div className={styles.app}>
-      <div className={styles.left}>
-        <SessionSwitcher />
-      </div>
-
-      <div className={styles.center}>
-        <Chat />
-        <ApprovalCards />
-      </div>
-
-      <div className={styles.right}>
-        <div className={styles.tabs} role="tablist">
-          {RIGHT_TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={tab === t.id ? `${styles.tab ?? ""} ${styles.tabActive ?? ""}` : styles.tab}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <div className={styles.panel}>
-          {tab === "journal" ? <JournalTimeline /> : tab === "skills" ? <SkillsPanel /> : <ToolsPanel />}
-        </div>
-      </div>
-    </div>
+    <AppShell
+      topBarActions={<SkillsPanel />}
+      sessions={<SessionSwitcher />}
+      main={
+        <>
+          <ApprovalCards />
+          <Chat />
+        </>
+      }
+      inspector={
+        <Tabs defaultValue="journal" className="p-3">
+          <TabsList className="w-full">
+            <TabsTrigger value="journal">Journal</TabsTrigger>
+            <TabsTrigger value="tools">Tools</TabsTrigger>
+          </TabsList>
+          <TabsContent value="journal">
+            <JournalTimeline />
+          </TabsContent>
+          <TabsContent value="tools">
+            <ToolsPanel />
+          </TabsContent>
+        </Tabs>
+      }
+    />
   )
 }

@@ -6,7 +6,7 @@
  *
  * @module
  */
-import { JournalEvent, JournalEventPayload, SessionArchive } from "@effect-flue/shared"
+import { JournalEvent, JournalEventPayload, SessionArchive } from "@efflux/shared"
 import { Schema } from "effect"
 
 /** Raw journal row as returned by the Agent DO's SQLite (`readJournal` shape). */

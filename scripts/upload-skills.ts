@@ -1,4 +1,4 @@
-/** Uploads every skill/role markdown file to the effect-flue-skills R2 bucket via `wrangler r2 object put` (always full upload, no diff). Pass --dry-run to list only. */
+/** Uploads every skill/role markdown file to the efflux-skills R2 bucket via `wrangler r2 object put` (always full upload, no diff). Pass --dry-run to list only. */
 
 import { $ } from "bun"
 import { Console, Effect } from "effect"
@@ -23,7 +23,7 @@ const listMarkdown = (dir: string): Effect.Effect<ReadonlyArray<string>, unknown
 const repoRoot = path.dirname(import.meta.dirname)
 const SKILLS_DIR = path.join(repoRoot, "apps", "api", "skills")
 const ROLES_DIR = path.join(repoRoot, "apps", "api", "roles")
-const BUCKET = "effect-flue-skills"
+const BUCKET = "efflux-skills"
 const dryRun = process.argv.includes("--dry-run")
 
 const main = Effect.gen(function*() {

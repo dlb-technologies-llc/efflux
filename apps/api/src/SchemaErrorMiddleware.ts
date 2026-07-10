@@ -1,4 +1,4 @@
-import { SchemaErrorMiddleware } from "@effect-flue/shared"
+import { SchemaErrorMiddleware } from "@efflux/shared"
 import { Effect } from "effect"
 import type * as SchemaIssue from "effect/SchemaIssue"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"

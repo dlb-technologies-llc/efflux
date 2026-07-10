@@ -1,4 +1,4 @@
-import type { StreamPart } from "@effect-flue/shared"
+import type { StreamPart } from "@efflux/shared"
 import { Text } from "ink"
 
 /**

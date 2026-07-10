@@ -3,7 +3,7 @@ import {
   type ApprovalHandle,
   JournalApprovalRequested,
   type RulesMap,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Effect, Layer } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"

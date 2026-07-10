@@ -1,16 +1,16 @@
 {
-  "name": "effect-flue",
+  "name": "efflux",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Flue's Support Agent example, rebuilt in Effect v4 on Cloudflare Workers. Proves the framework isn't necessary.",
+  "description": "Efflux — a deployable Cloudflare agent runtime built on Effect v4 and native Workers bindings. No framework required.",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
     "typecheck": "bun run cf-typegen && tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p apps/api/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p apps/tui/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json && tsc --noEmit -p apps/api/container/tsconfig.json",
-    "build": "bun run --filter @effect-flue/web build && bun run --filter @effect-flue/api typecheck",
+    "build": "bun run --filter @efflux/web build && bun run --filter @efflux/api typecheck",
     "predeploy": "bun run build && bun scripts/upload-skills.ts",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",

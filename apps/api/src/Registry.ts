@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@effect-flue/shared"
+import type { SessionInfo } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Context } from "effect"
 

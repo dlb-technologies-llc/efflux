@@ -17,5 +17,10 @@ export const formatRelativeTime = (epochMs: number): string => {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
-/** Compact one-line JSON of decoded tool params (already JSON round-tripped at append time, so `JSON.stringify` never throws); absent params render as their `String` form. */
-export const formatParams = (params: unknown): string => JSON.stringify(params) ?? String(params)
+/** Compact one-line JSON of decoded tool params (already JSON round-tripped at append time, so `JSON.stringify` never throws); absent params render as the empty string. */
+export const formatParams = (params: unknown): string =>
+  params === undefined ? "" : (JSON.stringify(params) ?? String(params))
+
+/** Pretty-printed (2-space) JSON of decoded tool params for expanded views; absent params render as the empty string. */
+export const prettyParams = (params: unknown): string =>
+  params === undefined ? "" : JSON.stringify(params, null, 2)

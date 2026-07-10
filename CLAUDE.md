@@ -1,10 +1,10 @@
-# effect-flue
+# efflux
 
 A deployable Cloudflare agent runtime built from Effect v4 on native Workers bindings (`wrangler.jsonc`) — no framework required.
 
 ## Commands
 
-Single source of truth — the `flue-*` skills defer here.
+Single source of truth — the `efflux-*` skills defer here.
 
 - `bun install` — install (Bun workspaces).
 - `bun run typecheck` — runs `cf-typegen` first (regenerates the gitignored `worker-configuration.d.ts`), then `tsc --noEmit` across the six tsconfigs (`packages/shared`, `apps/api`, `apps/web`, `apps/tui`, `scripts`, `apps/api/container`). There is NO lint or test script today.
@@ -17,13 +17,14 @@ Single source of truth — the `flue-*` skills defer here.
 
 ## Architecture
 
-`wrangler.jsonc` declares everything: Worker `effect-flue` (entry `apps/api/src/index.ts`), DO bindings `AGENTS` (`Agent`) + `SANDBOX` (`Sandbox`, a container class built from `apps/api/container/Dockerfile`) + `REGISTRY` (`Registry`, the singleton session index), R2 bindings `SKILLS` (bucket `effect-flue-skills`) + `SESSIONS` (bucket `effect-flue-sessions`, per-session workspace tarballs), a daily cron, and FE assets from `apps/web/dist` (`run_worker_first` on `/agents/*` and `/tasks*`). Each `/agents/<name>/<id>` session routes to its own `Agent` DurableObject, which holds the append-only event journal (DO SQLite) and the sandbox exec/hydrate seam; the Worker handler (`handlers.ts`) — NOT the DO — drives the hop-capped model loop and reaches the `Sandbox` container (Bash) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). Default model is `tencent/hy3:free` (testing tier — callers pass `model` per request for anything better). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
+`wrangler.jsonc` declares everything: Worker `efflux` (entry `apps/api/src/index.ts`), DO bindings `AGENTS` (`Agent`) + `SANDBOX` (`Sandbox`, a container class built from `apps/api/container/Dockerfile`) + `REGISTRY` (`Registry`, the singleton session index), R2 bindings `SKILLS` (bucket `efflux-skills`) + `SESSIONS` (bucket `efflux-sessions`, per-session workspace tarballs), a daily cron, and FE assets from `apps/web/dist` (`run_worker_first` on `/agents/*` and `/tasks*`). Each `/agents/<name>/<id>` session routes to its own `Agent` DurableObject, which holds the append-only event journal (DO SQLite) and the sandbox exec/hydrate seam; the Worker handler (`handlers.ts`) — NOT the DO — drives the hop-capped model loop and reaches the `Sandbox` container (Bash) plus R2 (skills/roles as `skills/<name>.md` / `roles/<name>.md`). Default model is `tencent/hy3:free` (testing tier — callers pass `model` per request for anything better). One `HttpApi` defined in `packages/shared` is used three ways: server handlers (`HttpApiBuilder`), a fully typed FE client (`HttpApiClient` in `apps/web`), and the SSE stream contract (`StreamPart` tagged union encoded/decoded on both sides).
 
 ## Conventions
 
 - Schema-first: all types flow from Effect Schemas — no `as` casts, no `!` assertions, no parallel type definitions.
-- Verification = deploy + hit the live worker (`/flue-verifying` checklist). Typecheck/build alone NEVER counts.
-- Branch flow: feature PRs target `staging` with `Refs #N`; `/flue-releasing` promotes staging→main with a PR carrying the `Closes #N` lines (issues close on release, not on feature landing). Merge commits only — never rebase/squash. Never `--no-verify`.
+- Generated `apps/web/src/components/ui/*` (shadcn/ui) are EXEMPT from the no-`as`/no-`!` rule and are excluded from biome linting; ALL hand-written code still obeys no-`as`/no-`!`.
+- Verification = deploy + hit the live worker (`/efflux-verifying` checklist). Typecheck/build alone NEVER counts.
+- Branch flow: feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes staging→main with a PR carrying the `Closes #N` lines (issues close on release, not on feature landing). Merge commits only — never rebase/squash. Never `--no-verify`.
 - Effect v4 beta (`4.0.0-beta.94`): never write Effect APIs from memory. Authority order: this codebase's existing usage (grep scoped to `apps/ packages/`) → the pinned `.claude/effect-smol` submodule (`packages/effect/src` — core incl. `unstable/http`, `unstable/httpapi`; init once with `git submodule update --init .claude/effect-smol`) → Context7 MCP. Read the submodule directly — do NOT spawn the `effect-agent` subagent (it reads a machine-global, unpinned checkout). The repo-local `.claude/subrepos.json` records the pin (`pinned` field) and the submodule's `src`/`test` search globs.
 - Bumping the `effect` version means bumping EVERY pin location — package.json in all workspaces, the submodule gitlink, `.claude/subrepos.json` `pinned`, and prose literals in CLAUDE.md + `.claude/skills/`:
   ```
@@ -39,12 +40,12 @@ Read `ISSUES.md` at the repo root BEFORE touching Worker boot, secrets, DO RPC b
 
 ## Skills
 
-Plans live in `~/c0de/plans/effect-flue/`; status vocabulary is `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
+Plans live in `~/c0de/plans/efflux/`; status vocabulary is `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 
-- `/flue-planning` — produce a wave-structured plan for a task; run before any nontrivial change.
-- `/flue-executing` — run a plan's waves as parallel agents in an isolated worktree (`.claude/worktrees/<plan-name>`) and open the PR against `staging`.
-- `/flue-creating-issues` — turn a rough problem statement into one well-formed `gh issue create`.
-- `/flue-verifying` — the deploy-and-live-smoke checklist; run before any PR with a runtime surface.
-- `/flue-postmortem` — pre-merge orchestration retrospective on a `PR_CREATED` plan; edits the `flue-*` skills.
-- `/flue-cleaning-up` — post-merge: remove the plan's worktree, delete the local branch, and archive the plan (`POSTMORTEM_COMPLETE` plans).
-- `/flue-releasing` — promote `staging`→`main` via a merge PR carrying the `Closes #N` lines, then tag + GitHub-release the merge; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).
+- `/efflux-planning` — produce a wave-structured plan for a task; run before any nontrivial change.
+- `/efflux-executing` — run a plan's waves as parallel agents in an isolated worktree (`.claude/worktrees/<plan-name>`) and open the PR against `staging`.
+- `/efflux-creating-issues` — turn a rough problem statement into one well-formed `gh issue create`.
+- `/efflux-verifying` — the deploy-and-live-smoke checklist; run before any PR with a runtime surface.
+- `/efflux-postmortem` — pre-merge orchestration retrospective on a `PR_CREATED` plan; edits the `efflux-*` skills.
+- `/efflux-cleaning-up` — post-merge: remove the plan's worktree, delete the local branch, and archive the plan (`POSTMORTEM_COMPLETE` plans).
+- `/efflux-releasing` — promote `staging`→`main` via a merge PR carrying the `Closes #N` lines, then tag + GitHub-release the merge; semver from 0.1.0, pre-1.0 rules (feat → minor, everything else → patch).

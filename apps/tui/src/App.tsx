@@ -1,5 +1,5 @@
-import { ApprovalDecision, failureMessage } from "@effect-flue/shared"
-import type { StreamPart } from "@effect-flue/shared"
+import { ApprovalDecision, failureMessage } from "@efflux/shared"
+import type { StreamPart } from "@efflux/shared"
 import { Effect, Exit, Function, Stream } from "effect"
 import { Box, Text, useApp } from "ink"
 import TextInput from "ink-text-input"

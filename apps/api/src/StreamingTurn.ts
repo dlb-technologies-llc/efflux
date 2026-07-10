@@ -14,7 +14,7 @@ import {
   StreamPartTextDelta,
   StreamPartToolCall,
   StreamPartToolResult,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Cause, type Context, Effect, Filter, Layer, Queue, Ref, Result, Schema, Stream } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse, type Toolkit } from "effect/unstable/ai"

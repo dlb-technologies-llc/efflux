@@ -1,1 +1,1 @@
-export { failureMessage, messageOf } from "@effect-flue/shared"
+export { failureMessage, messageOf } from "@efflux/shared"

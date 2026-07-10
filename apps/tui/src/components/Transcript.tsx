@@ -1,4 +1,4 @@
-import type { Message } from "@effect-flue/shared"
+import type { Message } from "@efflux/shared"
 import { Box, Static, Text } from "ink"
 import type { ToolEvent } from "./ToolFrame.tsx"
 import { ToolFrame } from "./ToolFrame.tsx"

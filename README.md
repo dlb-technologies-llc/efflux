@@ -1,8 +1,8 @@
-# effect-flue
+# efflux
 
 > A deployable Cloudflare agent runtime built from Effect v4 on native Workers bindings. No framework required.
 
-[Flue](https://flueframework.com) bills itself as "The Agent Harness Framework" — Claude Code, but headless and programmable. Every primitive it ships (per-session DOs, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface) is something you already have on Cloudflare + Effect. This repo proves it: a complete Support Agent with streaming chat UI, every line written in `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, deployed with plain `wrangler`.
+Agent-harness frameworks bundle the primitives you need to run an agent — per-session state, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface — behind a convenient DX. Every one of those primitives is something you already have on Cloudflare + Effect. Efflux proves it: a complete streaming agent runtime with a chat UI, every line written in `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, deployed with plain `wrangler` — no framework required.
 
 ## What's in here
 
@@ -38,7 +38,7 @@ tsconfig.base.json
 
 ## The architecture
 
-The Worker owns a single HttpApi defined in `@effect-flue/shared`. The same `HttpApi` shape is used three ways:
+The Worker owns a single HttpApi defined in `@efflux/shared`. The same `HttpApi` shape is used three ways:
 
 1. Server: `HttpApiBuilder.layer(AgentApi)` mounts handlers in `apps/api/src/handlers.ts`.
 2. Client: `HttpApiClient.make(AgentApi, …)` in `apps/web/src/runtime.ts` gives the FE a fully typed call surface.
@@ -132,12 +132,12 @@ curl https://<your-worker>/tasks \
 
 Changes flow through a plan → execute → verify → postmortem loop, driven by six skills under `.claude/skills/`:
 
-- `/flue-planning` — wave-structured implementation plan for a task.
-- `/flue-executing` — runs the plan wave-by-wave and opens the PR against `main`.
-- `/flue-creating-issues` — turns a rough problem statement into one well-formed GitHub issue.
-- `/flue-verifying` — deploy + live-worker smoke checklist; typecheck alone never counts as verified.
-- `/flue-postmortem` — pre-merge orchestration retrospective that feeds improvements back into the skills.
-- `/flue-cleaning-up` — post-merge branch deletion and plan archival.
+- `/efflux-planning` — wave-structured implementation plan for a task.
+- `/efflux-executing` — runs the plan wave-by-wave and opens the PR against `main`.
+- `/efflux-creating-issues` — turns a rough problem statement into one well-formed GitHub issue.
+- `/efflux-verifying` — deploy + live-worker smoke checklist; typecheck alone never counts as verified.
+- `/efflux-postmortem` — pre-merge orchestration retrospective that feeds improvements back into the skills.
+- `/efflux-cleaning-up` — post-merge branch deletion and plan archival.
 
 `CLAUDE.md` at the repo root holds the current commands, conventions, and a skill index; `ISSUES.md` records known landmines — read it before touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
 
@@ -173,7 +173,7 @@ bun install
 
 # Two terminals (no concurrent runner is wired):
 bun run dev                                   # terminal 1 — wrangler dev (Worker at :8787, needs Docker)
-bun run --filter @effect-flue/web dev         # terminal 2 — Vite (FE at :5173, proxies /agents)
+bun run --filter @efflux/web dev         # terminal 2 — Vite (FE at :5173, proxies /agents)
 
 bun run typecheck                             # cf-typegen, then tsc --noEmit across the six tsconfigs
 bun run build                                 # builds the FE then typechecks the Worker
@@ -204,9 +204,9 @@ Useful root scripts:
 
 ## The claim
 
-The original Flue Support Agent example is ~30 lines. This repo is larger — but every line is something you can point at and explain:
+A typical agent-framework "support agent" example is ~30 lines. Efflux is larger — but every line is something you can point at and explain:
 
-| Flue                                 | Underlying CF primitive   | What we use                              |
+| Framework feature                    | Underlying CF primitive   | What we use                              |
 | ------------------------------------ | ------------------------- | ---------------------------------------- |
 | Persistent session by URL `<id>`     | Durable Object            | native DO binding (`wrangler.jsonc`)     |
 | Sandbox                              | CF Containers             | `@cloudflare/containers` `Container` DO  |
@@ -217,9 +217,9 @@ The original Flue Support Agent example is ~30 lines. This repo is larger — bu
 | Secrets                              | —                         | `wrangler secret` + `.dev.vars`          |
 | Streaming                            | SSE                       | `Stream` + `HttpServerResponse.stream`   |
 | Chat UI                              | —                         | React + `@effect/atom-react` + `HttpApiClient` |
-| Deploy                               | `flue build`              | `wrangler deploy`                        |
+| Deploy                               | framework CLI             | `wrangler deploy`                        |
 
-**What you give up:** convenience and a zero-config DX. Flue does auto-wiring you have to do once here.
+**What you give up:** convenience and a zero-config DX. A framework does auto-wiring you do once here.
 
 **What you gain:**
 

@@ -36,7 +36,7 @@ import {
   JournalUserMessage,
   SessionArchive,
   TodoItem,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Effect.gen(function* () {

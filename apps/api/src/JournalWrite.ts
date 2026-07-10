@@ -8,7 +8,7 @@ import {
   JournalToolResult,
   JournalUsage,
   JournalUserMessage,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect, Result, Schema } from "effect"
 import { Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"

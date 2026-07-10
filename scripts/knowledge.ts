@@ -23,12 +23,12 @@ const GROUNDED_TOKEN = "HYP-88231-DELTA"
 /** Two demo docs whose facts the base model cannot know; the invented product code chains through both, so a correct answer must have read each. */
 const DEMO_DOCS = [
   {
-    name: "flue-demo-product-glossary",
+    name: "efflux-demo-product-glossary",
     content:
       "INTERNAL PRODUCT GLOSSARY. Product code QX-9981-ZULU is the confidential codename for the Innovation Lab's experimental fusion module, internally called the 'Marmalade Falcon'. The Marmalade Falcon (QX-9981-ZULU) ships with exactly one classified subcomponent, part number BLZ-4471.",
   },
   {
-    name: "flue-demo-component-registry",
+    name: "efflux-demo-component-registry",
     content:
       "CLASSIFIED COMPONENT REGISTRY. Subcomponent part number BLZ-4471 is officially named the 'Hyperion Manifold'. Its unique factory serial prefix is HYP-88231-DELTA. No other component in the catalog carries this serial prefix.",
   },

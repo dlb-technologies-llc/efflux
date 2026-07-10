@@ -1,12 +1,29 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
-import type { StreamPart } from "@effect-flue/shared"
+import type { StreamPart } from "@efflux/shared"
 import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
+
+import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
+
 import { historyAtom, noParts, streamAtom } from "../atoms.ts"
 import { failureMessage } from "../errors.ts"
-import { currentSessionAtom, journalVersionAtom, selectedModelAtom } from "../session.ts"
+import {
+  currentSessionAtom,
+  journalVersionAtom,
+  selectedModelAtom,
+  selectedSkillAtom,
+} from "../session.ts"
+import { AsyncBoundary } from "./AsyncBoundary.tsx"
+import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
+import { StatusPill } from "./StatusPill.tsx"
+import type { ToolCallView } from "./ToolCallCard.tsx"
+
+/** Distance (px) from the bottom within which the transcript counts as "pinned" and keeps auto-scrolling. */
+const NEAR_BOTTOM_PX = 80
 
 /** Live chat view: renders session history and streams the current assistant turn. */
 export function Chat() {
@@ -14,9 +31,11 @@ export function Chat() {
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
+  const [atBottom, setAtBottom] = React.useState(true)
 
   const session = useAtomValue(currentSessionAtom)
   const model = useAtomValue(selectedModelAtom)
+  const skill = useAtomValue(selectedSkillAtom)
   const bumpJournal = useAtomSet(journalVersionAtom)
 
   const sessionAtom = historyAtom(session)
@@ -36,13 +55,27 @@ export function Chat() {
     (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
     "",
   )
-  const toolParts = parts.filter(
-    (part) => part._tag === "tool-call" || part._tag === "tool-result",
+  const streamError = parts.reduce<string | null>(
+    (message, part) => (part._tag === "error" ? part.message : message),
+    submitError,
   )
-  const errorPart = parts.find((part) => part._tag === "error")
-  const streamError = errorPart !== undefined ? errorPart.message : submitError
   const streamActive = parts.length > 0
   const awaitingApproval = parts.some((part) => part._tag === "approval-request")
+
+  const toolViews: ReadonlyArray<ToolCallView> = parts.flatMap((part) => {
+    if (part._tag !== "tool-call") return []
+    const match = parts.find(
+      (other) => other._tag === "tool-result" && other.id === part.id,
+    )
+    const view: ToolCallView = {
+      name: part.name,
+      ...(part.params !== undefined ? { params: part.params } : {}),
+      ...(match !== undefined && match._tag === "tool-result"
+        ? { result: match.result, isFailure: match.isFailure }
+        : { running: true }),
+    }
+    return [view]
+  })
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -52,7 +85,12 @@ export function Chat() {
     setSubmitError(null)
     setInput("")
     setPending(true)
-    const exit = await runStream({ ...session, message, ...(model !== "" ? { model } : {}) })
+    const exit = await runStream({
+      ...session,
+      message,
+      ...(model !== "" ? { model } : {}),
+      ...(skill !== "" ? { skill } : {}),
+    })
     setPending(false)
     Exit.match(exit, {
       onFailure: (cause) => {
@@ -82,60 +120,95 @@ export function Chat() {
     previousHistoryLengthRef.current = length
   }, [historyResult, parts.length])
 
+  const scrollRegionRef = React.useRef<HTMLDivElement>(null)
+  const getViewport = React.useCallback(
+    () =>
+      scrollRegionRef.current?.querySelector<HTMLElement>(
+        '[data-slot="scroll-area-viewport"]',
+      ) ?? null,
+    [],
+  )
+
+  React.useEffect(() => {
+    const viewport = getViewport()
+    if (viewport === null) return
+    const onScroll = () => {
+      const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      setAtBottom(distance <= NEAR_BOTTOM_PX)
+    }
+    onScroll()
+    viewport.addEventListener("scroll", onScroll)
+    return () => viewport.removeEventListener("scroll", onScroll)
+  }, [getViewport])
+
+  const historyLength = AsyncResult.isSuccess(historyResult)
+    ? historyResult.value.history.length
+    : 0
+  React.useEffect(() => {
+    if (!atBottom) return
+    const viewport = getViewport()
+    if (viewport === null) return
+    viewport.scrollTop = viewport.scrollHeight
+  }, [atBottom, getViewport, historyLength, streamingText, toolViews.length, pending, awaitingApproval])
+
+  const jumpToLatest = () => {
+    const viewport = getViewport()
+    if (viewport === null) return
+    viewport.scrollTop = viewport.scrollHeight
+    setAtBottom(true)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault()
+      event.currentTarget.form?.requestSubmit()
+    }
+  }
+
   return (
-    <main className="chat">
-      <h1>effect-flue chat</h1>
-      <p style={{ opacity: 0.6, fontSize: 13 }}>
-        session: <code>{session.name}/{session.id}</code>
-      </p>
-      {AsyncResult.match(historyResult, {
-        onInitial: () => <p className="pending">Loading history...</p>,
-        onFailure: (failure) => (
-          <p className="error">
-            Failed to load history: {failureMessage(failure.cause, "Something went wrong")}
-          </p>
-        ),
-        onSuccess: (success) => <MessageList messages={success.value.history} />,
-      })}
-      {streamActive || pending ? (
-        <div className="message message-assistant message-streaming">
-          <div className="role">assistant</div>
-          {toolParts.map((part, i) =>
-            part._tag === "tool-call" ? (
-              <div key={`t-${i}`} className="tool-frame tool-running">
-                → {part.name}
-              </div>
-            ) : (
-              <div
-                key={`t-${i}`}
-                className={part._tag === "tool-result" && part.isFailure ? "tool-frame tool-failed" : "tool-frame tool-done"}
-              >
-                {part._tag === "tool-result" && part.isFailure ? "✗" : "✓"} {part.id}
-              </div>
-            )
-          )}
-          {streamingText}
-          {pending ? <span className="streaming-cursor" aria-hidden /> : null}
-          {awaitingApproval ? (
-            <div className="tool-frame tool-running">
-              ⏸ Awaiting approval — act on it in the Approvals panel
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {streamError !== null ? <p className="error">{streamError}</p> : null}
-      <form className="composer" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          placeholder="Type a message..."
+    <div className="flex flex-col h-full min-h-0">
+      <div ref={scrollRegionRef} className="relative flex-1 min-h-0 flex flex-col">
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="flex flex-col gap-4 p-4">
+            <AsyncBoundary result={historyResult}>
+              {(value) => <MessageList messages={value.history} />}
+            </AsyncBoundary>
+            {streamActive || pending ? (
+              <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
+            ) : null}
+            {awaitingApproval ? (
+              <StatusPill state="warning" dot label="awaiting approval — act in Approvals" />
+            ) : null}
+            {streamError !== null ? (
+              <p className="text-destructive text-sm">{streamError}</p>
+            ) : null}
+          </div>
+        </ScrollArea>
+        {atBottom ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="absolute bottom-3 right-3 shadow-md"
+            onClick={jumpToLatest}
+          >
+            Jump to latest
+          </Button>
+        )}
+      </div>
+      <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
+        <Textarea
+          className="flex-1 max-h-40 resize-none"
+          rows={1}
+          placeholder="Message the agent…  ⌘↵ to send"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleKeyDown}
           disabled={pending}
         />
-        <button type="submit" disabled={pending || input.trim().length === 0}>
-          {pending ? "Sending..." : "Send"}
-        </button>
+        <Button type="submit" disabled={pending || input.trim().length === 0}>
+          {pending ? "Sending…" : "Send"}
+        </Button>
       </form>
-    </main>
+    </div>
   )
 }

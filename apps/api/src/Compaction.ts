@@ -6,7 +6,7 @@
  * rows; the history fold serves `summary + turns after throughSeq`.
  */
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { AgentError, JournalCompaction } from "@effect-flue/shared"
+import { type AgentError, JournalCompaction } from "@efflux/shared"
 import { Effect } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"
@@ -111,9 +111,9 @@ export const buildCompactionSummary = (input: {
       "You are compacting a long conversation. Produce a dense summary preserving user goals, decisions, established facts, and open threads. Do NOT restate the todo list — it is tracked separately. Output only the summary."
     const USER =
       (input.priorSummary !== undefined
-        ? "Earlier summary:\n" + input.priorSummary + "\n\n"
+        ? `Earlier summary:\n${input.priorSummary}\n\n`
         : "") +
-      input.olderMessages.map((m) => m.role + ": " + m.content).join("\n\n")
+      input.olderMessages.map((m) => `${m.role}: ${m.content}`).join("\n\n")
     const messages: Array<{ role: "system" | "user"; content: string }> = [
       { role: "system", content: SYS },
       { role: "user", content: USER },

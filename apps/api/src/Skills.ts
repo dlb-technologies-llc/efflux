@@ -2,7 +2,7 @@ import {
   AgentError,
   RoleNotFoundError,
   SkillNotFoundError,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Context, Effect } from "effect"
 
 /** Runtime handle to the skills R2 bucket, provided per-isolate from `env.SKILLS`. */

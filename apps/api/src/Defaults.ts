@@ -1,4 +1,4 @@
-import { AgentConfig, DEFAULT_TOOL_RULES, type ResolvedConfig } from "@effect-flue/shared"
+import { AgentConfig, DEFAULT_TOOL_RULES, type ResolvedConfig } from "@efflux/shared"
 import { Effect, Schema } from "effect"
 import type { AgentNamespace } from "./AgentStub.ts"
 

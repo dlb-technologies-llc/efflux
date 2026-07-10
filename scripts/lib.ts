@@ -7,7 +7,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { HttpApiClient } from "effect/unstable/httpapi"
 
 export class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
-  "@effect-flue/scripts/ApiClient",
+  "@efflux/scripts/ApiClient",
 ) {}
 
 /** FetchHttpClient wrapped once to attach the API bearer token to every outgoing request. */

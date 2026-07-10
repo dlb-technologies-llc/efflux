@@ -4,7 +4,7 @@
  * verbatim, and chain the prior summary. The model call and the orchestrator are
  * exercised in the live smoke, not here — these cases pin only the pure planner.
  *
- * Synthetic {@link ReconstructEvent}s are built from the real `@effect-flue/shared`
+ * Synthetic {@link ReconstructEvent}s are built from the real `@efflux/shared`
  * constructors with hand-assigned seqs so a schema-shape change breaks the test.
  *
  * @module
@@ -15,7 +15,7 @@ import {
   type JournalEventPayload,
   JournalCompaction,
   JournalUserMessage,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect } from "effect"
 import { KEEP_RECENT_TURNS, planCompaction } from "./Compaction.ts"
 import type { ReconstructEvent } from "./Reconstruct.ts"

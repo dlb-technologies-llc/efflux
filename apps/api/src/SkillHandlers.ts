@@ -3,7 +3,7 @@ import {
   SkillContentResponse,
   SkillListResponse,
   SkillSummary,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { deleteSkillObject, getSkillRaw, listSkills, putSkillBody } from "./Skills.ts"

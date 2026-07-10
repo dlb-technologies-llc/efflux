@@ -1,5 +1,5 @@
 {
-  "name": "@effect-flue/api",
+  "name": "@efflux/api",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",
-    "@effect-flue/shared": "workspace:*",
+    "@efflux/shared": "workspace:*",
     "@effect/ai-openrouter": "4.0.0-beta.94",
     "effect": "4.0.0-beta.94"
   },
