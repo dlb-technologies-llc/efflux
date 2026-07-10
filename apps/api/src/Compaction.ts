@@ -6,7 +6,7 @@
  * rows; the history fold serves `summary + turns after throughSeq`.
  */
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { type AgentError, JournalCompaction } from "@efflux/shared"
+import { type AgentError, JournalCompaction, type PlainMessage } from "@efflux/shared"
 import { Effect } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"
@@ -22,7 +22,7 @@ export const KEEP_RECENT_TURNS = 2
 interface CompactionPlan {
   readonly throughSeq: number
   readonly priorSummary: string | undefined
-  readonly olderMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
+  readonly olderMessages: ReadonlyArray<PlainMessage>
 }
 
 interface FoldedTurn {
@@ -75,12 +75,12 @@ export const planCompaction = (
 
   const eligible: Array<{
     userSeq: number
-    messages: Array<{ role: "user" | "assistant"; content: string }>
+    messages: Array<PlainMessage>
   }> = []
   for (const key of order) {
     const turn = turns.get(key)
     if (turn === undefined || turn.userSeq <= priorThrough) continue
-    const messages: Array<{ role: "user" | "assistant"; content: string }> = []
+    const messages: Array<PlainMessage> = []
     if (turn.userContent !== undefined) {
       messages.push({ role: "user", content: turn.userContent })
     }
@@ -103,7 +103,7 @@ export const planCompaction = (
 /** One toolkit-free summarization call (the Subagent.ts pattern): prior summary + older turns → a dense cumulative summary. */
 export const buildCompactionSummary = (input: {
   priorSummary: string | undefined
-  olderMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
+  olderMessages: ReadonlyArray<PlainMessage>
   model: string
 }): Effect.Effect<string, AgentError, LanguageModel.LanguageModel> =>
   Effect.gen(function* () {

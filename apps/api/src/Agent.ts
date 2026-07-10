@@ -1,4 +1,4 @@
-import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@efflux/shared"
+import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"
@@ -12,9 +12,6 @@ const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
 /** Synchronous decode so `resolveApproval`'s check-and-insert stays await-free (atomic). */
 const decodeEventPayloadSync = Schema.decodeUnknownSync(JournalEventPayload)
 const encodeEventPayload = Schema.encodeSync(JournalEventPayload)
-
-/** Plain, RPC-safe message shape derived from the Message schema's encoded side. */
-type PlainMessage = typeof Message.Encoded
 
 /** Validated shape of the container's `POST /exec` response, checked before it crosses the RPC fence. */
 const ExecResultSchema = Schema.Struct({

@@ -13,7 +13,7 @@
  * no-history, single-shot design is the anti-recursion guard. Do not fold
  * it in.
  */
-import { AgentError, JournalErrorEvent } from "@efflux/shared"
+import { AgentError, JournalErrorEvent, type PlainMessage } from "@efflux/shared"
 import { Cause, Effect, Layer, type Duration } from "effect"
 import type { Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
@@ -58,7 +58,7 @@ export const composeMessages = (input: {
   skillBody: string
   roleBody: string | undefined
   todos?: string
-  history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
+  history: ReadonlyArray<PlainMessage>
   message: string
 }): ReadonlyArray<{
   role: "system" | "user" | "assistant"

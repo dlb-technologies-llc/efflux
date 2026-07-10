@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { SafeName } from "./Schemas.ts"
+import { MODEL_ID_MAX_LENGTH, SafeName } from "./Schemas.ts"
 
 /** Per-tool gate decision: `allow` runs the tool, `ask` parks the turn for approval, `deny` refuses outright. */
 export const ToolRule = Schema.Literals(["allow", "ask", "deny"])
@@ -30,7 +30,7 @@ export type McpServer = typeof McpServerConfig.Type
 
 /** Partial session config overrides; PUT replaces the stored overrides wholesale, unset fields fall back to Defaults. */
 export const AgentConfig = Schema.Struct({
-  defaultModel: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+  defaultModel: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MODEL_ID_MAX_LENGTH))),
   rules: Schema.optionalKey(ToolRulesMap),
   ttlSeconds: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThanOrEqualTo(1))),
   compactionThreshold: Schema.optionalKey(

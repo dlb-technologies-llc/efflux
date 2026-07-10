@@ -1,4 +1,11 @@
 import { Cause } from "effect"
+import type {
+  AgentError,
+  ApprovalConflictError,
+  ApprovalNotFoundError,
+  RoleNotFoundError,
+  SkillNotFoundError,
+} from "@efflux/shared"
 import { failureMessage, messageOf } from "./errors.ts"
 
 /** Title + fix-oriented detail for a UI error surface — never a raw stack. */
@@ -7,8 +14,17 @@ export interface ErrorCopy {
   readonly detail: string
 }
 
+/** The `_tag` literals of the shared tagged errors; renaming a class breaks the `known` keys at compile time. */
+type SharedErrorTag = (
+  | AgentError
+  | SkillNotFoundError
+  | RoleNotFoundError
+  | ApprovalNotFoundError
+  | ApprovalConflictError
+)["_tag"]
+
 /** Actionable copy keyed by the shared tagged-error `_tag`; unknown tags fall through to the generic message. */
-const known: Readonly<Record<string, ErrorCopy>> = {
+const known: Partial<Record<SharedErrorTag, ErrorCopy>> = {
   AgentError: {
     title: "The agent run failed",
     detail:
@@ -66,7 +82,7 @@ const fallbackDetail =
 export function errorCopy(cause: unknown): ErrorCopy {
   const tag = findTag(cause)
   if (tag !== undefined) {
-    const copy = known[tag]
+    const copy = Object.entries(known).find(([knownTag]) => knownTag === tag)?.[1]
     if (copy !== undefined) return copy
   }
   const detail = Cause.isCause(cause) ? failureMessage(cause, fallbackDetail) : messageOf(cause)

@@ -39,6 +39,11 @@ import {
   SkillListResponse,
 } from "./Skills.ts"
 
+/** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
+const SeqFromString = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+)
+
 const AgentParams = Schema.Struct({
   name: SafeId,
   id: SafeId,
@@ -81,9 +86,7 @@ const approve = HttpApiEndpoint.post(
     params: Schema.Struct({
       name: SafeId,
       id: SafeId,
-      eventId: Schema.NumberFromString.pipe(
-        Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-      ),
+      eventId: SeqFromString,
     }),
     payload: ApprovalDecision,
     success: Schema.String.pipe(
@@ -109,7 +112,7 @@ const task = HttpApiEndpoint.post("task", "/tasks", {
 const journal = HttpApiEndpoint.get("journal", "/agents/:name/:id/journal", {
   params: AgentParams,
   query: {
-    after: Schema.optionalKey(Schema.NumberFromString),
+    after: Schema.optionalKey(SeqFromString),
     limit: Schema.optionalKey(Schema.NumberFromString),
   },
   success: JournalResponse,
@@ -122,7 +125,7 @@ const attach = HttpApiEndpoint.get("attach", "/agents/:name/:id/attach", {
     "last-event-id": Schema.optionalKey(Schema.NumberFromString),
   }),
   query: {
-    after: Schema.optionalKey(Schema.NumberFromString),
+    after: Schema.optionalKey(SeqFromString),
   },
   success: Schema.String.pipe(
     HttpApiSchema.asText({ contentType: "text/event-stream" }),

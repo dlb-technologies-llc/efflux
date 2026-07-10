@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { SafeId, type SessionInfo, SUGGESTED_MODEL_IDS } from "@efflux/shared"
+import { MODEL_ID_MAX_LENGTH, SafeId, type SessionInfo, SUGGESTED_MODEL_IDS } from "@efflux/shared"
 import { Schema } from "effect"
 import { CheckIcon, ChevronsUpDownIcon, PlusIcon, RotateCwIcon } from "lucide-react"
 import * as React from "react"
@@ -182,7 +182,7 @@ function ModelCombobox() {
   const [draft, setDraft] = React.useState(model)
 
   const commit = (value: string) => {
-    setModel(value.slice(0, 128))
+    setModel(value.slice(0, MODEL_ID_MAX_LENGTH))
     setOpen(false)
   }
 
