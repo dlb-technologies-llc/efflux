@@ -11,7 +11,8 @@ Single source of truth — the `efflux-*` skills defer here.
 - `bun run build` — FE build + API typecheck.
 - `bun run deploy` — ALWAYS the package script, never bare `wrangler deploy`: only the script fires the `predeploy` hook (FE build + `bun scripts/upload-skills.ts`). Requires a local Docker daemon (builds the container image).
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
-- Secrets: `wrangler secret put OPENROUTER_API_KEY` for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives `OPENROUTER_API_KEY` from it.
+- Secrets: `wrangler secret put OPENROUTER_API_KEY` (model calls) + `API_TOKEN` (the Authorization bearer; the FE's `VITE_API_TOKEN` is inlined at build time and must match) for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives its keys from it.
+- First-time deploy provisioning (once per account): `wrangler r2 bucket create efflux-skills` + `efflux-sessions`, `wrangler ai-search create efflux-knowledge --type builtin`, then the secrets above. Deployed at `https://efflux.david-0e2.workers.dev`. A renamed `remote: true` binding (e.g. `ai_search`) blocks `wrangler dev` until its instance exists — see `ISSUES.md`.
 - `bun scripts/agent.ts <name> <id> --message "..." [--url <worker-url>] [--model M] [--skill S] [--role R]` — live smoke CLI (`BASE_URL` env also works).
 - `bun run openai-smoke <name> <id> [--url <worker-url>]` — stock OpenAI-SDK smoke: configures the session (`openai/gpt-4o-mini`, `Bash:allow`), then drives a tool-using conversation (non-stream + stream) through the `/v1` facade and confirms the session in `GET /v1/models`.
 
@@ -23,6 +24,7 @@ Single source of truth — the `efflux-*` skills defer here.
 
 - Schema-first: all types flow from Effect Schemas — no `as` casts, no `!` assertions, no parallel type definitions.
 - Generated `apps/web/src/components/ui/*` (shadcn/ui) are EXEMPT from the no-`as`/no-`!` rule and are excluded from biome linting; ALL hand-written code still obeys no-`as`/no-`!`.
+- FE design system: `apps/web` is Tailwind v4 + shadcn/ui driven by the `/efflux-branding` tokens (dark-first, cyan accent, self-hosted Inter + JetBrains Mono). Invoke `/efflux-branding` before any frontend work — it is the palette / typography / component source of truth, mirrored into `apps/web/src/index.css`.
 - Verification = deploy + hit the live worker (`/efflux-verifying` checklist). Typecheck/build alone NEVER counts.
 - Branch flow: feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes staging→main with a PR carrying the `Closes #N` lines (issues close on release, not on feature landing). Merge commits only — never rebase/squash. Never `--no-verify`.
 - Effect v4 beta (`4.0.0-beta.94`): never write Effect APIs from memory. Authority order: this codebase's existing usage (grep scoped to `apps/ packages/`) → the pinned `.claude/effect-smol` submodule (`packages/effect/src` — core incl. `unstable/http`, `unstable/httpapi`; init once with `git submodule update --init .claude/effect-smol`) → Context7 MCP. Read the submodule directly — do NOT spawn the `effect-agent` subagent (it reads a machine-global, unpinned checkout). The repo-local `.claude/subrepos.json` records the pin (`pinned` field) and the submodule's `src`/`test` search globs.

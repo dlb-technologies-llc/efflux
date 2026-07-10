@@ -1,6 +1,6 @@
 {
   "name": "efflux",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Efflux — a deployable Cloudflare agent runtime built on Effect v4 and native Workers bindings. No framework required.",
