@@ -1,4 +1,4 @@
-import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"
@@ -27,6 +27,9 @@ const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
 /** Shape of the container's `GET /status` reply; only `hydrated` is consumed (excess keys stripped on decode). */
 const StatusSchema = Schema.Struct({ hydrated: Schema.Boolean })
 const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
+
+/** Safe decode of the session's stored config overrides through the canonical `AgentConfig` schema; a failed decode means no usable overrides. */
+const decodeConfig = Schema.decodeUnknownResult(AgentConfig)
 
 /**
  * Per-session storage + sandbox Durable Object: holds the append-only event journal
@@ -372,11 +375,10 @@ export class Agent extends DurableObject<Env> {
   /** Slide the idle-reaper alarm to `now + ttlSeconds` from the session's stored config (fallback `DEFAULT_TTL_SECONDS`). Called on every activity signal; `setAlarm` replaces the single DO alarm, so this is a sliding window from last activity. */
   async #scheduleReap(): Promise<void> {
     const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
-    const parsed = raw === undefined ? {} : JSON.parse(String(raw))
-    const ttl =
-      typeof parsed === "object" && parsed !== null && "ttlSeconds" in parsed && typeof parsed.ttlSeconds === "number" && parsed.ttlSeconds >= 1
-        ? parsed.ttlSeconds
-        : DEFAULT_TTL_SECONDS
+    const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
+    const ttl = Result.isSuccess(decoded)
+      ? decoded.success.ttlSeconds ?? DEFAULT_TTL_SECONDS
+      : DEFAULT_TTL_SECONDS
     await this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
   }
 

@@ -139,7 +139,7 @@ const postFollowingRedirects = (
     const location =
       response.status >= 300 && response.status < 400 ? response.headers.get("location") : null
     if (location === null) return response
-    yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve())
+    yield* Effect.ignore(Effect.tryPromise(() => response.body?.cancel() ?? Promise.resolve()))
     if (hopsLeft === 0) {
       return yield* Effect.fail(
         new McpError({ server: server.name, message: `too many redirects (>${MAX_REDIRECT_HOPS})` }),
