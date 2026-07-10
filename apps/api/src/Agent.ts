@@ -299,8 +299,8 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
   }
 
-  /** Clean-slate reset: clears the journal, dirty flag, config overrides, R2 snapshot, and a live container's /workspace. */
-  async reset(): Promise<void> {
+  /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
+  async #wipeStorage(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
@@ -309,7 +309,18 @@ export class Agent extends DurableObject<Env> {
     await this.#unregisterSession()
     const name = this.ctx.id.name
     if (name === undefined) return
-    await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
+    try {
+      await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
+    } catch (error) {
+      console.error("wipe: workspace snapshot delete failed (orphaned R2 object)", error)
+    }
+  }
+
+  /** Clean-slate reset: clears the journal, dirty flag, config overrides, R2 snapshot, and a live container's /workspace; the session stays alive (a later user message re-arms the reaper alarm). */
+  async reset(): Promise<void> {
+    await this.#wipeStorage()
+    const name = this.ctx.id.name
+    if (name === undefined) return
     try {
       const sandbox = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(name))
       const response = await sandbox.fetch("http://sandbox/reset", { method: "POST" })
@@ -329,7 +340,7 @@ export class Agent extends DurableObject<Env> {
       typeof parsed === "object" && parsed !== null && "ttlSeconds" in parsed && typeof parsed.ttlSeconds === "number" && parsed.ttlSeconds >= 1
         ? parsed.ttlSeconds
         : DEFAULT_TTL_SECONDS
-    this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
+    await this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
   }
 
   /** DO alarm handler: the idle TTL elapsed with no activity. Archive-and-purge the session (reaped sessions feed the eval corpus). */
@@ -337,7 +348,7 @@ export class Agent extends DurableObject<Env> {
     await this.close({ mode: "archive", reason: "reaped" })
   }
 
-  /** End the session: on `archive`, flush + copy the journal and workspace snapshot to `archives/<name>/<id>/<closedAt>/…`; then (both modes) destroy the container, wipe DO storage, unregister, and cancel the reaper alarm. All external steps are best-effort so a dead sandbox or R2 hiccup never leaves the DO half-wiped. */
+  /** End the session: on `archive`, flush + copy the journal and workspace snapshot to `archives/<name>/<id>/<closedAt>/…`; then (both modes) destroy the container and `#wipeStorage()`. Every external step (snapshot, archive write, container destroy, workspace delete) is best-effort so a dead sandbox or R2 hiccup never rejects `close()`/`alarm()` and never leaves the DO half-wiped. The archive reads the full journal + workspace tarball into memory unpaginated — bounded in practice by session size (future: streamed archive for pathologically large sessions). */
   async close(input: { mode: "archive" | "purge"; reason: "closed" | "reaped" }): Promise<void> {
     const name = this.ctx.id.name
     const closedAt = Date.now()
@@ -382,15 +393,7 @@ export class Agent extends DurableObject<Env> {
       }
     }
 
-    this.ctx.storage.sql.exec("DELETE FROM journal")
-    await this.ctx.storage.delete("history")
-    await this.ctx.storage.delete(Agent.#DIRTY_KEY)
-    await this.ctx.storage.delete(Agent.#CONFIG_KEY)
-    await this.ctx.storage.deleteAlarm()
-    await this.#unregisterSession()
-    if (name !== undefined) {
-      await this.env.SESSIONS.delete(Agent.#workspaceKey(name))
-    }
+    await this.#wipeStorage()
   }
 
   /** DO-storage key for the workspace dirty flag (storage-backed so DO eviction can't drop it mid-turn). */
