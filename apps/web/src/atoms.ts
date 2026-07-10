@@ -43,9 +43,11 @@ const MAX_ATTACH_ATTEMPTS = 3
 /** Short backoff between `/attach` reconnect attempts. */
 const ATTACH_BACKOFF = "500 millis"
 
-/** POST-segment terminal tracking: flip `sawTerminal` when a `done`/`error` frame arrives so no reconnect follows a completed turn. */
+/** POST-segment reconnect gate: flip `sawTerminal` on a `done`/`error` frame — and on an `approval-request`, since a park halts the turn pending user approval (the approve flow opens a fresh stream), so no bare `/attach` reconnect should follow a park the client already saw. A drop BEFORE the park never sees this frame, so it still reconnects and replays up to the park. */
 const recordTerminal = (part: StreamPart, sawTerminal: Ref.Ref<boolean>) =>
-  isTerminalTag(part._tag) ? Ref.set(sawTerminal, true) : Effect.void
+  isTerminalTag(part._tag) || part._tag === "approval-request"
+    ? Ref.set(sawTerminal, true)
+    : Effect.void
 
 /**
  * Attach-segment bookkeeping for one reconnect attempt: mark that this attempt produced a frame
@@ -115,6 +117,7 @@ export const streamAtom = runtime.fn(
           Stream.tap((frame) => recordTerminal(frame.data, sawTerminal)),
           Stream.map((frame) => frame.data),
           Stream.scan(noParts, appendPart),
+          Stream.catchCause(() => Stream.empty),
         )
         const attachTail = (attemptsLeft: number): typeof postSegment =>
           Stream.unwrap(
@@ -128,6 +131,7 @@ export const streamAtom = runtime.fn(
                 Stream.tap((frame) => recordAttachFrame(frame.data, sawTerminal, stopped, progress)),
                 Stream.map((frame) => frame.data),
                 Stream.scan(noParts, appendPart),
+                Stream.catchCause(() => Stream.empty),
               )
               const continuation = Stream.unwrap(
                 Effect.gen(function*() {

@@ -112,6 +112,9 @@ export const runStreamingTurn = (
       let promptValue: Prompt.Prompt = initialPrompt
       let totalToolCalls = 0
       let parked = false
+      let reachedTerminal = false
+      let lastFinishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
+      let lastReason: AiResponse.FinishReason | undefined
       for (let hop = startHop; hop < startHop + MAX_TOOL_HOPS; hop++) {
         currentHop = hop
         pendingHopText = ""
@@ -238,12 +241,31 @@ export const runStreamingTurn = (
         pendingHopText = ""
 
         if (terminal) {
+          reachedTerminal = true
           if (!parked && finishPart !== undefined) {
             yield* Queue.offer(queue, { part: finishPart, seq: seqs[seqs.length - 1] })
           }
           break
         }
+        lastFinishPart = finishPart
+        lastReason = lastFinishReason
         promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
+      }
+      if (!reachedTerminal) {
+        const doneSeqs = yield* Effect.promise(() =>
+          agent.appendEvents([
+            eventJson(
+              new JournalDone({
+                turn,
+                finishReason: lastReason ?? "tool-calls",
+                toolCallCount: totalToolCalls,
+              }),
+            ),
+          ]),
+        )
+        if (lastFinishPart !== undefined) {
+          yield* Queue.offer(queue, { part: lastFinishPart, seq: doneSeqs[0] })
+        }
       }
     })
 

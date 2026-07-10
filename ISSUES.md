@@ -85,10 +85,30 @@ driver's `tapCause` journals the terminal `error` and snapshots alongside
 it. It knowingly does not cover disconnects; the detached driver +
 `ctx.waitUntil` do.
 
-> TODO(verify live, /flue-verifying): observed post-disconnect survival of a
-> multi-hop turn, and the `ctx.waitUntil` wall-clock cap on this Workers
-> plan. Asserted here as design intent only — confirmed against a running
-> worker, not on paper.
+### Verified live (2026-07-10, #49 deploy)
+
+Confirmed against the running worker, not on paper:
+
+- **Survival + reattach works.** A 3-hop turn (each hop a `sleep 6` Bash
+  call) whose client was killed 7s in — right after the first `tool-call`
+  frame, before that hop's tool even finished — ran ALL three hops to a
+  terminal `done` with no client attached, and `GET /attach` from the last
+  seen `Last-Event-ID` replayed every intervening frame (tool results, later
+  hops, assistant text, `done`) with zero gaps. `ctx.waitUntil` demonstrably
+  extends the isolate past the response: a longer turn was still journaling
+  its 3rd `tool-call` ~30s+ after disconnect, well beyond the ~30s natural
+  survival window this file documents above.
+- **There IS a `ctx.waitUntil` wall-clock ceiling.** A turn of 3×`sleep 14`
+  (~42s of tool time) survived the disconnect and journaled through its 3rd
+  `tool-call`, then STALLED — the 3rd tool result and `done` never landed
+  (the container had already run two `sleep 14`s fine, so it is the isolate
+  being reaped, not the sandbox). Practical ceiling observed on this plan:
+  a detached turn reliably completes only if it finishes within roughly
+  40–50s of wall-clock after the detach point; longer turns can be reaped
+  mid-flight, leaving the journal terminal-less (a genuinely-reaped turn is
+  the one case `/attach`'s ~150s staleness cutoff exists to bound). This is
+  the inherent limit of the Worker-side + `waitUntil` approach (the DO has
+  no AI layer, so moving the driver DO-side was out of scope for #49).
 
 ---
 
