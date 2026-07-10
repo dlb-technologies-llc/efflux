@@ -88,7 +88,7 @@ export function SessionSwitcher() {
                         aria-current={active ? "true" : undefined}
                         onClick={() => setSession({ name: session.name, id: session.id })}
                         className={cn(
-                          "flex w-full items-stretch gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
+                          "flex w-full items-stretch gap-2 rounded-md border px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           active
                             ? "border-accent-line bg-accent-ghost"
                             : "border-transparent hover:bg-surface-2",

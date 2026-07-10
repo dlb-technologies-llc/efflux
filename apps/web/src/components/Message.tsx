@@ -28,7 +28,7 @@ export function Message({
       {streaming ? (
         <div aria-live="polite">
           <Markdown content={content} />
-          <span className="inline-block w-1.5 h-4 align-text-bottom bg-primary animate-pulse ml-0.5" />
+          <span className="inline-block w-1.5 h-4 align-text-bottom bg-primary animate-pulse motion-reduce:animate-none ml-0.5" />
         </div>
       ) : (
         <Markdown content={content} />

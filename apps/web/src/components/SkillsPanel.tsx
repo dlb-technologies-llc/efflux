@@ -169,7 +169,7 @@ function SkillsManager() {
                         onClick={() => setSelected(skill.name)}
                         aria-current={skill.name === selected}
                         className={cn(
-                          "flex w-full flex-col gap-0.5 rounded-md border border-transparent px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground",
+                          "flex w-full flex-col gap-0.5 rounded-md border border-transparent px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           skill.name === selected && "border-border bg-accent text-accent-foreground",
                         )}
                       >
