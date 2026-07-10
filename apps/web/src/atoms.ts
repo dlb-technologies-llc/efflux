@@ -169,15 +169,25 @@ export const streamAtom = runtime.fn(
  * append `attachTail` loop (fresh `sawTerminal`, so the first attach fires). The
  * caller starts this only when `latestTurnInFlight` says the newest turn has no
  * terminal in the journal, so a completed session never replays.
+ *
+ * `Atom.family`-keyed by session (like `historyAtom`/`journalAtom`) so each
+ * session gets its OWN fn atom that starts from `Initial`. A single shared atom
+ * would, when a SECOND session resumes, re-emit the previous session's cached
+ * `Success` transcript as `waitingFrom(previous)` — indistinguishable from a
+ * live frame — briefly bleeding one session's frames into another; the
+ * per-session member has no prior `Success` to re-emit, and switching away
+ * drops the old member so its `/attach` tail is not left running.
  */
-export const resumeAtom = runtime.fn((args: SessionArgs) =>
-  Stream.unwrap(
-    Effect.gen(function*() {
-      const client = yield* HttpClient.HttpClient
-      const sawTerminal = yield* Ref.make(false)
-      const attachUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/attach`
-      return attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS)
-    }),
+export const resumeAtom = Atom.family((session: SessionArgs) =>
+  runtime.fn((_: SessionArgs) =>
+    Stream.unwrap(
+      Effect.gen(function*() {
+        const client = yield* HttpClient.HttpClient
+        const sawTerminal = yield* Ref.make(false)
+        const attachUrl = `/agents/${encodeURIComponent(session.name)}/${encodeURIComponent(session.id)}/attach`
+        return attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS)
+      }),
+    ),
   ),
 )
 

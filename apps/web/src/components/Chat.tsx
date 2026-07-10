@@ -52,7 +52,8 @@ export function Chat() {
   const currentKeyRef = React.useRef<string | null>(null)
   const sessionKey = `${session.name}/${session.id}`
   const { result: journalResult } = useJournal(session)
-  const runResume = useAtomSet(resumeAtom, { mode: "promiseExit" })
+  const sessionResumeAtom = resumeAtom(session)
+  const runResume = useAtomSet(sessionResumeAtom, { mode: "promiseExit" })
 
   React.useEffect(() => {
     currentKeyRef.current = sessionKey
@@ -73,7 +74,7 @@ export function Chat() {
     },
     [],
   )
-  useAtomSubscribe(resumeAtom, onResumeResult)
+  useAtomSubscribe(sessionResumeAtom, onResumeResult)
 
   const streamingText = parts.reduce(
     (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
