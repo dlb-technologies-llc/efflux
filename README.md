@@ -261,6 +261,8 @@ bun run deploy
 
 The `predeploy` hook runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc`, which declares the Worker `efflux`, the `Agent`/`Sandbox`/`Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `efflux-skills`/`efflux-sessions` R2 buckets, the `efflux-knowledge` AI Search instance, the cron trigger, and the FE assets. On the first request after a cold deploy the `Sandbox` container spins up from zero instances, so the first tool call can 500 and then succeed on retry (see `ISSUES.md`).
 
+`bun run deploy` now runs a **preflight** first (`bun scripts/preflight-env.ts`) that refuses to build unless `.dev.vars` has a real `OPENROUTER_API_KEY` (not the `sk-or-your-key-here` placeholder) and an `API_TOKEN`. You set **only** `API_TOKEN` — locally in `.dev.vars`, and on the deployed Worker via `wrangler secret put API_TOKEN`. The web FE's build-time `VITE_API_TOKEN` is **auto-derived from `API_TOKEN`** by `apps/web/vite.config.ts`, so the bundle can never ship an empty bearer (an explicit `VITE_API_TOKEN` env still overrides). **The deployed `wrangler secret put API_TOKEN` value must byte-match the `.dev.vars` `API_TOKEN` on the machine that runs `bun run deploy`** — the FE bearer is baked from that `.dev.vars`, and if the two differ every FE call 401s exactly like an empty bearer (the preflight guards emptiness/placeholder, not remote match).
+
 Useful root scripts:
 
 | Script              | What it does                                                     |
