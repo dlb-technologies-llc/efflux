@@ -4,10 +4,10 @@
  *
  * Hand-written vectors (a legitimate non-schema one-off; no schema backs this
  * flat `Record<string, string>`): they freeze `parseDotenv`'s blank/comment
- * skipping, first-`=` split, key/value trimming, and single-pair quote stripping,
- * plus `resolveApiToken`'s explicit-wins / `.dev.vars`-fallback / empty-string
- * precedence, so a future edit to either breaks a pin instead of drifting the
- * `Bearer` the frontend ships with.
+ * skipping, first-`=` split, key/value trimming, quote-unwrapping, and inline
+ * `#`-comment stripping (matching wrangler's dotenv), plus `resolveApiToken`'s
+ * explicit-wins / `.dev.vars`-fallback / empty-string precedence, so a future
+ * edit to either breaks a pin instead of drifting the `Bearer` the frontend ships with.
  *
  * @module
  */
@@ -33,6 +33,19 @@ describe("parseDotenv", () => {
 
   it("trims whitespace around key and value", () => {
     expect(parseDotenv("  A =  1  ")).toEqual({ A: "1" })
+  })
+
+  it("truncates an unquoted value at an inline # comment", () => {
+    expect(parseDotenv("A=abc # my token")).toEqual({ A: "abc" })
+    expect(parseDotenv("A=abc#nospace")).toEqual({ A: "abc" })
+  })
+
+  it("discards a trailing comment after a closing quote", () => {
+    expect(parseDotenv("A=\"ab c\" # note")).toEqual({ A: "ab c" })
+  })
+
+  it("keeps a # that lives inside a quoted value", () => {
+    expect(parseDotenv("A=\"a#b\"")).toEqual({ A: "a#b" })
   })
 })
 

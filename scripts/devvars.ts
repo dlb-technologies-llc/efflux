@@ -1,21 +1,23 @@
 import { readFileSync } from "node:fs"
 
-/** Remove one matching pair of surrounding single or double quotes, if present, matching
- *  wrangler's dotenv semantics so a quoted `API_TOKEN="abc"` never derives a `Bearer "abc"`
- *  that mismatches the Worker's unquoted secret. */
-const stripQuotes = (value: string): string => {
-  if (value.length >= 2) {
-    const first = value[0]
-    if ((first === "\"" || first === "'") && value[value.length - 1] === first) {
-      return value.slice(1, -1)
-    }
+/** Decode a dotenv value the way wrangler's dotenv does, so a `.dev.vars` value never
+ *  derives an FE bearer that mismatches the Worker's own parse: a quote-wrapped value is
+ *  the content between the first quote pair (trailing ` # comment` after the close quote
+ *  discarded); an unquoted value is truncated at its first `#` (inline comment) and
+ *  trimmed. A lone opening quote with no partner is treated as unquoted text. */
+const parseValue = (raw: string): string => {
+  const first = raw[0]
+  if (first === "\"" || first === "'") {
+    const close = raw.indexOf(first, 1)
+    if (close !== -1) return raw.slice(1, close)
   }
-  return value
+  const hash = raw.indexOf("#")
+  return (hash === -1 ? raw : raw.slice(0, hash)).trim()
 }
 
 /** Parse dotenv text into a flat map: skips blank and `#`-comment lines, splits each
- *  remaining line on its first `=`, trims key and value, and strips one surrounding
- *  quote pair from the value. Later duplicate keys win. */
+ *  remaining line on its first `=`, trims the key, and decodes the value via
+ *  {@link parseValue} (quote-unwrapping + inline-comment stripping). Later duplicate keys win. */
 export const parseDotenv = (text: string): Record<string, string> => {
   const result: Record<string, string> = {}
   for (const rawLine of text.split("\n")) {
@@ -25,7 +27,7 @@ export const parseDotenv = (text: string): Record<string, string> => {
     if (eq === -1) continue
     const key = line.slice(0, eq).trim()
     if (key === "") continue
-    result[key] = stripQuotes(line.slice(eq + 1).trim())
+    result[key] = parseValue(line.slice(eq + 1).trim())
   }
   return result
 }
