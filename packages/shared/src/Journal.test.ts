@@ -22,14 +22,17 @@ import {
   JournalApprovalRequested,
   JournalApprovalResolved,
   JournalAssistantText,
+  JournalCompaction,
   JournalDone,
   JournalErrorEvent,
   JournalEventPayload,
   JournalHopMessages,
   JournalToolCall,
   JournalToolResult,
+  JournalTodoWrite,
   JournalUsage,
   JournalUserMessage,
+  TodoItem,
 } from "@effect-flue/shared"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
@@ -47,6 +50,8 @@ const CleanPayload = Schema.Union([
   JournalUsage,
   JournalDone,
   JournalErrorEvent,
+  JournalTodoWrite,
+  JournalCompaction,
 ])
 
 const cleanArb = Schema.toArbitrary(CleanPayload)
@@ -115,5 +120,20 @@ describe("JournalEventPayload codec", () => {
           }),
         ],
       }),
+    ))
+
+  it.effect("pins todo-write (capped TodoItem array)", () =>
+    assertStable(
+      JournalEventPayload,
+      new JournalTodoWrite({
+        turn: 3,
+        items: [new TodoItem({ content: "ship it", status: "in_progress" })],
+      }),
+    ))
+
+  it.effect("pins compaction (turn-less summary checkpoint)", () =>
+    assertStable(
+      JournalEventPayload,
+      new JournalCompaction({ throughSeq: 5, summary: "user asked X; agent did Y" }),
     ))
 })

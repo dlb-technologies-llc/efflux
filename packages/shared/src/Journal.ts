@@ -102,14 +102,35 @@ export class JournalErrorEvent extends Schema.TaggedClass<JournalErrorEvent>()(
   },
 ) {}
 
+/** One task-list entry the model maintains via the todo tools; `status` mirrors the standard todo lifecycle. */
+export class TodoItem extends Schema.Class<TodoItem>("TodoItem")({
+  content: Schema.String.check(Schema.isMaxLength(2000)),
+  status: Schema.Literals(["pending", "in_progress", "completed"]),
+}) {}
+
+/** The session task list at one instant — the model replaces it wholesale via `todo_write`. The latest `todo-write` is the live list: injected into every turn and preserved verbatim through compaction. Capped so the injected list can't dwarf the context it survives. */
+export class JournalTodoWrite extends Schema.TaggedClass<JournalTodoWrite>()("todo-write", {
+  turn: NonNegativeInt,
+  items: Schema.Array(TodoItem).check(Schema.isMaxLength(100)),
+}) {}
+
+/** A context-compaction checkpoint: `summary` folds every event with seq ≤ `throughSeq` into prose; the history fold then serves `summary + turns after throughSeq`. Turn-less — compaction runs BETWEEN turns, never within one. */
+export class JournalCompaction extends Schema.TaggedClass<JournalCompaction>()("compaction", {
+  throughSeq: NonNegativeInt,
+  summary: Schema.String,
+}) {}
+
+/** Prefix marking the injected compaction summary; shared by the DO history fold and the approve-path reconstruction so they never drift. */
+export const COMPACTION_SUMMARY_PREFIX = "Summary of the conversation so far:\n\n"
+
 /**
  * The append-only event vocabulary persisted in the Agent DO's SQLite journal;
  * history is a fold over these. Two prompt-reconstruction layers coexist:
  * GRANULAR `tool-call`/`tool-result` events embed encoded `Prompt` part schemas
  * for per-call timelines and approvals; AUTHORITATIVE `hop-messages` stores the
  * exact per-hop `Prompt.Message`s for lossless rebuild. Every event but
- * `user-message` carries `turn`; folds group by `(turn, hop)`, never seq
- * adjacency (concurrent prompts to one session interleave appends).
+ * `user-message` and `compaction` carries `turn`; folds group by `(turn, hop)`,
+ * never seq adjacency (concurrent prompts to one session interleave appends).
  */
 export const JournalEventPayload = Schema.Union([
   JournalUserMessage,
@@ -122,6 +143,8 @@ export const JournalEventPayload = Schema.Union([
   JournalUsage,
   JournalDone,
   JournalErrorEvent,
+  JournalTodoWrite,
+  JournalCompaction,
 ])
 
 export type JournalEventPayload = typeof JournalEventPayload.Type
