@@ -196,6 +196,41 @@ Changes flow through a plan → execute → verify → postmortem loop, driven b
 
 Feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes `staging`→`main` and tags the release. CI gates `typecheck` + `test` (vitest) + `lint` (biome) on every PR.
 
+## Testing
+
+Tests run on `@effect/vitest` via root `bun run test` (CI-gated alongside typecheck + lint). Because
+every type flows from an Effect Schema, **schema-derived arbitraries are the default test data** —
+`Schema.toArbitrary(<Schema>)` (there is no `Arbitrary` module at this Effect beta; `Arbitrary.make`
+does not exist). Property tests feed the arbitrary to `it.effect.prop`; codec round-trips assert that
+`Schema.encodeEffect` → `Schema.decodeEffect` → re-encode is stable:
+
+```ts
+import { describe, expect, it } from "@effect/vitest"
+import { Effect, Schema } from "effect"
+import { StreamPart } from "@efflux/shared"
+
+const streamPartArb = Schema.toArbitrary(StreamPart)
+
+describe("StreamPart codec", () => {
+  it.effect.prop(
+    "encode → decode → re-encode is stable",
+    [streamPartArb],
+    ([part]) =>
+      Effect.gen(function* () {
+        const encoded = yield* Schema.encodeEffect(StreamPart)(part)
+        const decoded = yield* Schema.decodeEffect(StreamPart)(encoded)
+        expect(yield* Schema.encodeEffect(StreamPart)(decoded)).toStrictEqual(encoded)
+      }),
+    { fastCheck: { numRuns: 100 } },
+  )
+})
+```
+
+Raw `FastCheck` (and `TestClock`) come from `effect/testing`, used only for genuine one-offs no schema
+backs. One caveat: never `Schema.toArbitrary` a **regex-refined** schema — the generator exhausts
+FastCheck's `.filter`; pin fixed representative values round-tripped via `it.effect`, or use a
+codec-clean schema instead.
+
 ## The web console
 
 `apps/web` is a Vite + React 19 console styled with **Tailwind v4 + shadcn/ui**, driven by the `/efflux-branding` design tokens: dark-first with a real light mode, self-hosted Inter + JetBrains Mono, one cyan accent. The UI is built from a small set of shared primitives — `Markdown` (sanitized `react-markdown` + `remark-gfm` + `rehype-sanitize`), `ToolCallCard`, `StatusPill`, `Message`, `AsyncBoundary`, and a slot-based `AppShell` — so the transcript renders real markdown, tool calls collapse into cards with their output, and the layout holds one scrolling conversation with a pinned composer, a free-entry model combobox, a Skills dialog, and a Journal/Tools inspector. See `apps/web/README.md` for the full design-system reference.
