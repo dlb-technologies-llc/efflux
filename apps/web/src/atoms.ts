@@ -1,5 +1,12 @@
-import { ApprovalDecision, makePromptRequest, PromptRequest, StreamPart, streamAgentSse } from "@effect-flue/shared"
-import { Effect, Schema, Stream } from "effect"
+import {
+  ApprovalDecision,
+  makePromptRequest,
+  PromptRequest,
+  StreamPart,
+  streamAgentSse,
+  streamAgentSseFramed,
+} from "@effect-flue/shared"
+import { Effect, Ref, Schema, Stream } from "effect"
 import { HttpBody, HttpClient } from "effect/unstable/http"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
@@ -24,17 +31,68 @@ export const historyAtom = Atom.family((args: SessionArgs) =>
 /** Empty typed seed for the streaming accumulator (avoids an `as` cast). */
 export const noParts: ReadonlyArray<StreamPart> = []
 
+/** Grow the running transcript by one decoded frame; the atom republishes the whole array each event so the consumer never concatenates tokens by hand. */
+const appendPart = (parts: ReadonlyArray<StreamPart>, part: StreamPart): ReadonlyArray<StreamPart> => [...parts, part]
+
+/** A turn's terminal frames — once one is seen the turn is over and no `/attach` reconnect may follow. */
+const isTerminalTag = (tag: StreamPart["_tag"]): boolean => tag === "done" || tag === "error"
+
+/** Cap on `/attach` reconnect attempts so a dead turn can never reconnect forever. */
+const MAX_ATTACH_ATTEMPTS = 3
+
+/** Short backoff between `/attach` reconnect attempts. */
+const ATTACH_BACKOFF = "500 millis"
+
+/** POST-segment reconnect gate: flip `sawTerminal` on a `done`/`error` frame — and on an `approval-request`, since a park halts the turn pending user approval (the approve flow opens a fresh stream), so no bare `/attach` reconnect should follow a park the client already saw. A drop BEFORE the park never sees this frame, so it still reconnects and replays up to the park. */
+const recordTerminal = (part: StreamPart, sawTerminal: Ref.Ref<boolean>) =>
+  isTerminalTag(part._tag) || part._tag === "approval-request"
+    ? Ref.set(sawTerminal, true)
+    : Effect.void
+
+/**
+ * Attach-segment bookkeeping for one reconnect attempt: mark that this attempt produced a frame
+ * (progress-gating), and stop the reconnect loop on a terminal or `approval-request` frame — a
+ * terminal frame additionally flips `sawTerminal` so the loop can never reconnect again.
+ */
+const recordAttachFrame = (
+  part: StreamPart,
+  sawTerminal: Ref.Ref<boolean>,
+  stopped: Ref.Ref<boolean>,
+  progress: Ref.Ref<boolean>,
+) =>
+  Effect.gen(function*() {
+    yield* Ref.set(progress, true)
+    if (isTerminalTag(part._tag)) {
+      yield* Ref.set(sawTerminal, true)
+      yield* Ref.set(stopped, true)
+    } else if (part._tag === "approval-request") {
+      yield* Ref.set(stopped, true)
+    }
+  })
+
 /**
  * Stream atom: POST the prompt to `/agents/:name/:id/stream` and emit the
- * accumulated `StreamPart[]` after each event.
+ * accumulated `StreamPart[]` after each event, transparently resuming an
+ * in-flight turn if the POST stream drops before a terminal frame.
  *
- * The transport is fully Effect: `HttpClient` + the shared `streamAgentSse`
+ * The transport is fully Effect: `HttpClient` + the shared `streamAgentSseFramed`
  * (built on `effect/unstable/encoding/Sse`, symmetric with the server's
  * `Sse.encoder`) — no raw `fetch`, no hand-rolled parser, decode failures in
  * the Stream error channel. `Stream.scan` makes the atom own accumulation, so
  * each published value is the whole transcript-so-far: the consumer just reads
  * the latest array (no manual token concatenation), and multi-event SSE chunks
  * can never drop a token the way a last-element-per-chunk value atom would.
+ *
+ * Reconnect: a single `sawTerminal` `Ref` tracks whether a `done`/`error` frame
+ * was seen. If the POST segment ends without one, the atom reconnects to a bare
+ * `GET /agents/:name/:id/attach` (latest-turn mode — NO `Last-Event-ID`, no
+ * `?after`), which replays the newest turn IN FULL from the journal then
+ * live-tails. Each attach segment `Stream.scan`s from a FRESH `noParts` seed so
+ * it REPLACES the interrupted transcript (appending would double-render the
+ * dropped hop's text). Reconnects are bounded by `MAX_ATTACH_ATTEMPTS` with a
+ * short backoff and per-attempt progress-gating (an attach that emits zero
+ * frames means the turn is gone — stop), and never fire once `sawTerminal` is
+ * true. The published value stays `ReadonlyArray<StreamPart>` throughout.
  */
 export const streamAtom = runtime.fn(
   (
@@ -48,14 +106,45 @@ export const streamAtom = runtime.fn(
     Stream.unwrap(
       Effect.gen(function*() {
         const client = yield* HttpClient.HttpClient
-        const url = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`
+        const sawTerminal = yield* Ref.make(false)
+        const streamUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`
+        const attachUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/attach`
         const body = HttpBody.text(
           JSON.stringify(encodePromptRequest(makePromptRequest(args.message, args))),
           "application/json",
         )
-        return streamAgentSse(client.post(url, { body }), StreamPart).pipe(
-          Stream.scan(noParts, (parts, part) => [...parts, part]),
+        const postSegment = streamAgentSseFramed(client.post(streamUrl, { body }), StreamPart).pipe(
+          Stream.tap((frame) => recordTerminal(frame.data, sawTerminal)),
+          Stream.map((frame) => frame.data),
+          Stream.scan(noParts, appendPart),
+          Stream.catchCause(() => Stream.empty),
         )
+        const attachTail = (attemptsLeft: number): typeof postSegment =>
+          Stream.unwrap(
+            Effect.gen(function*() {
+              if (attemptsLeft <= 0) return Stream.empty
+              if (yield* Ref.get(sawTerminal)) return Stream.empty
+              yield* Effect.sleep(ATTACH_BACKOFF)
+              const progress = yield* Ref.make(false)
+              const stopped = yield* Ref.make(false)
+              const segment = streamAgentSseFramed(client.get(attachUrl), StreamPart).pipe(
+                Stream.tap((frame) => recordAttachFrame(frame.data, sawTerminal, stopped, progress)),
+                Stream.map((frame) => frame.data),
+                Stream.scan(noParts, appendPart),
+                Stream.catchCause(() => Stream.empty),
+              )
+              const continuation = Stream.unwrap(
+                Effect.gen(function*() {
+                  if (yield* Ref.get(sawTerminal)) return Stream.empty
+                  if (yield* Ref.get(stopped)) return Stream.empty
+                  if (!(yield* Ref.get(progress))) return Stream.empty
+                  return attachTail(attemptsLeft - 1)
+                }),
+              )
+              return Stream.concat(segment, continuation)
+            }),
+          )
+        return Stream.concat(postSegment, attachTail(MAX_ATTACH_ATTEMPTS))
       }),
     ),
 )

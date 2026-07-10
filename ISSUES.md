@@ -47,14 +47,68 @@ happens:
   disconnected turn always exists in the journal.
 - Tool events append inline as parts arrive; hop batches append at hop end.
   Both keep landing after disconnect for as long as the driver survives.
-- A turn with no terminal `done`/`error` event is a legitimate journal
-  state meaning "parked/incomplete" (`scripts/verify-journal.ts` reports it
-  as PARKED; stream re-attach is #49's territory).
+- The streaming driver (`apps/api/src/StreamingTurn.ts`) is now DETACHED
+  from the request fiber: it runs via `Effect.runPromise` on a fresh root
+  fiber, and its completion is registered with `ctx.waitUntil` (threaded
+  per-request through the `WaitUntil` service — `apps/api/src/index.ts` +
+  `WaitUntil.ts`). A disconnected turn therefore runs to a terminal instead
+  of stalling. The response sink is `Queue.sliding(256)`, so `Queue.offer`
+  never blocks the driver on a gone client via backpressure.
+- The driver now OWNS its terminals: it journals the terminal `done` (in
+  the hop loop) and, on failure, the terminal `error` (via
+  `journalTurnError`), and it snapshots the workspace — because the response
+  pipeline no longer runs once the client is gone. (Previously the terminal
+  `error` + snapshot lived on the response stream, which silently did
+  nothing on disconnect — the same trap that lost the pre-journal
+  `persistTurn`.)
+- A turn STILL ending with no terminal `done`/`error` is now the narrow
+  reaped-before-finish case; `scripts/verify-journal.ts` still reports it as
+  PARKED. Recovery is `GET /agents/:name/:id/attach`
+  (`apps/api/src/AttachStream.ts`): it replays journaled frames as SSE from
+  the resume cursor — `Last-Event-ID` header, else `?after=`, else the
+  LATEST turn in full — then live-tails the journal until the followed turn
+  terminates, parks, or goes stale. That is how a client recovers "zero
+  lost frames" after a disconnect: it reads the journal, not the dropped
+  socket. (Stream re-attach was #49.)
 
-The `flushPartialHopText` finalizer in `handlers.ts` covers mid-hop
-FAILURES (e.g. the model API dying between deltas) — those interrupt the
-stream through normal Effect channels and DO run finalizers. It knowingly
-does not cover disconnects.
+**Residual tradeoff (honest):** the `sliding` sink is not free. If a
+still-CONNECTED client falls more than 256 frames behind, the queue drops
+its OLDEST buffered frames. Those dropped frames are un-journaled
+`text-delta`s (tokens) — recoverable only as the hop's full assistant text
+via `GET /history` or a reattach, NOT per-token. That token-loss is the
+necessary price of never stalling the driver on a gone client.
+
+The `flushPartialHopText` finalizer (now in `StreamingTurn.ts`) covers
+mid-hop FAILURES (e.g. the model API dying between deltas) — those interrupt
+the driver through normal Effect channels and DO run finalizers, and the
+driver's `tapCause` journals the terminal `error` and snapshots alongside
+it. It knowingly does not cover disconnects; the detached driver +
+`ctx.waitUntil` do.
+
+### Verified live (2026-07-10, #49 deploy)
+
+Confirmed against the running worker, not on paper:
+
+- **Survival + reattach works.** A 3-hop turn (each hop a `sleep 6` Bash
+  call) whose client was killed 7s in — right after the first `tool-call`
+  frame, before that hop's tool even finished — ran ALL three hops to a
+  terminal `done` with no client attached, and `GET /attach` from the last
+  seen `Last-Event-ID` replayed every intervening frame (tool results, later
+  hops, assistant text, `done`) with zero gaps. `ctx.waitUntil` demonstrably
+  extends the isolate past the response: a longer turn was still journaling
+  its 3rd `tool-call` ~30s+ after disconnect, well beyond the ~30s natural
+  survival window this file documents above.
+- **There IS a `ctx.waitUntil` wall-clock ceiling.** A turn of 3×`sleep 14`
+  (~42s of tool time) survived the disconnect and journaled through its 3rd
+  `tool-call`, then STALLED — the 3rd tool result and `done` never landed
+  (the container had already run two `sleep 14`s fine, so it is the isolate
+  being reaped, not the sandbox). Practical ceiling observed on this plan:
+  a detached turn reliably completes only if it finishes within roughly
+  40–50s of wall-clock after the detach point; longer turns can be reaped
+  mid-flight, leaving the journal terminal-less (a genuinely-reaped turn is
+  the one case `/attach`'s ~150s staleness cutoff exists to bound). This is
+  the inherent limit of the Worker-side + `waitUntil` approach (the DO has
+  no AI layer, so moving the driver DO-side was out of scope for #49).
 
 ---
 

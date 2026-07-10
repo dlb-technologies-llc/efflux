@@ -2,7 +2,6 @@ import {
   JournalApprovalRequested,
   JournalAssistantText,
   JournalDone,
-  JournalErrorEvent,
   type JournalEventPayload,
   JournalHopMessages,
   JournalToolCall,
@@ -23,6 +22,7 @@ import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import {
+  journalTurnError,
   MAX_TOOL_HOPS,
   MODEL_HOP_TIMEOUT,
   makeBashRunnerLayer,
@@ -50,26 +50,31 @@ interface RunStreamingTurnInput {
   startHop: number
   initialPrompt: Prompt.Prompt
   model: string
-  /** Resolved per-tool permission rules for this turn; provided into the stream as the ApprovalRules Reference. */
+  /** Resolved per-tool permission rules for this turn; provided into the driver as the ApprovalRules Reference. */
   rules: RulesMap
   /** The merged session toolkit (local `AgentToolkit` folded with the resolved MCP tools) driving `streamText` this turn. */
   toolkit: SessionToolkit["toolkit"]
-  /** The matching merged handler layer for `toolkit`, provided into the stream for tool execution. */
+  /** The matching merged handler layer for `toolkit`, provided into the driver for tool execution. */
   toolLayer: SessionToolkit["toolLayer"]
+  /** Per-request `ExecutionContext.waitUntil`: registering the detached driver's completion keeps the isolate alive so the turn runs to a terminal even after the client disconnects. */
+  readonly waitUntil: (promise: Promise<unknown>) => void
 }
 
 /**
  * The streaming-turn driver shared by `stream` (fresh turn, `startHop` 0) and `approve`
- * (continuation of a parked turn). Owns the forked queue driver, per-hop journaling, and the
- * SSE pipeline, looping until a terminal finish or the hop cap with intermediate finishes
- * suppressed. A `tool-approval-request` PARKS the turn (journaled, `approval-request` emitted,
- * no `done`). On client disconnect workerd runs no finalizers (see ISSUES.md) — the inline
- * appends and hop-end batches persist the turn regardless.
+ * (continuation of a parked turn). The hop-loop driver is DETACHED from the request fiber
+ * (`Effect.runPromise` starts a fresh root fiber) and its completion is registered with
+ * `waitUntil`, so a client disconnect neither stalls nor aborts the turn — it runs to a
+ * terminal regardless. The driver owns its own terminals: it journals a terminal `error`,
+ * snapshots the workspace, and closes the queue itself, because the response pipeline no
+ * longer runs once the client is gone. The queue is `sliding`, so `Queue.offer` never blocks
+ * on a non-reading client. On client disconnect workerd runs no finalizers (see ISSUES.md);
+ * the inline appends, hop-end batches, and driver-owned terminals persist the turn regardless.
  */
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
-): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, model, rules, startHop, toolkit, toolLayer, turn } = input
+): Effect.Effect<HttpServerResponse.HttpServerResponse> => {
+  const { agent, ambient, initialPrompt, model, rules, startHop, toolkit, toolLayer, turn, waitUntil } = input
 
   let pendingHopText = ""
   let currentHop = startHop
@@ -91,225 +96,245 @@ export const runStreamingTurn = (
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
   const todoStore = makeTodoStoreLayer(agent, turn)
 
-  const sseFrames = Stream.unwrap(
-    Effect.gen(function* () {
-      const toolCallCount = yield* Ref.make(0)
-      const lastSeq = yield* Ref.make(turn)
+  return Effect.gen(function* () {
+    const toolCallCount = yield* Ref.make(0)
+    const lastSeq = yield* Ref.make(turn)
 
-      const loopedStream = Stream.unwrap(
-        Effect.gen(function* () {
-          const queue = yield* Queue.bounded<
-            {
-              part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
-              seq: number | undefined
-            },
-            AiError.AiError | Cause.TimeoutError | Cause.Done
-          >(64)
+    const queue = yield* Queue.sliding<
+      {
+        part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
+        seq: number | undefined
+      },
+      AiError.AiError | Cause.TimeoutError | Cause.Done
+    >(256)
 
-          const driver = Effect.gen(function* () {
-            let promptValue: Prompt.Prompt = initialPrompt
-            let totalToolCalls = 0
-            let parked = false
-            for (let hop = startHop; hop < startHop + MAX_TOOL_HOPS; hop++) {
-              currentHop = hop
-              pendingHopText = ""
-              const baseCall = LanguageModel.streamText({
-                prompt: promptValue,
-                toolkit,
-              })
-              const withModel = baseCall.pipe(
-                Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
-              )
+    const hopLoop = Effect.gen(function* () {
+      let promptValue: Prompt.Prompt = initialPrompt
+      let totalToolCalls = 0
+      let parked = false
+      let reachedTerminal = false
+      let lastFinishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
+      let lastReason: AiResponse.FinishReason | undefined
+      for (let hop = startHop; hop < startHop + MAX_TOOL_HOPS; hop++) {
+        currentHop = hop
+        pendingHopText = ""
+        const baseCall = LanguageModel.streamText({
+          prompt: promptValue,
+          toolkit,
+        })
+        const withModel = baseCall.pipe(
+          Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
+        )
 
-              const collected: Array<AiResponse.AnyPart> = []
-              let lastFinishReason: AiResponse.FinishReason | undefined
-              let finishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
+        const collected: Array<AiResponse.AnyPart> = []
+        let lastFinishReason: AiResponse.FinishReason | undefined
+        let finishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
 
-              yield* withModel.pipe(
-                Stream.runForEach((part) =>
-                  Effect.gen(function* () {
-                    collected.push(part)
-                    switch (part.type) {
-                      case "text-delta": {
-                        pendingHopText += part.delta
-                        yield* Queue.offer(queue, { part, seq: undefined })
-                        return
-                      }
-                      case "finish": {
-                        lastFinishReason = part.reason
-                        finishPart = part
-                        return
-                      }
-                      case "tool-call": {
-                        totalToolCalls += 1
-                        const seqs = yield* Effect.promise(() =>
-                          agent.appendEvents([
-                            eventJson(
-                              new JournalToolCall({
-                                turn,
-                                hop,
-                                part: Prompt.toolCallPart({
-                                  id: part.id,
-                                  name: part.name,
-                                  params: part.params,
-                                  providerExecuted: part.providerExecuted ?? false,
-                                }),
-                              }),
-                            ),
-                          ]),
-                        )
-                        yield* Queue.offer(queue, { part, seq: seqs[0] })
-                        return
-                      }
-                      case "tool-approval-request": {
-                        const seqs = yield* Effect.promise(() =>
-                          agent.appendEvents([
-                            eventJson(
-                              new JournalApprovalRequested({
-                                turn,
-                                hop,
-                                approvalId: part.approvalId,
-                                toolCallId: part.toolCallId,
-                              }),
-                            ),
-                          ]),
-                        )
-                        parked = true
-                        yield* Queue.offer(queue, { part, seq: seqs[0] })
-                        return
-                      }
-                      case "tool-result": {
-                        if (part.preliminary === true) {
-                          yield* Queue.offer(queue, { part, seq: undefined })
-                          return
-                        }
-                        const seqs = yield* Effect.promise(() =>
-                          agent.appendEvents([
-                            eventJson(
-                              new JournalToolResult({
-                                turn,
-                                hop,
-                                part: Prompt.toolResultPart({
-                                  id: part.id,
-                                  name: part.name,
-                                  isFailure: part.isFailure,
-                                  result: part.encodedResult,
-                                }),
-                              }),
-                            ),
-                          ]),
-                        )
-                        yield* Queue.offer(queue, { part, seq: seqs[0] })
-                        return
-                      }
-                      default: {
-                        yield* Queue.offer(queue, { part, seq: undefined })
-                      }
-                    }
-                  }),
-                ),
-                Effect.timeout(MODEL_HOP_TIMEOUT),
-              )
-
-              const terminal =
-                parked || lastFinishReason === undefined || !shouldContinueToolLoop(lastFinishReason)
-
-              const hopEvents: Array<JournalEventPayload> = []
-              const hopMessages = Prompt.fromResponseParts(collected).content
-              if (hopMessages.length > 0) {
-                hopEvents.push(new JournalHopMessages({ turn, hop, messages: hopMessages }))
-              }
-              if (pendingHopText.length > 0) {
-                hopEvents.push(new JournalAssistantText({ turn, hop, text: pendingHopText }))
-              }
-              const usageEvent = buildUsageEvent({ turn, hop, model, parts: collected })
-              if (usageEvent !== undefined) hopEvents.push(usageEvent)
-              if (terminal && lastFinishReason !== undefined && !parked) {
-                hopEvents.push(
-                  new JournalDone({ turn, finishReason: lastFinishReason, toolCallCount: totalToolCalls }),
-                )
-              }
-              const seqs =
-                hopEvents.length > 0
-                  ? yield* Effect.promise(() => agent.appendEvents(hopEvents.map(eventJson)))
-                  : []
-              pendingHopText = ""
-
-              if (terminal) {
-                if (!parked && finishPart !== undefined) {
-                  yield* Queue.offer(queue, { part: finishPart, seq: seqs[seqs.length - 1] })
-                }
-                break
-              }
-              promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
-            }
-          }).pipe(
-            Effect.ensuring(flushPartialHopText),
-            Effect.ensuring(Queue.end(queue)),
-            Effect.tapCause((cause) => Queue.failCause(queue, cause)),
-            Effect.forkScoped,
-          )
-
-          yield* driver
-          return Stream.fromQueue(queue)
-        }),
-      )
-
-      return loopedStream.pipe(
-        Stream.provide(toolLayer),
-        Stream.provide(bashRunner),
-        Stream.provide(todoStore),
-        Stream.provide(Layer.succeed(ApprovalRules, rules)),
-        Stream.provideContext(ambient),
-        Stream.filterMap(Filter.make(toFramedPart)),
-        Stream.tap(({ sse }) =>
-          sse._tag === "tool-call" ? Ref.update(toolCallCount, (n) => n + 1) : Effect.void,
-        ),
-        Stream.mapEffect((el): Effect.Effect<FramedPart> => {
-          const sse = el.sse
-          return sse._tag === "done"
-            ? Ref.get(toolCallCount).pipe(
-                Effect.map((count) => ({
-                  sse: new StreamPartDone({ finishReason: sse.finishReason, toolCallCount: count }),
-                  seq: el.seq,
-                })),
-              )
-            : Effect.succeed(el)
-        }),
-        Stream.catchCause((cause) =>
-          Stream.unwrap(
+        yield* withModel.pipe(
+          Stream.runForEach((part) =>
             Effect.gen(function* () {
-              const seqs = yield* Effect.promise(() =>
-                agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),
-              ).pipe(Effect.catchCause(() => Effect.succeed<Array<number>>([])))
-              return Stream.succeed<FramedPart>({
-                sse: new StreamPartError({ message: Cause.pretty(cause) }),
-                seq: seqs[0],
-              })
+              collected.push(part)
+              switch (part.type) {
+                case "text-delta": {
+                  pendingHopText += part.delta
+                  yield* Queue.offer(queue, { part, seq: undefined })
+                  return
+                }
+                case "finish": {
+                  lastFinishReason = part.reason
+                  finishPart = part
+                  return
+                }
+                case "tool-call": {
+                  totalToolCalls += 1
+                  const seqs = yield* Effect.promise(() =>
+                    agent.appendEvents([
+                      eventJson(
+                        new JournalToolCall({
+                          turn,
+                          hop,
+                          part: Prompt.toolCallPart({
+                            id: part.id,
+                            name: part.name,
+                            params: part.params,
+                            providerExecuted: part.providerExecuted ?? false,
+                          }),
+                        }),
+                      ),
+                    ]),
+                  )
+                  yield* Queue.offer(queue, { part, seq: seqs[0] })
+                  return
+                }
+                case "tool-approval-request": {
+                  const seqs = yield* Effect.promise(() =>
+                    agent.appendEvents([
+                      eventJson(
+                        new JournalApprovalRequested({
+                          turn,
+                          hop,
+                          approvalId: part.approvalId,
+                          toolCallId: part.toolCallId,
+                        }),
+                      ),
+                    ]),
+                  )
+                  parked = true
+                  yield* Queue.offer(queue, { part, seq: seqs[0] })
+                  return
+                }
+                case "tool-result": {
+                  if (part.preliminary === true) {
+                    yield* Queue.offer(queue, { part, seq: undefined })
+                    return
+                  }
+                  const seqs = yield* Effect.promise(() =>
+                    agent.appendEvents([
+                      eventJson(
+                        new JournalToolResult({
+                          turn,
+                          hop,
+                          part: Prompt.toolResultPart({
+                            id: part.id,
+                            name: part.name,
+                            isFailure: part.isFailure,
+                            result: part.encodedResult,
+                          }),
+                        }),
+                      ),
+                    ]),
+                  )
+                  yield* Queue.offer(queue, { part, seq: seqs[0] })
+                  return
+                }
+                default: {
+                  yield* Queue.offer(queue, { part, seq: undefined })
+                }
+              }
             }),
           ),
-        ),
-        Stream.mapEffect(({ seq, sse }) =>
-          Effect.gen(function* () {
-            if (seq !== undefined) yield* Ref.set(lastSeq, seq)
-            const id = seq ?? (yield* Ref.get(lastSeq))
-            return Sse.encoder.write({
-              _tag: "Event",
-              event: "message",
-              id: String(id),
-              data: JSON.stringify(encodeStreamPart(sse)),
-            })
-          }),
-        ),
-        Stream.encodeText,
-        Stream.ensuring(snapshotWorkspace(agent)),
-      )
-    }),
-  )
+          Effect.timeout(MODEL_HOP_TIMEOUT),
+        )
 
-  return HttpServerResponse.stream(sseFrames, {
-    contentType: "text/event-stream",
-    headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+        const terminal =
+          parked || lastFinishReason === undefined || !shouldContinueToolLoop(lastFinishReason)
+
+        const hopEvents: Array<JournalEventPayload> = []
+        const hopMessages = Prompt.fromResponseParts(collected).content
+        if (hopMessages.length > 0) {
+          hopEvents.push(new JournalHopMessages({ turn, hop, messages: hopMessages }))
+        }
+        if (pendingHopText.length > 0) {
+          hopEvents.push(new JournalAssistantText({ turn, hop, text: pendingHopText }))
+        }
+        const usageEvent = buildUsageEvent({ turn, hop, model, parts: collected })
+        if (usageEvent !== undefined) hopEvents.push(usageEvent)
+        if (terminal && lastFinishReason !== undefined && !parked) {
+          hopEvents.push(
+            new JournalDone({ turn, finishReason: lastFinishReason, toolCallCount: totalToolCalls }),
+          )
+        }
+        const seqs =
+          hopEvents.length > 0
+            ? yield* Effect.promise(() => agent.appendEvents(hopEvents.map(eventJson)))
+            : []
+        pendingHopText = ""
+
+        if (terminal) {
+          reachedTerminal = true
+          if (!parked && finishPart !== undefined) {
+            yield* Queue.offer(queue, { part: finishPart, seq: seqs[seqs.length - 1] })
+          }
+          break
+        }
+        lastFinishPart = finishPart
+        lastReason = lastFinishReason
+        promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
+      }
+      if (!reachedTerminal) {
+        const doneSeqs = yield* Effect.promise(() =>
+          agent.appendEvents([
+            eventJson(
+              new JournalDone({
+                turn,
+                finishReason: lastReason ?? "tool-calls",
+                toolCallCount: totalToolCalls,
+              }),
+            ),
+          ]),
+        )
+        if (lastFinishPart !== undefined) {
+          yield* Queue.offer(queue, { part: lastFinishPart, seq: doneSeqs[0] })
+        }
+      }
+    })
+
+    const driverEffect = hopLoop.pipe(
+      Effect.tap(() =>
+        flushPartialHopText.pipe(
+          Effect.andThen(snapshotWorkspace(agent)),
+          Effect.andThen(Queue.end(queue)),
+        ),
+      ),
+      Effect.tapCause((cause) =>
+        flushPartialHopText.pipe(
+          Effect.andThen(journalTurnError(agent, turn)(cause)),
+          Effect.andThen(Queue.failCause(queue, cause)),
+          Effect.andThen(snapshotWorkspace(agent)),
+        ),
+      ),
+      Effect.catchCause(() => Effect.void),
+      Effect.provide(toolLayer),
+      Effect.provide(bashRunner),
+      Effect.provide(todoStore),
+      Effect.provide(Layer.succeed(ApprovalRules, rules)),
+      Effect.provideContext(ambient),
+    )
+
+    const done = Effect.runPromise(driverEffect)
+    waitUntil(done)
+
+    const responseStream = Stream.fromQueue(queue).pipe(
+      Stream.filterMap(Filter.make(toFramedPart)),
+      Stream.tap(({ sse }) =>
+        sse._tag === "tool-call" ? Ref.update(toolCallCount, (n) => n + 1) : Effect.void,
+      ),
+      Stream.mapEffect((el): Effect.Effect<FramedPart> => {
+        const sse = el.sse
+        return sse._tag === "done"
+          ? Ref.get(toolCallCount).pipe(
+              Effect.map((count) => ({
+                sse: new StreamPartDone({ finishReason: sse.finishReason, toolCallCount: count }),
+                seq: el.seq,
+              })),
+            )
+          : Effect.succeed(el)
+      }),
+      Stream.catchCause((cause) =>
+        Stream.succeed<FramedPart>({
+          sse: new StreamPartError({ message: Cause.pretty(cause) }),
+          seq: undefined,
+        }),
+      ),
+      Stream.mapEffect(({ seq, sse }) =>
+        Effect.gen(function* () {
+          if (seq !== undefined) yield* Ref.set(lastSeq, seq)
+          const id = seq ?? (yield* Ref.get(lastSeq))
+          return Sse.encoder.write({
+            _tag: "Event",
+            event: "message",
+            id: String(id),
+            data: JSON.stringify(encodeStreamPart(sse)),
+          })
+        }),
+      ),
+      Stream.encodeText,
+    )
+
+    return HttpServerResponse.stream(responseStream, {
+      contentType: "text/event-stream",
+      headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+    })
   })
 }
 
