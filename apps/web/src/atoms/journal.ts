@@ -78,6 +78,31 @@ export const pendingApprovals = (events: ReadonlyArray<JournalEvent>): ReadonlyA
 }
 
 /**
+ * Pure selector: is the session's LATEST turn still in flight? Mirrors the
+ * server's bare-`/attach` `analyzeJournal` on the decoded journal — the latest
+ * turn (the max-`seq` `user-message` envelope; its `seq` is the turn id) is
+ * in flight when it has no `done`/`error`, no unresolved parked approval, and
+ * no `session-closed`. Drives the load-time resume decision: true means open a
+ * bare `/attach` and live-tail; false means the static `/history` fold is final.
+ */
+export const latestTurnInFlight = (events: ReadonlyArray<JournalEvent>): boolean => {
+  let targetTurn: number | undefined
+  for (const envelope of events) {
+    if (envelope.event._tag === "user-message") targetTurn = envelope.seq
+  }
+  if (targetTurn === undefined) return false
+  let terminal = false
+  let closed = false
+  for (const envelope of events) {
+    const event = envelope.event
+    if ((event._tag === "done" || event._tag === "error") && event.turn === targetTurn) terminal = true
+    if (event._tag === "session-closed") closed = true
+  }
+  const parked = pendingApprovals(events).some((approval) => approval.turn === targetTurn)
+  return !terminal && !parked && !closed
+}
+
+/**
  * Pure selector: each `tool-call` envelope paired with the `tool-result`
  * sharing its `(turn, hop)` whose `part.id` matches the call's `part.id`,
  * preserving tool-call order. `result` is present only once its matching

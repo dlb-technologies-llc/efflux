@@ -1,8 +1,9 @@
 /**
- * Pure-unit pins for the journal correlation selectors in `./journal.ts` —
- * `pendingApprovals` and `toolCallResults`. Both are total pure functions over a
- * decoded `JournalEvent[]`, so they are exercised directly on hand-built event
- * arrays: no React render, no live `ApiClient`, no SSE.
+ * Pure-unit pins for the journal selectors in `./journal.ts` —
+ * `pendingApprovals`, `toolCallResults`, and the `latestTurnInFlight` liveness
+ * predicate. All are total pure functions over a decoded `JournalEvent[]`, so
+ * they are exercised directly on hand-built event arrays: no React render, no
+ * live `ApiClient`, no SSE.
  *
  * `./journal.ts` value-imports `../runtime.ts`, whose `ApiClient.layer` static
  * initializer reads `window.location.origin` at module-load. Under vitest's
@@ -27,14 +28,19 @@ import { vi } from "vitest"
 import {
   JournalApprovalRequested,
   JournalApprovalResolved,
+  JournalAssistantText,
+  JournalDone,
+  JournalErrorEvent,
   JournalEvent,
+  JournalSessionClosed,
   JournalToolCall,
   JournalToolResult,
+  JournalUserMessage,
 } from "@efflux/shared"
 
 vi.stubGlobal("window", { location: { origin: "http://localhost" } })
 
-const { pendingApprovals, toolCallResults } = await import("./journal.ts")
+const { latestTurnInFlight, pendingApprovals, toolCallResults } = await import("./journal.ts")
 
 /** Wrap an event payload in a journal envelope at the given `seq` — the value `pendingApprovals` must surface as `eventId`. */
 const evt = (seq: number, event: JournalEvent["event"]): JournalEvent =>
@@ -131,5 +137,78 @@ describe("toolCallResults", () => {
       expect(pairs).toHaveLength(1)
       expect(pairs[0]?.call).toBe(call)
       expect(Object.keys(pairs[0] ?? {})).toStrictEqual(["call"])
+    }))
+})
+
+describe("latestTurnInFlight", () => {
+  it.effect("returns false when no user-message anchors a turn", () =>
+    Effect.sync(() => {
+      expect(latestTurnInFlight([])).toBe(false)
+      expect(latestTurnInFlight([evt(1, toolCall(1, 0, "call_1", "Bash", { command: "ls" }))])).toBe(false)
+    }))
+
+  it.effect("returns true while the latest turn is still open", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(11, new JournalAssistantText({ turn: 10, hop: 0, text: "working" })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(true)
+    }))
+
+  it.effect("returns false once the latest turn is done", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(12, new JournalDone({ turn: 10, finishReason: "stop", toolCallCount: 0 })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(false)
+    }))
+
+  it.effect("returns false once the latest turn errors", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(12, new JournalErrorEvent({ turn: 10, message: "boom" })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(false)
+    }))
+
+  it.effect("returns false while the latest turn is parked on an unresolved approval", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(11, new JournalApprovalRequested({ turn: 10, hop: 0, approvalId: "a1", toolCallId: "t1" })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(false)
+    }))
+
+  it.effect("returns true once the parked approval on the latest turn is resolved", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(11, new JournalApprovalRequested({ turn: 10, hop: 0, approvalId: "a1", toolCallId: "t1" })),
+        evt(12, new JournalApprovalResolved({ turn: 10, approvalId: "a1", approved: true })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(true)
+    }))
+
+  it.effect("ignores a terminal on a prior turn — the latest open turn is in flight", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(5, new JournalUserMessage({ content: "first" })),
+        evt(6, new JournalDone({ turn: 5, finishReason: "stop", toolCallCount: 0 })),
+        evt(10, new JournalUserMessage({ content: "second" })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(true)
+    }))
+
+  it.effect("returns false once the session is closed", () =>
+    Effect.sync(() => {
+      const events = [
+        evt(10, new JournalUserMessage({ content: "hello" })),
+        evt(11, new JournalSessionClosed({ reason: "closed" })),
+      ]
+      expect(latestTurnInFlight(events)).toBe(false)
     }))
 })
