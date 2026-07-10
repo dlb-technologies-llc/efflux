@@ -115,6 +115,20 @@ const journal = HttpApiEndpoint.get("journal", "/agents/:name/:id/journal", {
   success: JournalResponse,
 })
 
+/** Reattach to a session's live turn as SSE — replays journaled frames after the resume cursor (header `Last-Event-ID`, else `?after=`, else the latest turn in full) then live-tails until the turn ends. No payload (GET); the handler owns cursor precedence. */
+const attach = HttpApiEndpoint.get("attach", "/agents/:name/:id/attach", {
+  params: AgentParams,
+  headers: Schema.Struct({
+    "last-event-id": Schema.optionalKey(Schema.NumberFromString),
+  }),
+  query: {
+    after: Schema.optionalKey(Schema.NumberFromString),
+  },
+  success: Schema.String.pipe(
+    HttpApiSchema.asText({ contentType: "text/event-stream" }),
+  ),
+})
+
 /** Session registry — every session that has ever received a user message, most recently active first. */
 const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
@@ -206,6 +220,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(approve)
   .add(task)
   .add(journal)
+  .add(attach)
   .add(sessions)
   .add(getConfig)
   .add(putConfig)

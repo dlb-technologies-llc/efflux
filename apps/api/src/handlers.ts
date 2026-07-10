@@ -17,6 +17,7 @@ import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
 import { AgentStub } from "./AgentStub.ts"
+import { runAttachStream } from "./AttachStream.ts"
 import { compactIfNeeded } from "./Compaction.ts"
 import { loadResolvedConfig, resolveConfig } from "./Defaults.ts"
 import { fetchAllEvents } from "./JournalRead.ts"
@@ -30,6 +31,7 @@ import type { SkillsBucket } from "./Skills.ts"
 import { runStreamingTurn } from "./StreamingTurn.ts"
 import { runSubagent } from "./Subagent.ts"
 import { formatTodos } from "./Todo.ts"
+import { WaitUntil } from "./WaitUntil.ts"
 
 /** The turn's `user-message` snapshot (skill/role/model), narrowed, if present. */
 const findUserMessage = (events: ReadonlyArray<ReconstructEvent>, turn: number) => {
@@ -157,6 +159,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
+        const waitUntil = yield* WaitUntil
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const resolved = yield* loadResolvedConfig(agent)
         const effectiveModel = payload.model ?? resolved.defaultModel
@@ -176,7 +179,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         })
         const turn = yield* openTurn(agent, payload)
 
-        return runStreamingTurn({
+        return yield* runStreamingTurn({
           agent,
           ambient,
           turn,
@@ -186,6 +189,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           rules: resolved.rules,
           toolkit,
           toolLayer,
+          waitUntil,
         })
       }),
     )
@@ -193,6 +197,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
+        const waitUntil = yield* WaitUntil
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const approved = payload.approved ?? true
 
@@ -230,7 +235,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           ...(todos !== undefined ? { todos } : {}),
         })
 
-        return runStreamingTurn({
+        return yield* runStreamingTurn({
           agent,
           ambient,
           turn: res.turn,
@@ -240,7 +245,16 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           rules: resolved.rules,
           toolkit,
           toolLayer,
+          waitUntil,
         })
+      }),
+    )
+    .handle("attach", ({ params, headers, query }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        const after = headers["last-event-id"] ?? query.after
+        return runAttachStream({ agent, after })
       }),
     )
     .handle("task", ({ payload }) =>

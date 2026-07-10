@@ -1,7 +1,7 @@
 import { AgentApi, ApiToken } from "@effect-flue/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
+import { Cause, Context, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import * as Etag from "effect/unstable/http/Etag"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
@@ -24,6 +24,7 @@ import { SkillHandlers } from "./SkillHandlers.ts"
 import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
+import { WaitUntil } from "./WaitUntil.ts"
 
 /** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
 export { Agent } from "./Agent.ts"
@@ -81,10 +82,12 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   ]),
 )
 
-/** Build the native `(Request) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed. Request-abort interruption covers mid-hop model FAILURES only — workerd fires no disconnect callback, so handler finalizers do NOT run on client disconnect (persistence is inline, not finalizer-driven). */
+/** Build the native `(Request, Context<WaitUntil>) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed. The per-request `WaitUntil` context lets a streaming handler fork the turn driver detached from the request fiber and keep the isolate alive until it completes — workerd fires no disconnect callback, so persistence is inline (not finalizer-driven) and a disconnected turn runs to completion via `ctx.waitUntil`. */
 const buildWebHandler = (
   env: Env,
-): Promise<(request: Request) => Promise<Response>> => {
+): Promise<
+  (request: Request, context: Context.Context<WaitUntil>) => Promise<Response>
+> => {
   const scope = Scope.makeUnsafe()
   return Effect.runPromise(
     Effect.gen(function* () {
@@ -146,13 +149,16 @@ const buildWebHandler = (
         | SkillsBucket
         | KnowledgeSearch
         | LanguageModel.LanguageModel
+        | WaitUntil
       >(context)(wrapped)
     }).pipe(Effect.provideService(Scope.Scope, scope)),
   )
 }
 
 /** Per-isolate handler cache; env is stable for the isolate's lifetime, so build once on the first API request. */
-let webHandler: Promise<(request: Request) => Promise<Response>> | undefined
+let webHandler:
+  | Promise<(request: Request, context: Context.Context<WaitUntil>) => Promise<Response>>
+  | undefined
 
 /** MUST stay in exact lockstep with `assets.run_worker_first` in wrangler.jsonc — a path missing there is served the SPA before `fetch` runs. */
 const isApiPath = (pathname: string): boolean =>
@@ -195,14 +201,15 @@ const cronEffect = Effect.fn("cronHeartbeat")(
 )
 
 export default {
-  fetch(request, env, _ctx): Promise<Response> {
+  fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url)
     if (!isApiPath(url.pathname)) {
       return env.ASSETS.fetch(request)
     }
     webHandler ??= buildWebHandler(env)
     return webHandler.then(
-      (handle) => handle(request),
+      (handle) =>
+        handle(request, Context.make(WaitUntil, ctx.waitUntil.bind(ctx))),
       (error) => {
         webHandler = undefined
         throw error
