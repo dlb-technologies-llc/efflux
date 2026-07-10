@@ -12,6 +12,7 @@ import { LanguageModel } from "effect/unstable/ai"
 import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { fetchAllEvents } from "./JournalRead.ts"
+import { capForPrompt } from "./Truncate.ts"
 import { eventJson } from "./JournalWrite.ts"
 import type { ReconstructEvent } from "./Reconstruct.ts"
 
@@ -147,7 +148,7 @@ export const compactIfNeeded = (
     })
     yield* Effect.promise(() =>
       agent.appendEvents([
-        eventJson(new JournalCompaction({ throughSeq: plan.throughSeq, summary })),
+        eventJson(new JournalCompaction({ throughSeq: plan.throughSeq, summary: capForPrompt(summary) })),
       ]),
     )
   }).pipe(

@@ -114,10 +114,10 @@ export class JournalTodoWrite extends Schema.TaggedClass<JournalTodoWrite>()("to
   items: Schema.Array(TodoItem).check(Schema.isMaxLength(100)),
 }) {}
 
-/** A context-compaction checkpoint: `summary` folds every event with seq ≤ `throughSeq` into prose; the history fold then serves `summary + turns after throughSeq`. Turn-less — compaction runs BETWEEN turns, never within one. */
+/** A context-compaction checkpoint: `summary` folds every turn whose user-message seq ≤ `throughSeq` into prose; the history fold then serves `summary + turns after throughSeq`. Turn-less — compaction runs BETWEEN turns, never within one. The summary is written pre-capped (`capForPrompt`); the schema bound is a backstop since it re-injects into every later prompt and chains into every later compaction. */
 export class JournalCompaction extends Schema.TaggedClass<JournalCompaction>()("compaction", {
   throughSeq: NonNegativeInt,
-  summary: Schema.String,
+  summary: Schema.String.check(Schema.isMaxLength(40_000)),
 }) {}
 
 /** Prefix marking the injected compaction summary; shared by the DO history fold and the approve-path reconstruction so they never drift. */
