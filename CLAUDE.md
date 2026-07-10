@@ -22,6 +22,7 @@ Single source of truth — the `flue-*` skills defer here.
 ## Conventions
 
 - Schema-first: all types flow from Effect Schemas — no `as` casts, no `!` assertions, no parallel type definitions.
+- Generated `apps/web/src/components/ui/*` (shadcn/ui) are EXEMPT from the no-`as`/no-`!` rule and are excluded from biome linting; ALL hand-written code still obeys no-`as`/no-`!`.
 - Verification = deploy + hit the live worker (`/flue-verifying` checklist). Typecheck/build alone NEVER counts.
 - Branch flow: feature PRs target `staging` with `Refs #N`; `/flue-releasing` promotes staging→main with a PR carrying the `Closes #N` lines (issues close on release, not on feature landing). Merge commits only — never rebase/squash. Never `--no-verify`.
 - Effect v4 beta (`4.0.0-beta.94`): never write Effect APIs from memory. Authority order: this codebase's existing usage (grep scoped to `apps/ packages/`) → the pinned `.claude/effect-smol` submodule (`packages/effect/src` — core incl. `unstable/http`, `unstable/httpapi`; init once with `git submodule update --init .claude/effect-smol`) → Context7 MCP. Read the submodule directly — do NOT spawn the `effect-agent` subagent (it reads a machine-global, unpinned checkout). The repo-local `.claude/subrepos.json` records the pin (`pinned` field) and the submodule's `src`/`test` search globs.
