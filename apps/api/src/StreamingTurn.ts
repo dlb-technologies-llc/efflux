@@ -25,7 +25,7 @@ import {
   journalTurnError,
   MAX_TOOL_HOPS,
   MODEL_HOP_TIMEOUT,
-  makeBashRunnerLayer,
+  makeTurnLayers,
   shouldContinueToolLoop,
   snapshotWorkspace,
 } from "./AgentLoop.ts"
@@ -34,8 +34,6 @@ import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { makeTodoStoreLayer } from "./Todo.ts"
-import { ApprovalRules } from "./Tools.ts"
 
 /** The SSE-bound StreamPart union, kept in lockstep with the wire contract. */
 type SseStreamPart = StreamPart
@@ -93,8 +91,7 @@ export const runStreamingTurn = (
 
   const encodeStreamPart = Schema.encodeSync(StreamPart)
 
-  const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-  const todoStore = makeTodoStoreLayer(agent, turn)
+  const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
   return Effect.gen(function* () {
     const toolCallCount = yield* Ref.make(0)
@@ -284,10 +281,7 @@ export const runStreamingTurn = (
         ),
       ),
       Effect.catchCause(() => Effect.void),
-      Effect.provide(toolLayer),
-      Effect.provide(bashRunner),
-      Effect.provide(todoStore),
-      Effect.provide(Layer.succeed(ApprovalRules, rules)),
+      Effect.provide(turnLayers),
       Effect.provideContext(ambient),
     )
 

@@ -7,19 +7,29 @@
  * shape (pull-one-response vs push-parts-into-a-queue) and forcing one
  * abstraction over both would obscure each. Only the genuinely shared
  * pieces live here: message composition, skill/role overlay loading, the
- * per-request `BashRunner` layer, and the hop-decision policy.
+ * per-turn tool-execution layer stack (`makeTurnLayers`), and the
+ * hop-decision policy.
+ *
+ * The two pull-one-response `generateText` loops — `runPromptTurn`
+ * (PromptTurn.ts) and `collectOpenAiTurn` (OpenAiTurn.ts) — are likewise
+ * kept SEPARATE despite their near-identical shape: they diverge on token
+ * accounting and on approval handling (park-and-surface-eventId vs
+ * approval-as-error), so a unified loop would only reintroduce that
+ * divergence as callback indirection.
  *
  * `Subagent.ts` intentionally does NOT use any of this — its no-toolkit,
  * no-history, single-shot design is the anti-recursion guard. Do not fold
  * it in.
  */
-import { AgentError, JournalErrorEvent, type PlainMessage } from "@efflux/shared"
+import { AgentError, JournalErrorEvent, type PlainMessage, type RulesMap } from "@efflux/shared"
 import { Cause, Effect, Layer, type Duration } from "effect"
 import type { Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson } from "./JournalWrite.ts"
+import type { SessionToolkit } from "./SessionToolkit.ts"
 import { loadRoleBody, loadSkillBody } from "./Skills.ts"
-import { BashRunner } from "./Tools.ts"
+import { makeTodoStoreLayer } from "./Todo.ts"
+import { ApprovalRules, BashRunner } from "./Tools.ts"
 
 /**
  * Hop cap for the manual multi-hop tool loop. Effect AI's
@@ -107,6 +117,30 @@ export const makeBashRunnerLayer = (
     }),
   )
 
+/**
+ * Single-sources the per-turn tool-execution layer stack that all four turn
+ * drivers share: the per-request `BashRunner` (bound to this DO's `exec` RPC),
+ * the per-turn `TodoStore`, the resolved `ApprovalRules`, and the session
+ * `toolLayer` that consumes them. `provideMerge` feeds the merged
+ * bash/todo/rules layers into `toolLayer`'s dependencies while still exposing
+ * all four services in the output, so a driver provides this ONE layer
+ * (`Effect.provide` / `Stream.provide`) instead of the four separately.
+ */
+export const makeTurnLayers = (
+  agent: ReturnType<AgentNamespace["getByName"]>,
+  turn: number,
+  rules: RulesMap,
+  toolLayer: SessionToolkit["toolLayer"],
+) =>
+  Layer.provideMerge(
+    toolLayer,
+    Layer.mergeAll(
+      makeBashRunnerLayer((command) => agent.exec(command)),
+      makeTodoStoreLayer(agent, turn),
+      Layer.succeed(ApprovalRules, rules),
+    ),
+  )
+
 /** Per-hop wall-clock ceiling for a single model round (inference + this hop's tool calls). */
 export const MODEL_HOP_TIMEOUT: Duration.Input = "120 seconds"
 
@@ -133,7 +167,7 @@ export const toAgentError =
       }),
     )
 
-/** Append a terminal `JournalError` for a turn from a failure cause; its own append failure is swallowed. */
+/** Append a terminal `JournalErrorEvent` for a turn from a failure cause; its own append failure is swallowed. */
 export const journalTurnError =
   (agent: ReturnType<AgentNamespace["getByName"]>, turn: number) =>
   (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
