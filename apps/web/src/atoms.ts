@@ -1,69 +1,23 @@
-import { PromptRequest, StreamPart } from "@effect-flue/shared"
-import { Effect, Schema, Stream } from "effect"
+import {
+  ApprovalDecision,
+  makePromptRequest,
+  PromptRequest,
+  StreamPart,
+  streamAgentSse,
+  streamAgentSseFramed,
+} from "@efflux/shared"
+import { Effect, Ref, Schema, Stream } from "effect"
+import { HttpBody, HttpClient } from "effect/unstable/http"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "./runtime.ts"
+import type { SessionArgs } from "./session.ts"
 
 const encodePromptRequest = Schema.encodeSync(PromptRequest)
 
 /**
- * Arguments shared by every per-session atom.
- *
- * `name` + `id` form the Durable-Object-backed session key on the Worker.
- */
-export interface SessionArgs {
-  readonly name: string
-  readonly id: string
-}
-
-/**
- * Mutation atom: send a single prompt and receive the final assistant
- * response (non-streaming). Thin wrapper - error handling lives in the
- * consumer component.
- */
-export const promptAtom = runtime.fn(
-  Effect.fnUntraced(function*(
-    args: SessionArgs & {
-      readonly message: string
-      readonly model?: string
-      readonly skill?: string
-      readonly role?: string
-    },
-  ) {
-    const client = yield* ApiClient
-    // HttpApiClient encodes the payload via PromptRequest schema, which is
-    // a Schema.Class — it requires an actual class instance, not a plain
-    // object with the matching shape. Same constraint as the server's
-    // response encoder. See ISSUES.md.
-    return yield* client.agents.prompt({
-      params: { name: args.name, id: args.id },
-      payload: new PromptRequest({
-        message: args.message,
-        ...(args.model !== undefined ? { model: args.model } : {}),
-        ...(args.skill !== undefined ? { skill: args.skill } : {}),
-        ...(args.role !== undefined ? { role: args.role } : {}),
-      }),
-    })
-  }),
-)
-
-/**
- * Mutation atom: clear server-side session history.
- */
-export const resetAtom = runtime.fn(
-  Effect.fnUntraced(function*(args: SessionArgs) {
-    const client = yield* ApiClient
-    yield* client.agents.reset({ params: { name: args.name, id: args.id } })
-  }),
-)
-
-/**
- * Query atom (per-session): load persisted history. Uses `Atom.family` so each
- * unique `{name, id}` key memoises to the same underlying atom and the fetch
- * fires automatically on first subscribe - no setter call needed.
- *
- * `Atom.family` memoises via `MutableHashMap`, which uses Effect's structural
- * `Equal`/`Hash` — plain `{name, id}` literals match across renders, so no
- * string-key encoding is needed.
+ * Query atom (per-session): load persisted history. `Atom.family` memoises via
+ * `MutableHashMap` (structural `Equal`/`Hash`), so each unique `{name, id}`
+ * returns the same underlying atom and the fetch fires on first subscribe.
  */
 export const historyAtom = Atom.family((args: SessionArgs) =>
   runtime.atom(
@@ -74,85 +28,110 @@ export const historyAtom = Atom.family((args: SessionArgs) =>
   ),
 )
 
+/** Empty typed seed for the streaming accumulator (avoids an `as` cast). */
+export const noParts: ReadonlyArray<StreamPart> = []
+
+/** Grow the running transcript by one decoded frame; the atom republishes the whole array each event so the consumer never concatenates tokens by hand. */
+const appendPart = (parts: ReadonlyArray<StreamPart>, part: StreamPart): ReadonlyArray<StreamPart> => [...parts, part]
+
+/** A turn's terminal frames — once one is seen the turn is over and no `/attach` reconnect may follow. */
+const isTerminalTag = (tag: StreamPart["_tag"]): boolean => tag === "done" || tag === "error"
+
+/** Cap on `/attach` reconnect attempts so a dead turn can never reconnect forever. */
+const MAX_ATTACH_ATTEMPTS = 3
+
+/** Short backoff between `/attach` reconnect attempts. */
+const ATTACH_BACKOFF = "500 millis"
+
+/** POST-segment reconnect gate: flip `sawTerminal` on a `done`/`error` frame — and on an `approval-request`, since a park halts the turn pending user approval (the approve flow opens a fresh stream), so no bare `/attach` reconnect should follow a park the client already saw. A drop BEFORE the park never sees this frame, so it still reconnects and replays up to the park. */
+const recordTerminal = (part: StreamPart, sawTerminal: Ref.Ref<boolean>) =>
+  isTerminalTag(part._tag) || part._tag === "approval-request"
+    ? Ref.set(sawTerminal, true)
+    : Effect.void
+
 /**
- * Decode a single SSE `data: <json>` event into a `StreamPart`. Decode
- * failures propagate as stream errors - never silently dropped.
+ * Attach-segment bookkeeping for one reconnect attempt: mark that this attempt produced a frame
+ * (progress-gating), and stop the reconnect loop on a terminal or `approval-request` frame — a
+ * terminal frame additionally flips `sawTerminal` so the loop can never reconnect again.
  */
-const decodeStreamPart = Schema.decodeUnknownEffect(StreamPart)
-
-const parseSseEvent = (raw: string): unknown => {
-  // SSE event blocks may contain multiple lines; only the `data:` lines carry payload.
-  const dataLines: Array<string> = []
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).replace(/^\s/, ""))
+const recordAttachFrame = (
+  part: StreamPart,
+  sawTerminal: Ref.Ref<boolean>,
+  stopped: Ref.Ref<boolean>,
+  progress: Ref.Ref<boolean>,
+) =>
+  Effect.gen(function*() {
+    yield* Ref.set(progress, true)
+    if (isTerminalTag(part._tag)) {
+      yield* Ref.set(sawTerminal, true)
+      yield* Ref.set(stopped, true)
+    } else if (part._tag === "approval-request") {
+      yield* Ref.set(stopped, true)
     }
-  }
-  return JSON.parse(dataLines.join("\n"))
-}
+  })
 
 /**
- * Yields parsed `unknown` JSON payloads from an SSE response body. Each yield
- * corresponds to one `\n\n`-delimited SSE event. Decoding into `StreamPart`
- * happens downstream via `Schema.decodeUnknownEffect`.
+ * Bounded, replace-not-append `/attach` reconnect loop shared by `streamAtom`
+ * (POST-drop resume) and `resumeAtom` (load-time resume). Each attempt opens a
+ * bare `GET /attach`, `Stream.scan`s from a FRESH `noParts` seed so it REPLACES
+ * the transcript (appending would double-render the dropped hop), and recurses
+ * only while the attempt made progress and saw no terminal/park. `sawTerminal`
+ * is threaded so a `done`/`error` frame permanently halts reconnects.
  */
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) {
-        const trimmed = buffer.trim()
-        if (trimmed.length > 0) {
-          yield parseSseEvent(trimmed)
-        }
-        return
-      }
-      buffer += decoder.decode(value, { stream: true })
-      let boundary = buffer.indexOf("\n\n")
-      while (boundary !== -1) {
-        const event = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const trimmed = event.trim()
-        if (trimmed.length > 0) {
-          yield parseSseEvent(trimmed)
-        }
-        boundary = buffer.indexOf("\n\n")
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
+const attachTail = (
+  client: HttpClient.HttpClient,
+  attachUrl: string,
+  sawTerminal: Ref.Ref<boolean>,
+  attemptsLeft: number,
+): Stream.Stream<ReadonlyArray<StreamPart>> =>
+  Stream.unwrap(
+    Effect.gen(function*() {
+      if (attemptsLeft <= 0) return Stream.empty
+      if (yield* Ref.get(sawTerminal)) return Stream.empty
+      yield* Effect.sleep(ATTACH_BACKOFF)
+      const progress = yield* Ref.make(false)
+      const stopped = yield* Ref.make(false)
+      const segment = streamAgentSseFramed(client.get(attachUrl), StreamPart).pipe(
+        Stream.tap((frame) => recordAttachFrame(frame.data, sawTerminal, stopped, progress)),
+        Stream.map((frame) => frame.data),
+        Stream.scan(noParts, appendPart),
+        Stream.catchCause(() => Stream.empty),
+      )
+      const continuation = Stream.unwrap(
+        Effect.gen(function*() {
+          if (yield* Ref.get(sawTerminal)) return Stream.empty
+          if (yield* Ref.get(stopped)) return Stream.empty
+          if (!(yield* Ref.get(progress))) return Stream.empty
+          return attachTail(client, attachUrl, sawTerminal, attemptsLeft - 1)
+        }),
+      )
+      return Stream.concat(segment, continuation)
+    }),
+  )
 
 /**
- * Stream atom: opens an SSE connection to `/agents/:name/:id/stream` and
- * emits each decoded `StreamPart`. The atom result reflects the latest
- * delta; for token-by-token consumption, subscribe with `useAtomSubscribe`
- * (per-emit callback). `useAtomValue` only re-reads on React's commit
- * cycle and can coalesce multiple emits in one tick.
+ * Stream atom: POST the prompt to `/agents/:name/:id/stream` and emit the
+ * accumulated `StreamPart[]` after each event, transparently resuming an
+ * in-flight turn if the POST stream drops before a terminal frame.
  *
- * Errors from `fetch`, JSON parsing, or schema validation surface as
- * stream failures - no silent drops.
+ * The transport is fully Effect: `HttpClient` + the shared `streamAgentSseFramed`
+ * (built on `effect/unstable/encoding/Sse`, symmetric with the server's
+ * `Sse.encoder`) — no raw `fetch`, no hand-rolled parser, decode failures in
+ * the Stream error channel. `Stream.scan` makes the atom own accumulation, so
+ * each published value is the whole transcript-so-far: the consumer just reads
+ * the latest array (no manual token concatenation), and multi-event SSE chunks
+ * can never drop a token the way a last-element-per-chunk value atom would.
  *
- * ⚠️ LOAD-BEARING INVARIANT — chunk size MUST be 1.
- *
- * `Atom.fn` over a Stream calls `setSelf(AsyncResult.success(Arr.lastNonEmpty(chunk)))`,
- * which only publishes the LAST element of each pulled chunk. If any operator
- * in this pipe ever batches multiple values into one chunk (e.g.
- * `Stream.grouped`, `Stream.bufferChunks`, `Stream.debounce`, `Stream.aggregate`),
- * the intermediate tokens will be silently dropped — the UI will see the
- * final token of each batch and nothing else.
- *
- * The current pipe is safe because `Stream.fromAsyncIterable` wraps each
- * yield in `Arr.of(value)` (a 1-element chunk) and `Stream.mapEffect`
- * preserves chunk structure 1:1. Adding any batching/aggregation operator
- * here will silently break token-by-token rendering. If you need batching
- * for some unrelated reason, switch this atom to `runtime.pull` (which
- * accumulates pulled items) and update the FE consumer to read the
- * accumulated list instead of a single value.
+ * Reconnect: a single `sawTerminal` `Ref` tracks whether a `done`/`error` frame
+ * was seen. If the POST segment ends without one, the atom reconnects to a bare
+ * `GET /agents/:name/:id/attach` (latest-turn mode — NO `Last-Event-ID`, no
+ * `?after`), which replays the newest turn IN FULL from the journal then
+ * live-tails. Each attach segment `Stream.scan`s from a FRESH `noParts` seed so
+ * it REPLACES the interrupted transcript (appending would double-render the
+ * dropped hop's text). Reconnects are bounded by `MAX_ATTACH_ATTEMPTS` with a
+ * short backoff and per-attempt progress-gating (an attach that emits zero
+ * frames means the turn is gone — stop), and never fire once `sawTerminal` is
+ * true. The published value stays `ReadonlyArray<StreamPart>` throughout.
  */
 export const streamAtom = runtime.fn(
   (
@@ -163,28 +142,78 @@ export const streamAtom = runtime.fn(
       readonly role?: string
     },
   ) =>
-    Stream.fromAsyncIterable(
-      (async function*() {
-        const body = encodePromptRequest(
-          new PromptRequest({
-            message: args.message,
-            ...(args.model !== undefined ? { model: args.model } : {}),
-            ...(args.skill !== undefined ? { skill: args.skill } : {}),
-            ...(args.role !== undefined ? { role: args.role } : {}),
-          }),
+    Stream.unwrap(
+      Effect.gen(function*() {
+        const client = yield* HttpClient.HttpClient
+        const sawTerminal = yield* Ref.make(false)
+        const streamUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`
+        const attachUrl = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/attach`
+        const body = HttpBody.text(
+          JSON.stringify(encodePromptRequest(makePromptRequest(args.message, args))),
+          "application/json",
         )
-        const response = await fetch(`/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
+        const postSegment = streamAgentSseFramed(client.post(streamUrl, { body }), StreamPart).pipe(
+          Stream.tap((frame) => recordTerminal(frame.data, sawTerminal)),
+          Stream.map((frame) => frame.data),
+          Stream.scan(noParts, appendPart),
+          Stream.catchCause(() => Stream.empty),
+        )
+        return Stream.concat(postSegment, attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS))
+      }),
+    ),
+)
+
+/**
+ * Load-time resume: open a bare `GET /attach` and live-tail the session's latest
+ * turn into an accumulated `StreamPart[]`, sharing `streamAtom`'s replace-not-
+ * append `attachTail` loop (fresh `sawTerminal`, so the first attach fires). The
+ * caller starts this only when `latestTurnInFlight` says the newest turn has no
+ * terminal in the journal, so a completed session never replays.
+ *
+ * `Atom.family`-keyed by session (like `historyAtom`/`journalAtom`) so each
+ * session gets its OWN fn atom that starts from `Initial`. A single shared atom
+ * would, when a SECOND session resumes, re-emit the previous session's cached
+ * `Success` transcript as `waitingFrom(previous)` — indistinguishable from a
+ * live frame — briefly bleeding one session's frames into another; the
+ * per-session member has no prior `Success` to re-emit, and switching away
+ * drops the old member so its `/attach` tail is not left running.
+ */
+export const resumeAtom = Atom.family((session: SessionArgs) =>
+  runtime.fn((_: SessionArgs) =>
+    Stream.unwrap(
+      Effect.gen(function*() {
+        const client = yield* HttpClient.HttpClient
+        const sawTerminal = yield* Ref.make(false)
+        const attachUrl = `/agents/${encodeURIComponent(session.name)}/${encodeURIComponent(session.id)}/attach`
+        return attachTail(client, attachUrl, sawTerminal, MAX_ATTACH_ATTEMPTS)
+      }),
+    ),
+  ),
+)
+
+const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)
+
+/** POST an approval decision to /approve/:eventId and emit the continuation turn as an accumulated StreamPart[] — symmetric with streamAtom (same SSE transport, same Stream.scan accumulator). */
+export const approveStreamAtom = runtime.fn(
+  (
+    args: SessionArgs & {
+      readonly eventId: number
+      readonly approved: boolean
+      readonly reason?: string
+    },
+  ) =>
+    Stream.unwrap(
+      Effect.gen(function*() {
+        const client = yield* HttpClient.HttpClient
+        const url = `/agents/${encodeURIComponent(args.name)}/${encodeURIComponent(args.id)}/approve/${args.eventId}`
+        const decision = new ApprovalDecision({
+          approved: args.approved,
+          ...(args.reason !== undefined ? { reason: args.reason } : {}),
         })
-        if (!response.ok || response.body === null) {
-          throw new Error(`Stream request failed: ${response.status} ${response.statusText}`)
-        }
-        for await (const event of sseEvents(response.body)) {
-          yield event
-        }
-      })(),
-      (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-    ).pipe(Stream.mapEffect((event) => decodeStreamPart(event))),
+        const body = HttpBody.text(JSON.stringify(encodeApprovalDecision(decision)), "application/json")
+        return streamAgentSse(client.post(url, { body }), StreamPart).pipe(
+          Stream.scan(noParts, (parts, part) => [...parts, part]),
+        )
+      }),
+    ),
 )

@@ -1,22 +1,24 @@
 import { Container } from "@cloudflare/containers"
 
 /**
- * Container-backed Durable Object for the `Bash` tool.
- *
- * The container image (`apps/api/container/Dockerfile`) runs an HTTP server
- * on port 8080 exposing `POST /exec {command}` → `{exitCode, stdout,
- * stderr}`, plus the durable-workspace endpoints `GET /status`
- * (`{hydrated}`), `POST /restore` (gzipped tar → /workspace; empty body
- * marks hydrated), and `GET /snapshot` (gzipped tar of /workspace; 409
- * until hydrated). The Container base class routes `stub.fetch(...)` from
- * the `Agent` DO to that port, boots the container on first request, and
- * shuts it down after 10 minutes idle.
- *
- * The container never sees R2: snapshot/restore bytes move Agent DO ↔
- * container over this proxy, and Agent DO ↔ R2 via the `SESSIONS` binding
- * (`workspaces/<name>.tar.gz`).
+ * Container-backed Durable Object for the `Bash` tool: routes `stub.fetch(...)`
+ * from the `Agent` DO to the container's :8080 exec/status/restore/snapshot
+ * endpoints, boots on first request, idles out after 10m. Never sees R2 —
+ * snapshot/restore bytes move Agent DO ↔ container; Agent DO ↔ R2 is the SESSIONS binding.
  */
 export class Sandbox extends Container<Env> {
   defaultPort = 8080
   sleepAfter = "10m"
+
+  /** Internet ENABLED (explicit, not the silent default): a coding sandbox needs package installs reaching arbitrary registries. */
+  enableInternet = true
+
+  /** Explicitly destroy the running container (SIGKILL now, not the 10m `sleepAfter` idle-out). Best-effort: a not-running container is a no-op — errors are logged, never thrown, so `close()`/reap never rejects on a dead sandbox. */
+  async destroyContainer(): Promise<void> {
+    try {
+      await this.destroy()
+    } catch (error) {
+      console.error("container destroy failed (already stopped?)", error)
+    }
+  }
 }

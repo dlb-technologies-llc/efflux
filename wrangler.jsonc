@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "effect-flue",
+  "name": "efflux",
   "account_id": "0e23a33dd52d75e88e3e6a75d617d302",
   "main": "apps/api/src/index.ts",
   "compatibility_date": "2026-07-01",
@@ -10,7 +10,7 @@
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents", "/agents/*", "/tasks", "/tasks/*"]
+    "run_worker_first": ["/agents", "/agents/*", "/tasks", "/tasks/*", "/skills", "/skills/*", "/v1/*", "/knowledge", "/knowledge/*", "/meta/*"]
   },
   "durable_objects": {
     "bindings": [
@@ -31,8 +31,11 @@
     }
   ],
   "r2_buckets": [
-    { "binding": "SKILLS", "bucket_name": "effect-flue-skills" },
-    { "binding": "SESSIONS", "bucket_name": "effect-flue-sessions" }
+    { "binding": "SKILLS", "bucket_name": "efflux-skills" },
+    { "binding": "SESSIONS", "bucket_name": "efflux-sessions" }
+  ],
+  "ai_search": [
+    { "binding": "KNOWLEDGE_SEARCH", "instance_name": "efflux-knowledge", "remote": true }
   ],
   "triggers": { "crons": ["0 12 * * *"] },
   "observability": { "enabled": true }

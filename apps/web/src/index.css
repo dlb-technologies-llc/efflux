@@ -1,0 +1,130 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #FBFCFD;
+  --foreground: #0C1116;
+  --card: #FFFFFF;
+  --card-foreground: #0C1116;
+  --popover: #F5F8FA;
+  --popover-foreground: #0C1116;
+  --primary: #0E9DB0;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F5F8FA;
+  --secondary-foreground: #0C1116;
+  --muted: #F5F8FA;
+  --muted-foreground: #55636E;
+  --accent: #EBF1F4;
+  --accent-foreground: #0C1116;
+  --destructive: #C64141;
+  --destructive-foreground: #FFFFFF;
+  --border: #E2E8EC;
+  --input: #E2E8EC;
+  --ring: #0E9DB0;
+  --radius: 0.625rem;
+  --bg-subtle: #F2F6F8;
+  --surface-2: #F5F8FA;
+  --surface-3: #EBF1F4;
+  --border-strong: #CBD5DB;
+  --faint: #8A97A1;
+  --accent-ghost: rgba(14, 157, 176, 0.10);
+  --accent-line: rgba(14, 157, 176, 0.28);
+  --accent-dim: #0B8090;
+  --accent-bright: #12B6CC;
+  --success: #17915E;
+  --warning: #B3760A;
+  --radius-sm: 0.4375rem;
+  --radius-lg: 0.875rem;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.dark {
+  --background: #0A0C0F;
+  --foreground: #E8EEF3;
+  --card: #12161C;
+  --card-foreground: #E8EEF3;
+  --popover: #171C23;
+  --popover-foreground: #E8EEF3;
+  --primary: #28D7E5;
+  --primary-foreground: #04141A;
+  --secondary: #171C23;
+  --secondary-foreground: #E8EEF3;
+  --muted: #171C23;
+  --muted-foreground: #93A0AD;
+  --accent: #1E242C;
+  --accent-foreground: #E8EEF3;
+  --destructive: #F76D6D;
+  --destructive-foreground: #04141A;
+  --border: #242B34;
+  --input: #242B34;
+  --ring: #28D7E5;
+  --radius: 0.625rem;
+  --bg-subtle: #0E1218;
+  --surface-2: #171C23;
+  --surface-3: #1E242C;
+  --border-strong: #333C47;
+  --faint: #64707C;
+  --accent-ghost: rgba(40, 215, 229, 0.12);
+  --accent-line: rgba(40, 215, 229, 0.30);
+  --accent-dim: #1BA9B8;
+  --accent-bright: #62E9F2;
+  --success: #3DD68C;
+  --warning: #F5B544;
+  --radius-sm: 0.4375rem;
+  --radius-lg: 0.875rem;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border-strong: var(--border-strong);
+  --color-faint: var(--faint);
+  --color-accent-ghost: var(--accent-ghost);
+  --color-accent-line: var(--accent-line);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-bright: var(--accent-bright);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --radius-sm: var(--radius-sm);
+  --radius-lg: var(--radius-lg);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}

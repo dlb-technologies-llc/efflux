@@ -1,3 +1,6 @@
+import { ApprovalDecision, failureMessage } from "@efflux/shared"
+import type { StreamPart } from "@efflux/shared"
+import { Effect, Exit, Function, Stream } from "effect"
 import { Box, Text, useApp } from "ink"
 import TextInput from "ink-text-input"
 import * as React from "react"
@@ -13,6 +16,7 @@ export interface AppProps {
   readonly initialOverrides: PromptOverrides
 }
 
+/** Interactive Ink chat: streams turns, handles slash commands, renders the transcript. */
 export function App({ client, name, id, initialOverrides }: AppProps) {
   const { exit } = useApp()
   const [entries, setEntries] = React.useState<ReadonlyArray<TranscriptEntry>>([])
@@ -20,14 +24,21 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   const [pending, setPending] = React.useState(false)
   const [streaming, setStreaming] = React.useState("")
   const [overrides, setOverrides] = React.useState<PromptOverrides>(initialOverrides)
+  const [pendingApprovalId, setPendingApprovalId] = React.useState<number | null>(null)
+
+  const mountedRef = React.useRef(true)
+  React.useEffect(
+    () => () => {
+      mountedRef.current = false
+      void client.runtime.dispose()
+    },
+    [client],
+  )
 
   const pushEntry = (entry: TranscriptEntry) => {
     setEntries((prev) => [...prev, entry])
   }
 
-  // Accumulate deltas in a ref so tool frames can flush the text streamed so
-  // far into a finalized entry, preserving the arrival order of frames
-  // inside one assistant turn.
   const streamRef = React.useRef("")
   const appendDelta = (delta: string) => {
     streamRef.current += delta
@@ -42,27 +53,70 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
   }
 
   React.useEffect(() => {
-    let cancelled = false
-    client
-      .history(name, id)
-      .then((response) => {
-        if (cancelled) return
-        setEntries(
-          response.history.map((message) => ({
-            kind: "message",
-            role: message.role,
-            content: message.content,
-          })),
-        )
+    client.runtime.runPromiseExit(client.history(name, id)).then((result) => {
+      if (!mountedRef.current) return
+      Exit.match(result, {
+        onSuccess: (response) =>
+          setEntries(
+            response.history.map((message) => ({
+              kind: "message",
+              role: message.role,
+              content: message.content,
+            })),
+          ),
+        onFailure: () => pushEntry({ kind: "info", text: "no history for this session yet" }),
       })
-      .catch(() => {
-        if (cancelled) return
-        pushEntry({ kind: "info", text: "no history for this session yet" })
-      })
-    return () => {
-      cancelled = true
-    }
+    })
   }, [client, name, id])
+
+  const onPart = (part: StreamPart) => {
+    switch (part._tag) {
+      case "text-delta":
+        appendDelta(part.delta)
+        return
+      case "tool-call":
+        flushStreaming()
+        pushEntry({ kind: "tool", event: part })
+        return
+      case "tool-result":
+        flushStreaming()
+        pushEntry({ kind: "tool", event: part })
+        return
+      case "done":
+        flushStreaming()
+        return
+      case "error":
+        flushStreaming()
+        pushEntry({ kind: "error", text: part.message })
+        return
+      case "approval-request":
+        flushStreaming()
+        setPendingApprovalId(part.eventId)
+        pushEntry({ kind: "info", text: "⏸ tool call parked — /approve or /deny [reason]" })
+        return
+      default:
+        return Function.absurd(part)
+    }
+  }
+
+  const runTurn = async (message: string) => {
+    pushEntry({ kind: "message", role: "user", content: message })
+    setPending(true)
+    streamRef.current = ""
+    setStreaming("")
+    const result = await client.runtime.runPromiseExit(
+      Stream.runForEach(
+        client.streamPrompt(name, id, message, overrides),
+        (part) => Effect.sync(() => onPart(part)),
+      ),
+    )
+    if (!mountedRef.current) return
+    flushStreaming()
+    setPending(false)
+    if (Exit.isFailure(result)) {
+      pushEntry({ kind: "error", text: `stream failed: ${failureMessage(result.cause, "unknown error")}` })
+    }
+  }
 
   const runSlashCommand = async (line: string) => {
     const result = handleCommand(line, overrides)
@@ -74,72 +128,54 @@ export function App({ client, name, id, initialOverrides }: AppProps) {
       case "note":
         pushEntry({ kind: "info", text: result.note })
         return
-      case "reset":
+      case "approve": {
+        if (pendingApprovalId === null) {
+          pushEntry({ kind: "info", text: "nothing awaiting approval" })
+          return
+        }
+        const eventId = pendingApprovalId
+        const decision = new ApprovalDecision({
+          approved: result.approved,
+          ...(result.reason !== undefined ? { reason: result.reason } : {}),
+        })
+        setPendingApprovalId(null)
         setPending(true)
-        try {
-          await client.reset(name, id)
-          // Append rather than replace: <Static> is append-only (it can't
-          // unprint scrollback), and shrinking the items array would leave
-          // this confirmation below Static's internal index — never rendered.
-          pushEntry({ kind: "info", text: "session reset — server history cleared" })
-        } catch (error) {
+        streamRef.current = ""
+        setStreaming("")
+        const exitResult = await client.runtime.runPromiseExit(
+          Stream.runForEach(
+            client.streamApprove(name, id, eventId, decision),
+            (part) => Effect.sync(() => onPart(part)),
+          ),
+        )
+        if (!mountedRef.current) return
+        flushStreaming()
+        setPending(false)
+        if (Exit.isFailure(exitResult)) {
           pushEntry({
             kind: "error",
-            text: `reset failed: ${error instanceof Error ? error.message : String(error)}`,
+            text: `stream failed: ${failureMessage(exitResult.cause, "unknown error")}`,
           })
-        } finally {
-          setPending(false)
         }
         return
+      }
+      case "reset": {
+        setPending(true)
+        const exitResult = await client.runtime.runPromiseExit(client.reset(name, id))
+        if (!mountedRef.current) return
+        setPending(false)
+        Exit.match(exitResult, {
+          onSuccess: () =>
+            pushEntry({ kind: "info", text: "session reset — server history cleared" }),
+          onFailure: (cause) => {
+            pushEntry({ kind: "error", text: `reset failed: ${failureMessage(cause, "unknown error")}` })
+          },
+        })
+        return
+      }
       case "exit":
         exit()
         return
-    }
-  }
-
-  const runTurn = async (message: string) => {
-    pushEntry({ kind: "message", role: "user", content: message })
-    setPending(true)
-    streamRef.current = ""
-    setStreaming("")
-    try {
-      for await (const part of client.streamPrompt(name, id, message, overrides)) {
-        switch (part._tag) {
-          case "text-delta":
-            appendDelta(part.delta)
-            break
-          case "tool-call":
-            flushStreaming()
-            pushEntry({
-              kind: "tool",
-              event: { kind: "call", id: part.id, name: part.name, params: part.params },
-            })
-            break
-          case "tool-result":
-            flushStreaming()
-            pushEntry({
-              kind: "tool",
-              event: { kind: "result", id: part.id, result: part.result, isFailure: part.isFailure },
-            })
-            break
-          case "done":
-            flushStreaming()
-            break
-          case "error":
-            flushStreaming()
-            pushEntry({ kind: "error", text: part.message })
-            break
-        }
-      }
-      flushStreaming()
-    } catch (error) {
-      flushStreaming()
-      pushEntry({
-        kind: "error",
-        text: `stream failed: ${error instanceof Error ? error.message : String(error)}`,
-      })
-    } finally {
-      setPending(false)
     }
   }
 

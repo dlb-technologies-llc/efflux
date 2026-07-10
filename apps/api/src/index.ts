@@ -1,38 +1,53 @@
-import { AgentApi } from "@effect-flue/shared"
+import { AgentApi, ApiToken } from "@efflux/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
+import { Cause, Context, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import * as Etag from "effect/unstable/http/Etag"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpEffect from "effect/unstable/http/HttpEffect"
 import * as HttpPlatform from "effect/unstable/http/HttpPlatform"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
+import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest"
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
-import { AgentHandlers, AgentStub } from "./handlers.ts"
+import { AgentStub } from "./AgentStub.ts"
+import { AgentHandlers } from "./handlers.ts"
+import { OpenAiHandlers } from "./OpenAiHandlers.ts"
+import { KnowledgeSearch } from "./Knowledge.ts"
+import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
+import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
+import { SkillHandlers } from "./SkillHandlers.ts"
+import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
+import { WaitUntil } from "./WaitUntil.ts"
 
-// Durable Object classes must be exported from the Worker entry so the
-// runtime can find them (wrangler.jsonc binds AGENTS→Agent, SANDBOX→Sandbox,
-// REGISTRY→Registry).
+/** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
 export { Agent } from "./Agent.ts"
 export { Registry } from "./Registry.ts"
 export { Sandbox } from "./Sandbox.ts"
 
-// `env.OPENROUTER_API_KEY` is a plain string binding. Guard empty/missing
-// here — throwing (a defect) with a clear message beats a silent
-// "undefined" Bearer token reaching OpenRouter.
+/** Require a non-empty OPENROUTER_API_KEY, throwing a clear error rather than letting an undefined Bearer token reach OpenRouter. */
 const requireApiKey = (env: Env): string => {
   const value = env.OPENROUTER_API_KEY
   if (typeof value !== "string" || value === "") {
     throw new Error(
       "OPENROUTER_API_KEY missing from Worker environment (set it via wrangler secret or .dev.vars)",
+    )
+  }
+  return value
+}
+
+/** Require a non-empty API_TOKEN, throwing a clear error rather than letting an undefined credential reach the auth gate. */
+const requireApiToken = (env: Env): string => {
+  const value = env.API_TOKEN
+  if (typeof value !== "string" || value === "") {
+    throw new Error(
+      "API_TOKEN missing from Worker environment (set it via wrangler secret or .dev.vars)",
     )
   }
   return value
@@ -50,18 +65,15 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
     Effect.die("HttpPlatform.fileWebResponse not supported"),
 })
 
-// Constant layer stack — built once per isolate. Only the env-dependent
-// services (AgentStub, SkillsBucket, the OpenRouter layer) are provided
-// later, from the first request's `env`.
+/** Env-independent layer stack, built once per isolate; env-dependent services are provided later from the first request. */
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
-  // Provided ahead of the platform/etag stack so the schema-error
-  // transform participates in the request pipeline composed by
-  // `HttpApiBuilder.layer` for every endpoint in `AgentApi`.
+  Layer.provide(SkillHandlers),
+  Layer.provide(OpenAiHandlers),
+  Layer.provide(KnowledgeHandlers),
+  Layer.provide(MetaHandlers),
+  Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
-  // FileSystem is only consumed by HttpApiBuilder's multipart handling,
-  // which this API never uses — a noop satisfies the requirement (there is
-  // no real filesystem inside a Workers isolate anyway).
   Layer.provide([
     Etag.layer,
     HttpPlatformStub,
@@ -70,19 +82,12 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   ]),
 )
 
-// Build the native `(Request) => Promise<Response>` handler.
-//
-// `HttpEffect.toWebHandlerWith` is effect-smol's web↔Effect boundary: it
-// converts the native `Request` via `HttpServerRequest.fromWeb`, runs the
-// handler as a forked fiber, streams the response via
-// `HttpServerResponse.toWeb` (Stream bodies stay streams — SSE is not
-// buffered), and wires `request.signal` abort to fiber interruption so
-// `Stream.ensuring` finalizers in handlers.ts run on client disconnect.
+/** Build the native `(Request, Context<WaitUntil>) => Promise<Response>` handler via effect-smol's web↔Effect boundary; SSE bodies stay streamed. The per-request `WaitUntil` context lets a streaming handler fork the turn driver detached from the request fiber and keep the isolate alive until it completes — workerd fires no disconnect callback, so persistence is inline (not finalizer-driven) and a disconnected turn runs to completion via `ctx.waitUntil`. */
 const buildWebHandler = (
   env: Env,
-): Promise<(request: Request) => Promise<Response>> => {
-  // Layer/handler construction needs a Scope. Workers isolates are never
-  // gracefully disposed, so a never-closed module scope is correct here.
+): Promise<
+  (request: Request, context: Context.Context<WaitUntil>) => Promise<Response>
+> => {
   const scope = Scope.makeUnsafe()
   return Effect.runPromise(
     Effect.gen(function* () {
@@ -91,16 +96,13 @@ const buildWebHandler = (
         Layer.succeed(AgentStub, env.AGENTS),
         Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
+        Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
       )
-      const handler = yield* HttpRouter.toHttpEffect(routerLayer)
-      // HttpApiBuilder deliberately Effect.die's HttpApiSchemaError
-      // (request-decode failures) and the encoded result of typed
-      // endpoint errors. Those errors implement HttpServerRespondable
-      // for a structured response (400 for schema errors, the encoded
-      // body for typed errors). We catch the cause here, walk failures
-      // and defects, and render the first respondable value found.
-      // Without this, request-decode failures surface as CF's generic
-      // 500 plain-text rather than the intended 400 JSON.
+      const handler = yield* HttpRouter.toHttpEffect(
+        routerLayer.pipe(
+          Layer.provide(Layer.succeed(ApiToken, Redacted.make(requireApiToken(env)))),
+        ),
+      )
       const wrapped = handler.pipe(
         Effect.catchCause((cause) => {
           for (const reason of cause.reasons) {
@@ -113,12 +115,6 @@ const buildWebHandler = (
             if (HttpServerRespondable.isRespondable(value)) {
               return HttpServerRespondable.toResponse(value)
             }
-            // HttpApiBuilder calls JSON.parse synchronously when reading a
-            // Json payload (HttpApiBuilder.ts:557 in effect-smol). A
-            // malformed body throws SyntaxError that becomes a defect, not
-            // a typed HttpApiSchemaError — surface as a structured 400
-            // matching `SchemaErrorMiddlewareLive`'s shape, not an empty
-            // 400 or a 500.
             if (value instanceof SyntaxError) {
               return Effect.succeed(
                 HttpServerResponse.jsonUnsafe(
@@ -134,40 +130,50 @@ const buildWebHandler = (
             }
           }
           return Effect.logError("Unhandled worker cause", cause).pipe(
-            Effect.as(HttpServerResponse.empty({ status: 500 })),
+            Effect.as(
+              HttpServerResponse.jsonUnsafe(
+                { _tag: "InternalError", message: "internal server error" },
+                { status: 500 },
+              ),
+            ),
           )
         }),
       )
       const context = yield* Layer.build(services)
-      // `toWebHandlerWith` binds `R` at the first (curried) call, so the
-      // handler's requirements must be named explicitly — everything is
-      // erased by `context` except the per-request HttpServerRequest/Scope.
       return HttpEffect.toWebHandlerWith<
-        AgentStub | RegistryStub | SkillsBucket | LanguageModel.LanguageModel,
+        AgentStub | RegistryStub | SkillsBucket | KnowledgeSearch | LanguageModel.LanguageModel,
         | HttpServerRequest.HttpServerRequest
         | Scope.Scope
         | AgentStub
         | RegistryStub
         | SkillsBucket
+        | KnowledgeSearch
         | LanguageModel.LanguageModel
+        | WaitUntil
       >(context)(wrapped)
     }).pipe(Effect.provideService(Scope.Scope, scope)),
   )
 }
 
-// Per-isolate handler cache. `env` is stable for the isolate's lifetime,
-// so building once on the first API request is safe.
-let webHandler: Promise<(request: Request) => Promise<Response>> | undefined
+/** Per-isolate handler cache; env is stable for the isolate's lifetime, so build once on the first API request. */
+let webHandler:
+  | Promise<(request: Request, context: Context.Context<WaitUntil>) => Promise<Response>>
+  | undefined
 
+/** MUST stay in exact lockstep with `assets.run_worker_first` in wrangler.jsonc — a path missing there is served the SPA before `fetch` runs. */
 const isApiPath = (pathname: string): boolean =>
   pathname === "/agents" ||
   pathname.startsWith("/agents/") ||
   pathname === "/tasks" ||
-  pathname.startsWith("/tasks/")
+  pathname.startsWith("/tasks/") ||
+  pathname === "/skills" ||
+  pathname.startsWith("/skills/") ||
+  pathname.startsWith("/v1/") ||
+  pathname === "/knowledge" ||
+  pathname.startsWith("/knowledge/") ||
+  pathname.startsWith("/meta/")
 
-// Daily heartbeat cron — exercises the same skill-loading path the prompt
-// handler uses, against the support skill. The trigger is registered
-// top-level in wrangler.jsonc.
+/** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(
   function* (controller: ScheduledController, env: Env) {
     const apiKey = requireApiKey(env)
@@ -183,14 +189,10 @@ const cronEffect = Effect.fn("cronHeartbeat")(
         },
       ],
     }).pipe(
-      // Cron runs outside the per-request handler, so build a fresh AI
-      // layer here rather than reusing the request-scoped one.
       Effect.provide(makeAiLayer(apiKey)),
     )
     yield* Effect.log(`cron ${controller.cron}: ${response.text}`)
   },
-  // `tapCause` BEFORE `catchCause` is load-bearing — without it,
-  // transient OpenRouter failures vanish silently.
   (effect) =>
     effect.pipe(
       Effect.tapCause((cause) => Effect.logError("cron failed", cause)),
@@ -199,20 +201,16 @@ const cronEffect = Effect.fn("cronHeartbeat")(
 )
 
 export default {
-  fetch(request, env, _ctx): Promise<Response> {
-    // Routing FIRST: only API paths reach the HttpApi handler; everything
-    // else serves the SPA from static assets. Never "HttpApi 404 → assets"
-    // — unknown-skill structured 404s must reach API clients.
+  fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url)
     if (!isApiPath(url.pathname)) {
       return env.ASSETS.fetch(request)
     }
     webHandler ??= buildWebHandler(env)
     return webHandler.then(
-      (handle) => handle(request),
+      (handle) =>
+        handle(request, Context.make(WaitUntil, ctx.waitUntil.bind(ctx))),
       (error) => {
-        // Don't poison the isolate with a cached rejected promise — a
-        // transient build failure should retry on the next request.
         webHandler = undefined
         throw error
       },

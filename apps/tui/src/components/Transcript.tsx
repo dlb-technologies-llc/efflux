@@ -1,9 +1,13 @@
+import type { Message } from "@efflux/shared"
 import { Box, Static, Text } from "ink"
 import type { ToolEvent } from "./ToolFrame.tsx"
 import { ToolFrame } from "./ToolFrame.tsx"
 
+/** Role derives from the shared Message schema — never re-list its literals. */
+type Role = (typeof Message.Encoded)["role"]
+
 export type TranscriptEntry =
-  | { readonly kind: "message"; readonly role: "user" | "assistant"; readonly content: string }
+  | { readonly kind: "message"; readonly role: Role; readonly content: string }
   | { readonly kind: "tool"; readonly event: ToolEvent }
   | { readonly kind: "info"; readonly text: string }
   | { readonly kind: "error"; readonly text: string }
@@ -29,11 +33,7 @@ function Entry({ entry }: { readonly entry: TranscriptEntry }) {
   }
 }
 
-/**
- * Finalized transcript entries render inside `<Static>` so Ink writes them
- * once and they survive in terminal scrollback; only the live region below
- * re-renders per delta.
- */
+/** Finalized entries render inside `<Static>` so Ink writes them once (survive scrollback); the live region re-renders per delta. */
 export function Transcript({ entries }: { readonly entries: ReadonlyArray<TranscriptEntry> }) {
   return (
     <Static items={[...entries]}>

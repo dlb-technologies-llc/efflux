@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { failureMessage } from "@efflux/shared"
+import type { StreamPart } from "@efflux/shared"
+import { Effect, Exit, Function, Stream } from "effect"
 import { render } from "ink"
 import { App } from "./App.tsx"
 import { parseCliConfig } from "./cli.ts"
@@ -6,7 +9,7 @@ import type { PromptOverrides } from "./client.ts"
 import { makeAgentClient } from "./client.ts"
 
 const config = parseCliConfig(process.argv.slice(2))
-const client = await makeAgentClient(config.baseUrl)
+const client = makeAgentClient(config.baseUrl)
 
 const overrides: PromptOverrides = {
   ...(config.model !== undefined ? { model: config.model } : {}),
@@ -15,43 +18,48 @@ const overrides: PromptOverrides = {
 }
 
 if (config.message !== undefined) {
-  // One-shot mode: stream a single turn to stdout without mounting Ink —
-  // safe under non-TTY stdin, and the autonomous smoke path.
   let sawDone = false
   let exitCode = 0
-  try {
-    for await (const part of client.streamPrompt(config.name, config.id, config.message, overrides)) {
-      switch (part._tag) {
-        case "text-delta":
-          process.stdout.write(part.delta)
-          break
-        case "tool-call":
-          process.stdout.write(`\n[tool-call ${part.name} ${JSON.stringify(part.params) ?? ""}]\n`)
-          break
-        case "tool-result":
-          process.stdout.write(
-            `[tool-result${part.isFailure ? " FAILED" : ""} ${JSON.stringify(part.result) ?? ""}]\n`,
-          )
-          break
-        case "done":
-          sawDone = true
-          process.stdout.write(`\n[done ${part.finishReason}, ${part.toolCallCount} tool call(s)]\n`)
-          break
-        case "error":
-          exitCode = 1
-          console.error(`\n[error] ${part.message}`)
-          break
-      }
+  const onPart = (part: StreamPart) => {
+    switch (part._tag) {
+      case "text-delta":
+        process.stdout.write(part.delta)
+        return
+      case "tool-call":
+        process.stdout.write(`\n[tool-call ${part.name} ${JSON.stringify(part.params) ?? ""}]\n`)
+        return
+      case "tool-result":
+        process.stdout.write(
+          `[tool-result${part.isFailure ? " FAILED" : ""} ${JSON.stringify(part.result) ?? ""}]\n`,
+        )
+        return
+      case "done":
+        sawDone = true
+        process.stdout.write(`\n[done ${part.finishReason}, ${part.toolCallCount} tool call(s)]\n`)
+        return
+      case "error":
+        exitCode = 1
+        console.error(`\n[error] ${part.message}`)
+        return
+      case "approval-request":
+        process.stderr.write(`\n[approval-request ${part.toolCallId} — parked; approve interactively]\n`)
+        return
+      default:
+        return Function.absurd(part)
     }
-  } catch (error) {
-    console.error(`\n[stream failed] ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const result = await client.runtime.runPromiseExit(
+    Stream.runForEach(
+      client.streamPrompt(config.name, config.id, config.message, overrides),
+      (part) => Effect.sync(() => onPart(part)),
+    ),
+  )
+  await client.runtime.dispose()
+  if (Exit.isFailure(result)) {
+    console.error(`\n[stream failed] ${failureMessage(result.cause, "unknown error")}`)
     exitCode = 1
   }
-  if (!sawDone) {
-    // A stream that ends without a `done` part (network drop, worker
-    // timeout) must not pass as a successful smoke.
-    exitCode = 1
-  }
+  if (!sawDone) exitCode = 1
   process.exit(exitCode)
 }
 

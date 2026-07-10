@@ -1,140 +1,100 @@
-import type { HistoryResponse } from "@effect-flue/shared"
-import { AgentApi, PromptRequest, StreamPart } from "@effect-flue/shared"
-import { Effect, Schema } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import {
+  AgentApi,
+  ApprovalDecision,
+  makePromptRequest,
+  PromptRequest,
+  StreamPart,
+  streamAgentSse,
+} from "@efflux/shared"
+import type { PromptOverrides } from "@efflux/shared"
+import { Context, Effect, Layer, ManagedRuntime, Schema, Stream } from "effect"
+import {
+  FetchHttpClient,
+  HttpBody,
+  HttpClient,
+  HttpClientRequest,
+} from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
 
+export type { PromptOverrides }
+
 const encodePromptRequest = Schema.encodeSync(PromptRequest)
-const decodeStreamPart = Schema.decodeUnknownPromise(StreamPart)
+const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)
 
-/**
- * Per-session request overrides, settable via slash commands and CLI flags.
- * They ride on every subsequent PromptRequest.
- */
-export interface PromptOverrides {
-  readonly model?: string
-  readonly skill?: string
-  readonly role?: string
-}
+/** Typed AgentApi client, provided from the same FetchHttpClient the streaming path uses. */
+class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
+  "@efflux/tui/ApiClient",
+) {}
 
-// HttpApiClient encodes payloads via the PromptRequest schema, which is a
-// Schema.Class — it requires an actual class instance, not a plain object
-// with the matching shape. See ISSUES.md.
-const makePromptRequest = (message: string, overrides: PromptOverrides): PromptRequest =>
-  new PromptRequest({
-    message,
-    ...(overrides.model !== undefined ? { model: overrides.model } : {}),
-    ...(overrides.skill !== undefined ? { skill: overrides.skill } : {}),
-    ...(overrides.role !== undefined ? { role: overrides.role } : {}),
-  })
-
-const parseSseEvent = (raw: string): unknown => {
-  // SSE event blocks may contain multiple lines; only the `data:` lines carry payload.
-  const dataLines: Array<string> = []
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).replace(/^\s/, ""))
-    }
-  }
-  return JSON.parse(dataLines.join("\n"))
-}
-
-/**
- * Yields parsed `unknown` JSON payloads from an SSE response body, one per
- * `\n\n`-delimited event.
- *
- * Deliberately duplicated from apps/web/src/atoms.ts — the web copy sits
- * next to a load-bearing chunk-size invariant and the issue scopes this
- * change to apps/tui only. A later refactor can lift both into shared.
- */
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) {
-        const trimmed = buffer.trim()
-        if (trimmed.length > 0) {
-          yield parseSseEvent(trimmed)
-        }
-        return
-      }
-      buffer += decoder.decode(value, { stream: true })
-      let boundary = buffer.indexOf("\n\n")
-      while (boundary !== -1) {
-        const event = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const trimmed = event.trim()
-        if (trimmed.length > 0) {
-          yield parseSseEvent(trimmed)
-        }
-        boundary = buffer.indexOf("\n\n")
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
-
-/**
- * Open an SSE stream for one prompt turn and yield typed StreamParts.
- * Decode failures reject (never silently dropped); non-OK responses throw
- * with status + body text.
- */
-export async function* streamPrompt(
-  baseUrl: string,
-  name: string,
-  id: string,
-  message: string,
-  overrides: PromptOverrides,
-): AsyncGenerator<StreamPart> {
-  const body = encodePromptRequest(makePromptRequest(message, overrides))
-  const response = await fetch(
-    `${baseUrl}/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}/stream`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  )
-  if (!response.ok || response.body === null) {
-    const text = await response.text().catch(() => "")
-    throw new Error(`Stream request failed: ${response.status} ${response.statusText} ${text}`.trim())
-  }
-  for await (const event of sseEvents(response.body)) {
-    yield await decodeStreamPart(event)
-  }
-}
-
-/**
- * Promise facade over the typed HttpApiClient for the non-streaming
- * endpoints. Built once at startup; call sites stay Effect-free.
- */
-export interface AgentClient {
-  readonly history: (name: string, id: string) => Promise<HistoryResponse>
-  readonly reset: (name: string, id: string) => Promise<void>
-  readonly streamPrompt: (
-    name: string,
-    id: string,
-    message: string,
-    overrides: PromptOverrides,
-  ) => AsyncGenerator<StreamPart>
-}
-
-export const makeAgentClient = async (baseUrl: string): Promise<AgentClient> => {
-  const base = baseUrl.replace(/\/$/, "")
-  const api = await Effect.runPromise(
-    HttpApiClient.make(AgentApi, { baseUrl: base }).pipe(
-      Effect.provide(FetchHttpClient.layer),
+/** FetchHttpClient with the bearer credential stamped on every outgoing request, so both the typed `AgentApi` client and the raw streaming `post` satisfy the Worker's bearer `AuthMiddleware`. */
+const authedHttpClientLayer: Layer.Layer<HttpClient.HttpClient> = Layer.effect(
+  HttpClient.HttpClient,
+  Effect.map(
+    HttpClient.HttpClient,
+    HttpClient.mapRequest(
+      HttpClientRequest.setHeader("Authorization", `Bearer ${process.env.API_TOKEN ?? ""}`),
     ),
+  ),
+).pipe(Layer.provide(FetchHttpClient.layer))
+
+const clientLayer = (
+  baseUrl: string,
+): Layer.Layer<ApiClient | HttpClient.HttpClient> =>
+  Layer.effect(ApiClient, HttpApiClient.make(AgentApi, { baseUrl })).pipe(
+    Layer.provideMerge(authedHttpClientLayer),
   )
+
+/** Effect-native client for one worker base URL: `history`/`reset` are Effects, `streamPrompt` a `Stream`; callers run them through `runtime` (disposing it interrupts in-flight work). */
+export const makeAgentClient = (baseUrl: string) => {
+  const base = baseUrl.replace(/\/$/, "")
+  const runtime = ManagedRuntime.make(clientLayer(base))
+  const streamUrl = (name: string, id: string): string =>
+    `${base}/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}/stream`
+  const approveUrl = (name: string, id: string, eventId: number): string =>
+    `${base}/agents/${encodeURIComponent(name)}/${encodeURIComponent(id)}/approve/${eventId}`
   return {
-    history: (name, id) =>
-      Effect.runPromise(api.agents.history({ params: { name, id } })),
-    reset: (name, id) =>
-      Effect.runPromise(api.agents.reset({ params: { name, id } })),
-    streamPrompt: (name, id, message, overrides) => streamPrompt(base, name, id, message, overrides),
+    runtime,
+    history: (name: string, id: string) =>
+      Effect.flatMap(ApiClient, (api) => api.agents.history({ params: { name, id } })),
+    reset: (name: string, id: string) =>
+      Effect.flatMap(ApiClient, (api) => api.agents.reset({ params: { name, id }, query: {} })),
+    streamPrompt: (
+      name: string,
+      id: string,
+      message: string,
+      overrides: PromptOverrides,
+    ) =>
+      Stream.unwrap(
+        Effect.map(HttpClient.HttpClient, (http) =>
+          streamAgentSse(
+            http.post(streamUrl(name, id), {
+              body: HttpBody.text(
+                JSON.stringify(encodePromptRequest(makePromptRequest(message, overrides))),
+                "application/json",
+              ),
+            }),
+            StreamPart,
+          )),
+      ),
+    streamApprove: (
+      name: string,
+      id: string,
+      eventId: number,
+      decision: ApprovalDecision,
+    ) =>
+      Stream.unwrap(
+        Effect.map(HttpClient.HttpClient, (http) =>
+          streamAgentSse(
+            http.post(approveUrl(name, id, eventId), {
+              body: HttpBody.text(
+                JSON.stringify(encodeApprovalDecision(decision)),
+                "application/json",
+              ),
+            }),
+            StreamPart,
+          )),
+      ),
   }
 }
+
+export type AgentClient = ReturnType<typeof makeAgentClient>

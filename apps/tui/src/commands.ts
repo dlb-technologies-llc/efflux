@@ -4,11 +4,12 @@ import type { PromptOverrides } from "./client.ts"
 export type CommandResult =
   | { readonly kind: "set-overrides"; readonly overrides: PromptOverrides; readonly note: string }
   | { readonly kind: "note"; readonly note: string }
+  | { readonly kind: "approve"; readonly approved: boolean; readonly reason?: string }
   | { readonly kind: "reset" }
   | { readonly kind: "exit" }
 
 const HELP =
-  "commands: /model [name] · /skill [name] · /role [name] · /reset · /exit"
+  "commands: /model [name] · /skill [name] · /role [name] · /approve · /deny [reason] · /reset · /exit"
 
 const showOrSet = (
   key: "model" | "skill" | "role",
@@ -31,7 +32,9 @@ const showOrSet = (
 
 /**
  * Interpret a `/command` input line against the current overrides.
- * `/sessions` is intentionally absent — blocked on the event journal (#36).
+ * `/sessions` and `/journal` are not surfaced in the TUI yet — the server
+ * endpoints exist (GET /agents, /agents/:name/:id/journal) and scripts/agent.ts
+ * exercises them; wiring them into the TUI is future work.
  */
 export const handleCommand = (
   input: string,
@@ -46,6 +49,12 @@ export const handleCommand = (
       return showOrSet("skill", arg, overrides)
     case "/role":
       return showOrSet("role", arg, overrides)
+    case "/approve":
+      return { kind: "approve", approved: true }
+    case "/deny": {
+      const reason = rest.join(" ")
+      return { kind: "approve", approved: false, ...(reason.length > 0 ? { reason } : {}) }
+    }
     case "/reset":
       return { kind: "reset" }
     case "/exit":

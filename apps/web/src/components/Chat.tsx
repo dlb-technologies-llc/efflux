@@ -1,136 +1,265 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
-import type { StreamPart } from "@effect-flue/shared"
-import { Cause, Exit } from "effect"
+import type { StreamPart } from "@efflux/shared"
+import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"
-import { historyAtom, streamAtom } from "../atoms.ts"
+
+import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
+
+import { historyAtom, noParts, resumeAtom, streamAtom } from "../atoms.ts"
+import { latestTurnInFlight } from "../atoms/journal.ts"
+import { failureMessage } from "../errors.ts"
+import { historyForResume } from "../format.ts"
+import {
+  currentSessionAtom,
+  journalVersionAtom,
+  selectedModelAtom,
+  selectedSkillAtom,
+} from "../session.ts"
+import { useJournal } from "../useJournal.ts"
+import { AsyncBoundary } from "./AsyncBoundary.tsx"
+import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
+import { StatusPill } from "./StatusPill.tsx"
+import type { ToolCallView } from "./ToolCallCard.tsx"
 
-export interface ChatProps {
-  readonly name: string
-  readonly id: string
-}
+/** Distance (px) from the bottom within which the transcript counts as "pinned" and keeps auto-scrolling. */
+const NEAR_BOTTOM_PX = 80
 
-export function Chat({ name, id }: ChatProps) {
+/** Live chat view: renders session history and streams the current assistant turn. */
+export function Chat() {
   const [input, setInput] = React.useState("")
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
-  const [streaming, setStreaming] = React.useState("")
+  const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
+  const [atBottom, setAtBottom] = React.useState(true)
 
-  // `Atom.family` memoises structurally (Equal/Hash), so a fresh `{name, id}`
-  // literal returns the same atom on every render — no useMemo needed.
-  const sessionAtom = historyAtom({ name, id })
+  const session = useAtomValue(currentSessionAtom)
+  const model = useAtomValue(selectedModelAtom)
+  const skill = useAtomValue(selectedSkillAtom)
+  const bumpJournal = useAtomSet(journalVersionAtom)
+
+  const sessionAtom = historyAtom(session)
   const historyResult = useAtomValue(sessionAtom)
   const refreshHistory = useAtomRefresh(sessionAtom)
   const runStream = useAtomSet(streamAtom, { mode: "promiseExit" })
 
-  // Hold the per-emit handler in a ref so `useAtomSubscribe` sees a stable
-  // callback identity. Without this, every setStreaming/setSubmitError call
-  // re-renders, which would cause useAtomSubscribe to unsubscribe and
-  // resubscribe between commits — async deltas arriving in that window
-  // would have no subscriber attached.
-  const onPartRef = React.useRef<(part: StreamPart) => void>(() => {})
-  onPartRef.current = (part) => {
-    if (part._tag === "text-delta") {
-      setStreaming((prev) => prev + part.delta)
-      return
-    }
-    if (part._tag === "error") {
-      setSubmitError(part.message)
-    }
-  }
+  const [resuming, setResuming] = React.useState(false)
+  const resumingRef = React.useRef(false)
+  const resumeHandledRef = React.useRef<string | null>(null)
+  const currentKeyRef = React.useRef<string | null>(null)
+  const sessionKey = `${session.name}/${session.id}`
+  const { result: journalResult } = useJournal(session)
+  const sessionResumeAtom = resumeAtom(session)
+  const runResume = useAtomSet(sessionResumeAtom, { mode: "promiseExit" })
+
+  React.useEffect(() => {
+    currentKeyRef.current = sessionKey
+  })
+
   const onResult = React.useCallback(
-    (result: AsyncResult.AsyncResult<StreamPart, unknown>) => {
-      if (!AsyncResult.isSuccess(result)) return
-      onPartRef.current(result.value)
+    (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
+      if (AsyncResult.isSuccess(result)) setParts(result.value)
     },
     [],
   )
   useAtomSubscribe(streamAtom, onResult)
 
+  const onResumeResult = React.useCallback(
+    (result: AsyncResult.AsyncResult<ReadonlyArray<StreamPart>, unknown>) => {
+      if (!resumingRef.current) return
+      if (AsyncResult.isSuccess(result)) setParts(result.value)
+    },
+    [],
+  )
+  useAtomSubscribe(sessionResumeAtom, onResumeResult)
+
+  const streamingText = parts.reduce(
+    (text, part) => (part._tag === "text-delta" ? text + part.delta : text),
+    "",
+  )
+  const streamError = parts.reduce<string | null>(
+    (message, part) => (part._tag === "error" ? part.message : message),
+    submitError,
+  )
+  const streamActive = parts.length > 0
+  const awaitingApproval = parts.some((part) => part._tag === "approval-request")
+
+  const toolViews: ReadonlyArray<ToolCallView> = parts.flatMap((part) => {
+    if (part._tag !== "tool-call") return []
+    const match = parts.find(
+      (other) => other._tag === "tool-result" && other.id === part.id,
+    )
+    const view: ToolCallView = {
+      name: part.name,
+      ...(part.params !== undefined ? { params: part.params } : {}),
+      ...(match !== undefined && match._tag === "tool-result"
+        ? { result: match.result, isFailure: match.isFailure }
+        : { running: true }),
+    }
+    return [view]
+  })
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
-    setStreaming("")
+    setParts(noParts)
     setSubmitError(null)
     setInput("")
     setPending(true)
-    const exit = await runStream({ name, id, message })
+    const exit = await runStream({
+      ...session,
+      message,
+      ...(model !== "" ? { model } : {}),
+      ...(skill !== "" ? { skill } : {}),
+    })
     setPending(false)
     Exit.match(exit, {
       onFailure: (cause) => {
-        const failReason = cause.reasons.find(Cause.isFailReason)
-        setSubmitError(failReason ? failReason.error.message : "Stream failed")
+        setSubmitError(failureMessage(cause, "Stream failed"))
+        setParts(noParts)
       },
-      // Don't clear `streaming` here — the bubble would disappear for the
-      // duration of the history refetch and visually pop back. The success
-      // effect below clears `streaming` once the refreshed history actually
-      // contains the new assistant turn.
       onSuccess: () => {
         refreshHistory()
+        bumpJournal((v) => v + 1)
       },
     })
   }
 
-  // Clear the live-streaming buffer only AFTER the refreshed history contains
-  // the new assistant turn. Avoids the disappear-then-reappear flicker that
-  // would otherwise happen between `setStreaming("")` and the historyAtom
-  // refetch resolving.
   const previousHistoryLengthRef = React.useRef(0)
+  React.useEffect(() => {
+    setParts(noParts)
+    setSubmitError(null)
+    previousHistoryLengthRef.current = 0
+    setResuming(false)
+    resumingRef.current = false
+  }, [session.name, session.id])
+
   React.useEffect(() => {
     if (!AsyncResult.isSuccess(historyResult)) return
     const length = historyResult.value.history.length
-    if (length > previousHistoryLengthRef.current && streaming.length > 0) {
-      setStreaming("")
+    if (length > previousHistoryLengthRef.current && parts.length > 0) {
+      setParts(noParts)
     }
     previousHistoryLengthRef.current = length
-  }, [historyResult, streaming.length])
+  }, [historyResult, parts.length])
+
+  React.useEffect(() => {
+    if (resumeHandledRef.current === sessionKey) return
+    if (!AsyncResult.isSuccess(historyResult)) return
+    if (!AsyncResult.isSuccess(journalResult)) return
+    resumeHandledRef.current = sessionKey
+    if (!latestTurnInFlight(journalResult.value)) return
+    const key = sessionKey
+    setResuming(true)
+    resumingRef.current = true
+    void runResume(session).then(() => {
+      if (currentKeyRef.current !== key) return
+      setResuming(false)
+      resumingRef.current = false
+      setParts(noParts)
+      refreshHistory()
+      bumpJournal((v) => v + 1)
+    })
+  }, [sessionKey, historyResult, journalResult, runResume, refreshHistory, bumpJournal])
+
+  const scrollRegionRef = React.useRef<HTMLDivElement>(null)
+  const getViewport = React.useCallback(
+    () =>
+      scrollRegionRef.current?.querySelector<HTMLElement>(
+        '[data-slot="scroll-area-viewport"]',
+      ) ?? null,
+    [],
+  )
+
+  React.useEffect(() => {
+    const viewport = getViewport()
+    if (viewport === null) return
+    const onScroll = () => {
+      const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      setAtBottom(distance <= NEAR_BOTTOM_PX)
+    }
+    onScroll()
+    viewport.addEventListener("scroll", onScroll)
+    return () => viewport.removeEventListener("scroll", onScroll)
+  }, [getViewport])
+
+  const historyLength = AsyncResult.isSuccess(historyResult)
+    ? historyResult.value.history.length
+    : 0
+  React.useEffect(() => {
+    if (!atBottom) return
+    const viewport = getViewport()
+    if (viewport === null) return
+    viewport.scrollTop = viewport.scrollHeight
+  }, [atBottom, getViewport, historyLength, streamingText, toolViews.length, pending, awaitingApproval])
+
+  const jumpToLatest = () => {
+    const viewport = getViewport()
+    if (viewport === null) return
+    viewport.scrollTop = viewport.scrollHeight
+    setAtBottom(true)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault()
+      event.currentTarget.form?.requestSubmit()
+    }
+  }
 
   return (
-    <main className="chat">
-      <h1>effect-flue chat</h1>
-      <p style={{ opacity: 0.6, fontSize: 13 }}>
-        session: <code>{name}/{id}</code>
-      </p>
-      {AsyncResult.match(historyResult, {
-        onInitial: () => <p className="pending">Loading history...</p>,
-        onFailure: (failure) => {
-          const failReason = failure.cause.reasons.find(Cause.isFailReason)
-          return (
-            <p className="error">
-              Failed to load history:{" "}
-              {failReason ? failReason.error.message : "Something went wrong"}
-            </p>
-          )
-        },
-        onSuccess: (success) => <MessageList messages={success.value.history} />,
-      })}
-      {streaming.length > 0 ? (
-        <div className="message message-assistant message-streaming">
-          <div className="role">assistant</div>
-          {streaming}
-          {pending ? <span className="streaming-cursor" aria-hidden /> : null}
-        </div>
-      ) : pending ? (
-        <div className="message message-assistant pending">
-          <div className="role">assistant</div>
-          <span className="thinking-dots">thinking</span>
-        </div>
-      ) : null}
-      {submitError !== null ? <p className="error">{submitError}</p> : null}
-      <form className="composer" onSubmit={handleSubmit}>
-        <input
-          type="text"
-          placeholder="Type a message..."
+    <div className="flex flex-col h-full min-h-0">
+      <div ref={scrollRegionRef} className="relative flex-1 min-h-0 flex flex-col">
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="flex flex-col gap-4 p-4">
+            <AsyncBoundary result={historyResult}>
+              {(value) => (
+                <MessageList
+                  messages={resuming && parts.length > 0 ? historyForResume(value.history) : value.history}
+                />
+              )}
+            </AsyncBoundary>
+            {streamActive || pending ? (
+              <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
+            ) : null}
+            {resuming ? <StatusPill state="accent" dot label="resuming…" /> : null}
+            {awaitingApproval ? (
+              <StatusPill state="warning" dot label="awaiting approval — act in Approvals" />
+            ) : null}
+            {streamError !== null ? (
+              <p className="text-destructive text-sm">{streamError}</p>
+            ) : null}
+          </div>
+        </ScrollArea>
+        {atBottom ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="absolute bottom-3 right-3 shadow-md"
+            onClick={jumpToLatest}
+          >
+            Jump to latest
+          </Button>
+        )}
+      </div>
+      <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
+        <Textarea
+          className="flex-1 max-h-40 resize-none"
+          rows={1}
+          placeholder="Message the agent…  ⌘↵ to send"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={pending}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={pending || resuming}
         />
-        <button type="submit" disabled={pending || input.trim().length === 0}>
-          {pending ? "Sending..." : "Send"}
-        </button>
+        <Button type="submit" disabled={pending || resuming || input.trim().length === 0}>
+          {pending ? "Sending…" : "Send"}
+        </Button>
       </form>
-    </main>
+    </div>
   )
 }

@@ -47,14 +47,68 @@ happens:
   disconnected turn always exists in the journal.
 - Tool events append inline as parts arrive; hop batches append at hop end.
   Both keep landing after disconnect for as long as the driver survives.
-- A turn with no terminal `done`/`error` event is a legitimate journal
-  state meaning "parked/incomplete" (`scripts/verify-journal.ts` reports it
-  as PARKED; stream re-attach is #49's territory).
+- The streaming driver (`apps/api/src/StreamingTurn.ts`) is now DETACHED
+  from the request fiber: it runs via `Effect.runPromise` on a fresh root
+  fiber, and its completion is registered with `ctx.waitUntil` (threaded
+  per-request through the `WaitUntil` service — `apps/api/src/index.ts` +
+  `WaitUntil.ts`). A disconnected turn therefore runs to a terminal instead
+  of stalling. The response sink is `Queue.sliding(256)`, so `Queue.offer`
+  never blocks the driver on a gone client via backpressure.
+- The driver now OWNS its terminals: it journals the terminal `done` (in
+  the hop loop) and, on failure, the terminal `error` (via
+  `journalTurnError`), and it snapshots the workspace — because the response
+  pipeline no longer runs once the client is gone. (Previously the terminal
+  `error` + snapshot lived on the response stream, which silently did
+  nothing on disconnect — the same trap that lost the pre-journal
+  `persistTurn`.)
+- A turn STILL ending with no terminal `done`/`error` is now the narrow
+  reaped-before-finish case; `scripts/verify-journal.ts` still reports it as
+  PARKED. Recovery is `GET /agents/:name/:id/attach`
+  (`apps/api/src/AttachStream.ts`): it replays journaled frames as SSE from
+  the resume cursor — `Last-Event-ID` header, else `?after=`, else the
+  LATEST turn in full — then live-tails the journal until the followed turn
+  terminates, parks, or goes stale. That is how a client recovers "zero
+  lost frames" after a disconnect: it reads the journal, not the dropped
+  socket. (Stream re-attach was #49.)
 
-The `flushPartialHopText` finalizer in `handlers.ts` covers mid-hop
-FAILURES (e.g. the model API dying between deltas) — those interrupt the
-stream through normal Effect channels and DO run finalizers. It knowingly
-does not cover disconnects.
+**Residual tradeoff (honest):** the `sliding` sink is not free. If a
+still-CONNECTED client falls more than 256 frames behind, the queue drops
+its OLDEST buffered frames. Those dropped frames are un-journaled
+`text-delta`s (tokens) — recoverable only as the hop's full assistant text
+via `GET /history` or a reattach, NOT per-token. That token-loss is the
+necessary price of never stalling the driver on a gone client.
+
+The `flushPartialHopText` finalizer (now in `StreamingTurn.ts`) covers
+mid-hop FAILURES (e.g. the model API dying between deltas) — those interrupt
+the driver through normal Effect channels and DO run finalizers, and the
+driver's `tapCause` journals the terminal `error` and snapshots alongside
+it. It knowingly does not cover disconnects; the detached driver +
+`ctx.waitUntil` do.
+
+### Verified live (2026-07-10, #49 deploy)
+
+Confirmed against the running worker, not on paper:
+
+- **Survival + reattach works.** A 3-hop turn (each hop a `sleep 6` Bash
+  call) whose client was killed 7s in — right after the first `tool-call`
+  frame, before that hop's tool even finished — ran ALL three hops to a
+  terminal `done` with no client attached, and `GET /attach` from the last
+  seen `Last-Event-ID` replayed every intervening frame (tool results, later
+  hops, assistant text, `done`) with zero gaps. `ctx.waitUntil` demonstrably
+  extends the isolate past the response: a longer turn was still journaling
+  its 3rd `tool-call` ~30s+ after disconnect, well beyond the ~30s natural
+  survival window this file documents above.
+- **There IS a `ctx.waitUntil` wall-clock ceiling.** A turn of 3×`sleep 14`
+  (~42s of tool time) survived the disconnect and journaled through its 3rd
+  `tool-call`, then STALLED — the 3rd tool result and `done` never landed
+  (the container had already run two `sleep 14`s fine, so it is the isolate
+  being reaped, not the sandbox). Practical ceiling observed on this plan:
+  a detached turn reliably completes only if it finishes within roughly
+  40–50s of wall-clock after the detach point; longer turns can be reaped
+  mid-flight, leaving the journal terminal-less (a genuinely-reaped turn is
+  the one case `/attach`'s ~150s staleness cutoff exists to bound). This is
+  the inherent limit of the Worker-side + `waitUntil` approach (the DO has
+  no AI layer, so moving the driver DO-side was out of scope for #49).
 
 ---
 
@@ -329,6 +383,22 @@ plain values at the RPC fence.
 For history-style endpoints that return arrays of `Schema.Class` items, the
 DO returns `Array<{role, content}>`, and the handler maps each element back
 into `new Message({...})` before wrapping in `new HistoryResponse({...})`.
+
+**The RPC TYPE transform also widens `typeof X.Encoded` — derive fence-crossing
+plain types with `Pick`, not the encoded alias.** This is a *compile-time* trap
+distinct from the runtime `DataCloneError` above. A DO method whose return (or a
+per-turn service type fed from that return) is annotated `typeof SomeSchemaClass.Encoded`
+will NOT typecheck against the RPC-proxied value: Cloudflare's DO-stub type transform
+collapses the opaque Effect encoded type (`ReadonlySide<Schema.Literals<…>>`) back to
+`string`, so a `Schema.Literals` field silently becomes `string` across the fence and
+fails to assign to the encoded-alias target. Derive the plain shape with
+`Pick<SomeSchemaClass, "field" | …>` instead — it yields a plain
+`{ readonly field: "a" | "b" }` that survives the transform and stays schema-derived
+(no re-listed literals). (prev1-quality-refactor #90: `PlainTodo = typeof TodoItem.Encoded`
+reddened the wave typecheck on `TodoStore.read`/`latestTodos`;
+`Pick<TodoItem, "content" | "status">` fixed it. `history()`/`PlainMessage` only compiled
+because its consumer `composeMessages` takes a plain union, which masked the same hazard —
+so a passing sibling is NOT evidence the encoded alias is fence-safe.)
 
 ### What the symptoms hide
 
@@ -630,3 +700,123 @@ multi-step tool flows will silently degrade to one-shot announcements.
   `streamText` stating "this runs one round per call; if
   `finishReason === 'tool-calls'`, the caller must concatenate
   `Prompt.fromResponseParts(response.content)` and call again."
+
+---
+
+## Effect ships an MCP *server*, not a client — we hand-rolled the JSON-RPC Streamable-HTTP transport
+
+**TL;DR:** `effect/unstable/ai` ships `McpServer.ts` (expose *your* toolkit
+as an MCP server) and `McpSchema.ts` (the protocol modelled as `Rpc.make`
+classes), but NO MCP *client*. To CONSUME external MCP servers,
+`apps/api/src/Mcp.ts` is a hand-written JSON-RPC 2.0 Streamable-HTTP client
+that still decodes replies with the canonical `McpSchema` result classes
+(`InitializeResult`, `ListToolsResult`, `CallToolResult`). Every transport
+quirk below cost real debugging when it was missed.
+
+### Transport quirks (`apps/api/src/Mcp.ts`)
+
+- **Two reply encodings.** One request may come back as `application/json`
+  OR `text/event-stream` — branch on the response `content-type` and handle
+  both (`readReply`). For SSE, stop reading at the frame whose JSON-RPC `id`
+  matches the request and cancel the reader; do NOT drain the stream, or a
+  server that holds the channel open after replying hangs to the 10s
+  timeout.
+- **Echo the session + protocol headers on EVERY post-init request.**
+  `Mcp-Session-Id` (captured from the `initialize` response headers) and
+  `MCP-Protocol-Version: <negotiated>` must ride on every subsequent
+  request — INCLUDING the `notifications/initialized` notification. Some
+  servers 400 without them.
+- **Handshake order.** `notifications/initialized` must be sent AFTER
+  `initialize` and BEFORE the first `tools/list`.
+- **Follow redirects, then re-validate the destination (SSRF).** Real servers
+  307/308 to their canonical path, so the fetch uses `redirect: "follow"`
+  (`redirect: "manual"` breaks the handshake). But `follow` means the initial
+  `isBlockedHost` check on `server.url` no longer covers the FINAL host — a
+  public URL that redirects to a private/internal host would otherwise sail
+  through. `sendFetch` therefore re-checks `isBlockedHost(response.url)` after
+  every fetch and fails closed. Residual (accepted for v1): the redirected
+  request still *reaches* the internal host once before we reject its response;
+  full per-hop revalidation (like `web_fetch` in `Tools.ts`) is the follow-up
+  hardening. MCP URLs are operator-configured, not model-chosen, so the blast
+  radius is smaller than `web_fetch`'s.
+- **Read the JSON-RPC `.error` object, not just `.result`.** A well-formed
+  error envelope carries no `result`; treating a missing `.result` as
+  success yields an opaque `undefined`-decode failure instead of the
+  server's real message. `resultOf` maps `.error` to an `McpError`
+  explicitly and fails on an envelope with neither.
+- **`CallToolResult` may carry binary.** `ImageContent`/`AudioContent`
+  blocks decode `data` as `Uint8Array`, which trips strict decode.
+  `callTool` decodes strict first (`flattenStrict`), then falls back to a
+  lenient text-only extraction (`flattenLenient`), so a binary block
+  degrades to a placeholder instead of failing the whole call.
+
+### Toolkit side (`apps/api/src/SessionToolkit.ts`)
+
+Discovered tools become `Tool.dynamic(...)` in JSON-Schema mode, namespaced
+`mcp__<server>__<tool>`, and folded into the session toolkit via
+`Toolkit.merge`. Two non-obvious requirements:
+
+- Each dynamic tool MUST be annotated `.annotate(Tool.Strict, false)` — the
+  server's raw JSON Schema will not survive a provider's strict-schema
+  validation otherwise.
+- The handler MUST `Effect.catchTag("McpError", ...)` the transport failure.
+  `McpError` is neither the tool's declared `Failure` nor an `AiError`, so
+  an uncaught one fails typecheck at `mcpToolkit.toLayer(handlers)`.
+
+Discovery runs per-turn and degrades gracefully: `discoverServer` catches
+every per-server failure (SSRF reject, handshake error, dead/slow server) to
+a warning plus an empty tool set, so a broken server contributes zero tools
+and never fails the turn.
+
+### Approval-continuation edge
+
+`reconstructForContinuation` rebuilds a parked turn's continuation prompt by
+tool NAME + `approvalId`/`toolCallId` — never Effect's internal `tool.id` —
+so a parked MCP tool-call survives per-turn re-discovery and resumes. BUT if
+the server is unreachable at `/approve` time, the freshly rebuilt toolkit
+lacks that tool and the runtime raises `AiError.ToolNotFoundError`: the
+approved action is lost. An MCP tool's approval is only as durable as the
+server's availability at resume time.
+
+## Renamed `remote: true` binding (`ai_search`) blocks `wrangler dev` boot
+
+### Symptoms (2026-07-10, #85 rebrand)
+
+After renaming the `ai_search` `instance_name` in `wrangler.jsonc` (to `efflux-knowledge`), `wrangler dev` fails to start:
+
+```
+✘ [ERROR] AI Search binding 'KNOWLEDGE_SEARCH' references instance 'efflux-knowledge' in namespace 'default' which was not found.
+✘ [ERROR] Failed to start the remote proxy session. Failed to obtain a preview token.
+```
+
+`wrangler dev` fetches a preview token for every `remote: true` binding at startup, so a renamed-but-not-yet-created instance aborts the whole boot — even though the binding is only consumed lazily per-request (`Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH)` in `index.ts`), never at module load.
+
+### Fix
+
+Provision the instance first — `wrangler ai-search create efflux-knowledge --type builtin` — or, for a quick local smoke before it exists, comment the `ai_search` block out of the worktree `wrangler.jsonc` (uncommitted; the committed config keeps it). Only the knowledge-search feature then no-ops.
+
+## `Sandbox` container cold-starts at zero instances — the first tool call 500s
+
+### Symptoms (2026-07-10, #85 first deploy)
+
+Immediately after a fresh deploy, the first Bash (tool) turn returns `HTTP 500` (`error code: 1101`, a Worker exception); a retry seconds later returns `200`. Non-tool turns (pure model + markdown) succeed on the first try.
+
+### Root cause
+
+The `Sandbox` container application deploys with `instances: 0` and scales up on demand. The very first `/exec` request triggers a container cold start and can throw before the container is ready. This is a warm-up artifact, NOT a code bug — subsequent calls hit the warm container.
+
+### Fix
+
+None needed — retry. If a cold first call must not fail, warm the container with a throwaway tool turn right after deploy (fold it into the `/efflux-verifying` post-deploy smoke).
+
+## Renaming the repo folder mid-session breaks Claude skill/agent discovery
+
+### Symptoms (2026-07-10, #85 rebrand)
+
+Renaming the checkout directory while a Claude Code session is live orphaned the harness's `/efflux-*` skill and `efflux-task-executor` agent lookup — the session's project-root path no longer existed, so invocations failed with "Unknown skill". The sibling `git` worktrees under `.claude/worktrees/*` also went `prunable`, since their recorded absolute paths still pointed at the old folder name.
+
+### Fix
+
+- Re-link the moved worktrees with `git worktree repair <new-worktree-paths>` — with no args it can't find them at their old recorded locations, so pass the NEW paths; then `git worktree prune` clears any orphaned admin entries.
+- For the skills: run them from their files (`.claude/skills/<name>/SKILL.md`) for the rest of the session, or start a FRESH session at the new path, which restores the `/efflux-*` commands and the `efflux-task-executor` agent.
+- Prefer renaming the checkout folder BETWEEN sessions, never during one.
