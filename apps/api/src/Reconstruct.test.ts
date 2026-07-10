@@ -14,8 +14,10 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import {
+  COMPACTION_SUMMARY_PREFIX,
   JournalApprovalRequested,
   JournalAssistantText,
+  JournalCompaction,
   JournalHopMessages,
   JournalUserMessage,
 } from "@effect-flue/shared"
@@ -276,5 +278,93 @@ describe("reconstructForContinuation", () => {
       expect(response?.approvalId).toBe("appr_1")
       expect(response?.approved).toBe(false)
       expect(response?.reason).toBe("denied by user")
+    }))
+
+  it.effect("honors the compaction watermark: drops pre-watermark users and injects the summary", () =>
+    Effect.sync(() => {
+      const events: ReadonlyArray<ReconstructEvent> = [
+        { seq: 1, event: new JournalUserMessage({ content: "dropped turn" }) },
+        { seq: 2, event: new JournalCompaction({ throughSeq: 1, summary: "user asked X; agent did Y" }) },
+        { seq: 3, event: new JournalUserMessage({ content: "kept prior" }) },
+        { seq: 4, event: new JournalAssistantText({ turn: 3, hop: 0, text: "kept answer" }) },
+        { seq: 5, event: new JournalUserMessage({ content: "parked turn msg" }) },
+        {
+          seq: 6,
+          event: new JournalHopMessages({ turn: 5, hop: 0, messages: [parkedAssistant("call_1", "appr_1")] }),
+        },
+        {
+          seq: 7,
+          event: new JournalApprovalRequested({ turn: 5, hop: 0, approvalId: "appr_1", toolCallId: "call_1" }),
+        },
+      ]
+
+      const prompt = reconstructForContinuation({
+        events,
+        parkedTurn: 5,
+        approvalId: "appr_1",
+        approved: true,
+        skillBody: "SKILL",
+        roleBody: undefined,
+      })
+
+      expect(roleSequence(prompt)).toStrictEqual([
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "tool",
+      ])
+      expect(userTexts(prompt)).not.toContain("dropped turn")
+      expect(userTexts(prompt).some((text) => text.startsWith(COMPACTION_SUMMARY_PREFIX))).toBe(true)
+      expect(userTexts(prompt)).toContain("kept prior")
+      expect(userTexts(prompt)).toContain("parked turn msg")
+    }))
+
+  it.effect("injects the todos system message and orders skill/role, todos, summary, then prior users", () =>
+    Effect.sync(() => {
+      const events: ReadonlyArray<ReconstructEvent> = [
+        { seq: 1, event: new JournalUserMessage({ content: "dropped turn" }) },
+        { seq: 2, event: new JournalCompaction({ throughSeq: 1, summary: "folded history" }) },
+        { seq: 3, event: new JournalUserMessage({ content: "kept prior" }) },
+        { seq: 4, event: new JournalUserMessage({ content: "parked turn msg" }) },
+        {
+          seq: 5,
+          event: new JournalHopMessages({ turn: 4, hop: 0, messages: [parkedAssistant("call_1", "appr_1")] }),
+        },
+        {
+          seq: 6,
+          event: new JournalApprovalRequested({ turn: 4, hop: 0, approvalId: "appr_1", toolCallId: "call_1" }),
+        },
+      ]
+
+      const prompt = reconstructForContinuation({
+        events,
+        parkedTurn: 4,
+        approvalId: "appr_1",
+        approved: true,
+        skillBody: "SKILL",
+        roleBody: "ROLE",
+        todos: "- [ ] x",
+      })
+
+      expect(roleSequence(prompt)).toStrictEqual([
+        "system",
+        "system",
+        "system",
+        "user",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+      ])
+      expect(systemContents(prompt)).toStrictEqual(["SKILL", "ROLE", "Current task list:\n- [ ] x"])
+      expect(systemContents(prompt)[2]?.startsWith("Current task list:")).toBe(true)
+      expect(userTexts(prompt)).toStrictEqual([
+        COMPACTION_SUMMARY_PREFIX + "folded history",
+        "kept prior",
+        "parked turn msg",
+      ])
     }))
 })

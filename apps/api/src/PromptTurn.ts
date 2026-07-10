@@ -21,6 +21,7 @@ import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
+import { makeTodoStoreLayer } from "./Todo.ts"
 import { ApprovalRules } from "./Tools.ts"
 
 /** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. Derived from the shared `ApprovalHandle` schema so the coordinates never drift from the contract. */
@@ -61,6 +62,7 @@ export const runPromptTurn = (
   const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
 
   const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
+  const todoStore = makeTodoStoreLayer(agent, turn)
 
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
@@ -77,6 +79,7 @@ export const runPromptTurn = (
       const response = yield* withModel.pipe(
         Effect.provide(toolLayer),
         Effect.provide(bashRunner),
+        Effect.provide(todoStore),
         Effect.provide(Layer.succeed(ApprovalRules, rules)),
         Effect.timeout(MODEL_HOP_TIMEOUT),
         Effect.catch(toAgentError("LanguageModel.generateText")),

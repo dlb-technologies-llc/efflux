@@ -49,33 +49,29 @@ export const shouldContinueToolLoop = (
 
 /**
  * Compose the OpenRouter message array as
- * `[system: skill, system: role?, ...history, user]`.
+ * `[system: skill, system: role?, system: todos?, ...history, user]`.
+ * The optional `todos` system message (a `Current task list:` prefix over the
+ * current todo list) is injected AFTER skill/role and BEFORE history.
  * System messages are NOT persisted to history — only user + assistant.
  */
 export const composeMessages = (input: {
   skillBody: string
   roleBody: string | undefined
+  todos?: string
   history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>
   message: string
 }): ReadonlyArray<{
   role: "system" | "user" | "assistant"
   content: string
 }> => {
-  const systemMessages: ReadonlyArray<{
-    role: "system"
-    content: string
-  }> =
-    input.roleBody !== undefined
-      ? [
-          { role: "system", content: input.skillBody },
-          { role: "system", content: input.roleBody },
-        ]
-      : [{ role: "system", content: input.skillBody }]
-  return [
-    ...systemMessages,
-    ...input.history,
-    { role: "user", content: input.message },
+  const systemMessages: Array<{ role: "system"; content: string }> = [
+    { role: "system", content: input.skillBody },
   ]
+  if (input.roleBody !== undefined) systemMessages.push({ role: "system", content: input.roleBody })
+  if (input.todos !== undefined) {
+    systemMessages.push({ role: "system", content: `Current task list:\n${input.todos}` })
+  }
+  return [...systemMessages, ...input.history, { role: "user", content: input.message }]
 }
 
 /**

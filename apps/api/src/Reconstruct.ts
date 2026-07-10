@@ -1,4 +1,4 @@
-import type { JournalEventPayload } from "@effect-flue/shared"
+import { COMPACTION_SUMMARY_PREFIX, type JournalEventPayload } from "@effect-flue/shared"
 import { Prompt } from "effect/unstable/ai"
 
 /**
@@ -26,10 +26,20 @@ export const reconstructForContinuation = (input: {
   reason?: string
   skillBody: string
   roleBody: string | undefined
+  todos?: string
 }): Prompt.Prompt => {
-  const { approvalId, approved, events, parkedTurn, reason, roleBody, skillBody } = input
+  const { approvalId, approved, events, parkedTurn, reason, roleBody, skillBody, todos } = input
 
   const bySeq = [...events].sort((a, b) => a.seq - b.seq)
+
+  let compThrough = -1
+  let compSummary: string | undefined
+  for (const { event } of bySeq) {
+    if (event._tag === "compaction" && event.throughSeq < parkedTurn) {
+      compThrough = event.throughSeq
+      compSummary = event.summary
+    }
+  }
 
   const priorUsers: Array<{ seq: number; content: string }> = []
   const textsByTurn = new Map<number, Array<string>>()
@@ -40,7 +50,7 @@ export const reconstructForContinuation = (input: {
   for (const { event, seq } of bySeq) {
     switch (event._tag) {
       case "user-message": {
-        if (seq < parkedTurn) {
+        if (seq < parkedTurn && seq > compThrough) {
           priorUsers.push({ seq, content: event.content })
         } else if (seq === parkedTurn) {
           parkedUserContent = event.content
@@ -85,6 +95,13 @@ export const reconstructForContinuation = (input: {
   messages.push(Prompt.systemMessage({ content: skillBody }))
   if (roleBody !== undefined) {
     messages.push(Prompt.systemMessage({ content: roleBody }))
+  }
+
+  if (todos !== undefined) {
+    messages.push(Prompt.systemMessage({ content: `Current task list:\n${todos}` }))
+  }
+  if (compSummary !== undefined) {
+    messages.push(Prompt.userMessage({ content: [Prompt.textPart({ text: COMPACTION_SUMMARY_PREFIX + compSummary })] }))
   }
 
   for (const priorUser of priorUsers) {
