@@ -16,6 +16,7 @@
 			"!**/worker-configuration.d.ts",
 			"!.claude/effect-smol",
 			"!apps/web/src/components/ui",
+			"!apps/web/src/index.css",
 			"!**/node_modules"
 		]
 	},
