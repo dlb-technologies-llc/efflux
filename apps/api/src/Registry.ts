@@ -48,6 +48,7 @@ export class Registry extends DurableObject<Env> {
     )
   }
 
+  /** `limit` defaults to 100 when unset and is clamped to 1–500 (`Math.min(500, Math.max(1, Math.trunc(requested)))`). */
   async list(input?: { limit?: number }): Promise<Array<SessionRow>> {
     const requested = input?.limit ?? 100
     const limit = Math.min(500, Math.max(1, Math.trunc(requested)))

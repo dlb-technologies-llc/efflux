@@ -1,8 +1,9 @@
-import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
+import type { PlainTodo } from "./Todo.ts"
 
 /** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
 const HistorySchema = Schema.Array(Message)
@@ -11,9 +12,6 @@ const decodeHistory = Schema.decodeUnknownEffect(HistorySchema)
 /** Synchronous decode so `resolveApproval`'s check-and-insert stays await-free (atomic). */
 const decodeEventPayloadSync = Schema.decodeUnknownSync(JournalEventPayload)
 const encodeEventPayload = Schema.encodeSync(JournalEventPayload)
-
-/** Plain, RPC-safe message shape derived from the Message schema's encoded side. */
-type PlainMessage = typeof Message.Encoded
 
 /** Validated shape of the container's `POST /exec` response, checked before it crosses the RPC fence. */
 const ExecResultSchema = Schema.Struct({
@@ -29,6 +27,9 @@ const decodeExecResult = Schema.decodeUnknownResult(ExecResultSchema)
 /** Shape of the container's `GET /status` reply; only `hydrated` is consumed (excess keys stripped on decode). */
 const StatusSchema = Schema.Struct({ hydrated: Schema.Boolean })
 const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
+
+/** Safe decode of the session's stored config overrides through the canonical `AgentConfig` schema; a failed decode means no usable overrides. */
+const decodeConfig = Schema.decodeUnknownResult(AgentConfig)
 
 /**
  * Per-session storage + sandbox Durable Object: holds the append-only event journal
@@ -255,7 +256,7 @@ export class Agent extends DurableObject<Env> {
   }
 
   /** Items of the latest `todo-write` event (empty when none), as PLAIN objects across the RPC fence (Schema.Class instances cannot cross it — see ISSUES.md). */
-  async latestTodos(): Promise<Array<{ content: string; status: string }>> {
+  async latestTodos(): Promise<Array<PlainTodo>> {
     const row = this.ctx.storage.sql
       .exec("SELECT payload FROM journal WHERE type = 'todo-write' ORDER BY seq DESC LIMIT 1")
       .toArray()[0]
@@ -374,11 +375,10 @@ export class Agent extends DurableObject<Env> {
   /** Slide the idle-reaper alarm to `now + ttlSeconds` from the session's stored config (fallback `DEFAULT_TTL_SECONDS`). Called on every activity signal; `setAlarm` replaces the single DO alarm, so this is a sliding window from last activity. */
   async #scheduleReap(): Promise<void> {
     const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
-    const parsed = raw === undefined ? {} : JSON.parse(String(raw))
-    const ttl =
-      typeof parsed === "object" && parsed !== null && "ttlSeconds" in parsed && typeof parsed.ttlSeconds === "number" && parsed.ttlSeconds >= 1
-        ? parsed.ttlSeconds
-        : DEFAULT_TTL_SECONDS
+    const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
+    const ttl = Result.isSuccess(decoded)
+      ? decoded.success.ttlSeconds ?? DEFAULT_TTL_SECONDS
+      : DEFAULT_TTL_SECONDS
     await this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
   }
 

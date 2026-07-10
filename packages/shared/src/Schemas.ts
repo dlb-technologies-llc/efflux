@@ -34,10 +34,16 @@ export class Message extends Schema.Class<Message>("Message")({
   content: Schema.String,
 }) {}
 
+/** RPC-safe plain message shape — `Pick<Message, …>` yields `{ role: "user"|"assistant"; content: string }`, which survives the DO RPC type fence where `typeof Message.Encoded` would widen `role` back to `string`. */
+export type PlainMessage = Pick<Message, "role" | "content">
+
+/** Max length for a model id (forwarded to OpenRouter) — the single source shared by every model-id cap across the contract. */
+export const MODEL_ID_MAX_LENGTH = 128
+
 /** Primary user-facing prompt payload — generous message cap, tight model cap (forwarded to OpenRouter). */
 export class PromptRequest extends Schema.Class<PromptRequest>("PromptRequest")({
   message: Schema.String.check(Schema.isMaxLength(100_000)),
-  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MODEL_ID_MAX_LENGTH))),
   skill: Schema.optionalKey(SafeName),
   role: Schema.optionalKey(SafeName),
 }) {}
@@ -84,7 +90,7 @@ export class SubagentTaskRequest extends Schema.Class<SubagentTaskRequest>("Suba
   prompt: Schema.String.check(Schema.isMaxLength(8192)),
   skill: Schema.optionalKey(SafeName),
   role: Schema.optionalKey(SafeName),
-  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+  model: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MODEL_ID_MAX_LENGTH))),
 }) {}
 
 /** Subagent task result. */

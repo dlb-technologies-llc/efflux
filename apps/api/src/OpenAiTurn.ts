@@ -14,7 +14,7 @@ import {
   MAX_TOOL_HOPS,
   MODEL_HOP_TIMEOUT,
   journalTurnError,
-  makeBashRunnerLayer,
+  makeTurnLayers,
   shouldContinueToolLoop,
   snapshotWorkspace,
   toAgentError,
@@ -24,8 +24,6 @@ import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { makeTodoStoreLayer } from "./Todo.ts"
-import { ApprovalRules } from "./Tools.ts"
 
 /** Fixed OpenAI object id + creation time + model label for one facade turn's frames. */
 interface TurnMeta {
@@ -75,8 +73,7 @@ export const collectOpenAiTurn = (
 ): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
   const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
 
-  const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-  const todoStore = makeTodoStoreLayer(agent, turn)
+  const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
@@ -90,10 +87,7 @@ export const collectOpenAiTurn = (
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
       const response = yield* withModel.pipe(
-        Effect.provide(toolLayer),
-        Effect.provide(bashRunner),
-        Effect.provide(todoStore),
-        Effect.provide(Layer.succeed(ApprovalRules, rules)),
+        Effect.provide(turnLayers),
         Effect.timeout(MODEL_HOP_TIMEOUT),
         Effect.catch(toAgentError("LanguageModel.generateText")),
       )
@@ -165,8 +159,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
   const { agent, ambient, initialPrompt, meta, model, rules, toolkit, toolLayer, turn } = input
 
   const encodeChunk = Schema.encodeSync(ChatCompletionChunk)
-  const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-  const todoStore = makeTodoStoreLayer(agent, turn)
+  const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
   const sseFrame = (data: string): string =>
     Sse.encoder.write({ _tag: "Event", event: "message", id: undefined, data })
@@ -269,10 +262,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
   )
 
   const bytes = chunkStream.pipe(
-    Stream.provide(toolLayer),
-    Stream.provide(bashRunner),
-    Stream.provide(todoStore),
-    Stream.provide(Layer.succeed(ApprovalRules, rules)),
+    Stream.provide(turnLayers),
     Stream.provideContext(ambient),
     Stream.map((chunk) => sseFrame(JSON.stringify(encodeChunk(chunk)))),
     Stream.concat(Stream.succeed(sseFrame("[DONE]"))),

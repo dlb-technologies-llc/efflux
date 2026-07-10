@@ -17,6 +17,18 @@ Effect v4 and native Workers bindings — no framework required.
   Worker-side hop-capped tool loop over OpenRouter models. One `HttpApi` defined
   in `packages/shared` serves the Worker handlers, a fully typed web client, and
   the SSE `StreamPart` stream contract.
+- **Session toolkit & compaction.** Beyond Bash, each session exposes
+  journal-backed todo tools (`todo_write`), external MCP-server tools (per-session
+  `mcpServers` config), and an AI-Search `search_knowledge` tool — with automatic
+  context compaction that folds older turns into a running summary as the journal
+  grows.
+- **Session lifecycle.** Reset, archive, or purge a session (the `DELETE`
+  endpoint's `mode` query); archived journals persist to `efflux-sessions` as an
+  eval corpus, and an idle-TTL alarm reaps stale sessions.
+- **HTTP surface.** Bearer-token auth guards every endpoint; an OpenAI-compatible
+  `/v1` facade (`/v1/chat/completions` + `/v1/models`) fronts the runtime; live
+  turns survive disconnects via stream reattach (`GET /attach` with
+  `Last-Event-ID`); and knowledge documents upload through `PUT /knowledge/:name`.
 - **Web console (Tailwind v4 + shadcn/ui).** A dark-first agent console driven by
   the `/efflux-branding` design tokens: sanitized rendered markdown, collapsible
   tool-call cards, a scrolling transcript with a pinned composer, a free-entry

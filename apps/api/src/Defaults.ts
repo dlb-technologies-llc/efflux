@@ -4,10 +4,10 @@ import type { AgentNamespace } from "./AgentStub.ts"
 
 export const DEFAULT_MODEL = "tencent/hy3:free"
 
-/** Placeholder session TTL (1 day) until the TTL reaper (#48) consumes it; config-as-data ahead of its consumer. */
+/** Fallback session idle-TTL (1 day) when a session stores no `ttlSeconds`: `Agent.#scheduleReap` slides the DO reaper alarm to `now + ttlSeconds` on every activity signal, and `alarm()` archives-and-purges the session when it fires — this governs how long an idle session survives before it is reaped. */
 export const DEFAULT_TTL_SECONDS = 86_400
 
-/** Placeholder compaction token ceiling until context compaction (#47) consumes it; config-as-data ahead of its consumer. */
+/** Fallback compaction token ceiling (100k) when a session stores no `compactionThreshold`: `Compaction.compactIfNeeded` reads it on every prompt/stream turn and summarizes older turns into a `compaction` event once the latest usage tokens exceed it — this governs when a session's context is compacted. */
 export const DEFAULT_COMPACTION_THRESHOLD = 100_000
 
 /** Merge a session's stored partial overrides over the app defaults into the fully-populated effective config. */

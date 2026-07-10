@@ -19,6 +19,7 @@ import {
   JournalAssistantText,
   JournalCompaction,
   JournalHopMessages,
+  JournalToolResult,
   JournalUserMessage,
 } from "@efflux/shared"
 import { Effect } from "effect"
@@ -366,5 +367,131 @@ describe("reconstructForContinuation", () => {
         "kept prior",
         "parked turn msg",
       ])
+    }))
+
+  it.effect("granular tool-result event resolves one approval and keeps its unresolved sibling", () =>
+    Effect.sync(() => {
+      const events: ReadonlyArray<ReconstructEvent> = [
+        { seq: 1, event: new JournalUserMessage({ content: "granular case" }) },
+        {
+          seq: 2,
+          event: new JournalHopMessages({
+            turn: 1,
+            hop: 0,
+            messages: [
+              Prompt.assistantMessage({
+                content: [
+                  Prompt.toolCallPart({ id: "call_1", name: "Bash", params: {}, providerExecuted: false }),
+                  Prompt.toolApprovalRequestPart({ approvalId: "appr_1", toolCallId: "call_1" }),
+                  Prompt.toolCallPart({ id: "call_2", name: "Bash", params: {}, providerExecuted: false }),
+                  Prompt.toolApprovalRequestPart({ approvalId: "appr_2", toolCallId: "call_2" }),
+                ],
+              }),
+            ],
+          }),
+        },
+        {
+          seq: 3,
+          event: new JournalToolResult({
+            turn: 1,
+            hop: 0,
+            part: Prompt.toolResultPart({ id: "call_1", name: "Bash", isFailure: false, result: "ok" }),
+          }),
+        },
+        {
+          seq: 4,
+          event: new JournalApprovalRequested({ turn: 1, hop: 0, approvalId: "appr_2", toolCallId: "call_2" }),
+        },
+      ]
+
+      const prompt = reconstructForContinuation({
+        events,
+        parkedTurn: 1,
+        approvalId: "appr_2",
+        approved: true,
+        skillBody: "SKILL",
+        roleBody: undefined,
+      })
+
+      expect(roleSequence(prompt)).toStrictEqual(["system", "user", "assistant", "tool"])
+      expect(toolCallSequence(prompt)).toStrictEqual(["call_1", "call_2"])
+      expect(hasApprovalRequestFor(prompt, "call_1")).toBe(false)
+      expect(hasApprovalRequestFor(prompt, "call_2")).toBe(true)
+      expect(approvalResponse(prompt)?.approvalId).toBe("appr_2")
+    }))
+
+  it.effect("picks the last compaction below the parked turn and ignores one at the parked turn", () =>
+    Effect.sync(() => {
+      const events: ReadonlyArray<ReconstructEvent> = [
+        { seq: 1, event: new JournalUserMessage({ content: "dropped turn" }) },
+        { seq: 2, event: new JournalCompaction({ throughSeq: 1, summary: "valid summary" }) },
+        { seq: 3, event: new JournalUserMessage({ content: "kept prior" }) },
+        { seq: 4, event: new JournalUserMessage({ content: "parked turn msg" }) },
+        {
+          seq: 5,
+          event: new JournalHopMessages({ turn: 4, hop: 0, messages: [parkedAssistant("call_1", "appr_1")] }),
+        },
+        {
+          seq: 6,
+          event: new JournalApprovalRequested({ turn: 4, hop: 0, approvalId: "appr_1", toolCallId: "call_1" }),
+        },
+        { seq: 7, event: new JournalCompaction({ throughSeq: 4, summary: "too recent summary" }) },
+      ]
+
+      const prompt = reconstructForContinuation({
+        events,
+        parkedTurn: 4,
+        approvalId: "appr_1",
+        approved: true,
+        skillBody: "SKILL",
+        roleBody: undefined,
+      })
+
+      expect(roleSequence(prompt)).toStrictEqual(["system", "user", "user", "user", "assistant", "tool"])
+      expect(userTexts(prompt)).toStrictEqual([
+        `${COMPACTION_SUMMARY_PREFIX}valid summary`,
+        "kept prior",
+        "parked turn msg",
+      ])
+      expect(userTexts(prompt).some((text) => text.includes("too recent summary"))).toBe(false)
+    }))
+
+  it.effect("drops an assistant message once its only approval request is resolved", () =>
+    Effect.sync(() => {
+      const events: ReadonlyArray<ReconstructEvent> = [
+        { seq: 1, event: new JournalUserMessage({ content: "full drop case" }) },
+        {
+          seq: 2,
+          event: new JournalHopMessages({
+            turn: 1,
+            hop: 0,
+            messages: [
+              callingAssistant("call_1"),
+              Prompt.assistantMessage({
+                content: [Prompt.toolApprovalRequestPart({ approvalId: "appr_1", toolCallId: "call_1" })],
+              }),
+              resultMessage("call_1"),
+            ],
+          }),
+        },
+        {
+          seq: 3,
+          event: new JournalApprovalRequested({ turn: 1, hop: 0, approvalId: "appr_1", toolCallId: "call_1" }),
+        },
+      ]
+
+      const prompt = reconstructForContinuation({
+        events,
+        parkedTurn: 1,
+        approvalId: "appr_1",
+        approved: true,
+        skillBody: "SKILL",
+        roleBody: undefined,
+      })
+
+      expect(roleSequence(prompt)).toStrictEqual(["system", "user", "assistant", "tool", "tool"])
+      expect(hasApprovalRequestFor(prompt, "call_1")).toBe(false)
+      expect(hasToolCall(prompt, "call_1")).toBe(true)
+      expect(approvalResponse(prompt)?.approved).toBe(true)
     }))
 })

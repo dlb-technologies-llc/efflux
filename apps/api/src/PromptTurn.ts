@@ -5,13 +5,13 @@ import {
   type RulesMap,
 } from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import {
   MAX_TOOL_HOPS,
   MODEL_HOP_TIMEOUT,
   journalTurnError,
-  makeBashRunnerLayer,
+  makeTurnLayers,
   shouldContinueToolLoop,
   snapshotWorkspace,
   toAgentError,
@@ -21,8 +21,6 @@ import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
-import { makeTodoStoreLayer } from "./Todo.ts"
-import { ApprovalRules } from "./Tools.ts"
 
 /** Where a parked turn resumes: the eventId to POST to `/approve/:eventId`. Derived from the shared `ApprovalHandle` schema so the coordinates never drift from the contract. */
 export type PromptApproval = typeof ApprovalHandle.Type
@@ -61,8 +59,7 @@ export const runPromptTurn = (
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
   const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
 
-  const bashRunner = makeBashRunnerLayer((command) => agent.exec(command))
-  const todoStore = makeTodoStoreLayer(agent, turn)
+  const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
   const loop = Effect.gen(function* () {
     let promptValue: Prompt.Prompt = initialPrompt
@@ -77,10 +74,7 @@ export const runPromptTurn = (
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
       const response = yield* withModel.pipe(
-        Effect.provide(toolLayer),
-        Effect.provide(bashRunner),
-        Effect.provide(todoStore),
-        Effect.provide(Layer.succeed(ApprovalRules, rules)),
+        Effect.provide(turnLayers),
         Effect.timeout(MODEL_HOP_TIMEOUT),
         Effect.catch(toAgentError("LanguageModel.generateText")),
       )

@@ -170,7 +170,7 @@ export class JournalEvent extends Schema.Class<JournalEvent>("JournalEvent")({
 /** A page of journal events; `nextAfter` is the cursor for the next page (pass as `?after=`), null when this is the last page. */
 export class JournalResponse extends Schema.Class<JournalResponse>("JournalResponse")({
   events: Schema.Array(JournalEvent),
-  nextAfter: Schema.NullOr(Schema.Number),
+  nextAfter: Schema.NullOr(NonNegativeInt),
 }) {}
 
 /** Registry entry for one session. */

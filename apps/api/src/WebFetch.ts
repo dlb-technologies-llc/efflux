@@ -32,7 +32,7 @@ export const webFetchError = (message: string): WebFetchResultValue => ({
 })
 
 /** Surface the first failure/defect in a cause as readable text for the model. */
-const causeMessage = (cause: Cause.Cause<unknown>): string => {
+export const causeMessage = (cause: Cause.Cause<unknown>): string => {
   for (const reason of cause.reasons) {
     const value = Cause.isFailReason(reason)
       ? reason.error

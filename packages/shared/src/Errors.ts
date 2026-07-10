@@ -1,6 +1,7 @@
 import { Cause, Schema } from "effect"
 import { NonNegativeInt } from "./Schemas.ts"
 
+/** Raised when an agent run fails mid-loop; surfaces as HTTP 500. */
 export class AgentError extends Schema.TaggedErrorClass<AgentError>()(
   "AgentError",
   {
@@ -9,6 +10,7 @@ export class AgentError extends Schema.TaggedErrorClass<AgentError>()(
   { httpApiStatus: 500 },
 ) {}
 
+/** Raised when a requested skill is absent from the skills bucket; surfaces as HTTP 404. */
 export class SkillNotFoundError extends Schema.TaggedErrorClass<SkillNotFoundError>()(
   "SkillNotFoundError",
   {
@@ -18,6 +20,7 @@ export class SkillNotFoundError extends Schema.TaggedErrorClass<SkillNotFoundErr
   { httpApiStatus: 404 },
 ) {}
 
+/** Raised when a requested role is absent from the roles bucket; surfaces as HTTP 404. */
 export class RoleNotFoundError extends Schema.TaggedErrorClass<RoleNotFoundError>()(
   "RoleNotFoundError",
   {
@@ -27,6 +30,7 @@ export class RoleNotFoundError extends Schema.TaggedErrorClass<RoleNotFoundError
   { httpApiStatus: 404 },
 ) {}
 
+/** Raised when the referenced approval event is missing or already resolved; surfaces as HTTP 404. */
 export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFoundError>()(
   "ApprovalNotFoundError",
   {
@@ -35,6 +39,7 @@ export class ApprovalNotFoundError extends Schema.TaggedErrorClass<ApprovalNotFo
   { httpApiStatus: 404 },
 ) {}
 
+/** Raised when an approval was already decided by another actor or tab; surfaces as HTTP 409. */
 export class ApprovalConflictError extends Schema.TaggedErrorClass<ApprovalConflictError>()(
   "ApprovalConflictError",
   {

@@ -3,11 +3,8 @@ import { Context, Effect, Layer } from "effect"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson } from "./JournalWrite.ts"
 
-/** Plain todo shape across the DO RPC fence (Schema.Class instances cannot cross it — see ISSUES.md). */
-export interface PlainTodo {
-  readonly content: string
-  readonly status: string
-}
+/** Plain todo shape across the DO RPC fence (Schema.Class instances cannot cross it — see ISSUES.md); derived from the canonical `TodoItem` fields so `status` stays the literal union. `Pick` (not `typeof TodoItem.Encoded`) because CF's RPC type transform widens the opaque `Schema.Literals` encoded type back to `string`. */
+export type PlainTodo = Pick<TodoItem, "content" | "status">
 
 /** Per-request handle to the session's journal-backed task list — a Context.Service the todo tools depend on, provided per-turn from the resolved Agent stub + this turn's seq (mirrors BashRunner). */
 export class TodoStore extends Context.Service<TodoStore, {
@@ -35,7 +32,7 @@ const MARK: Record<string, string> = { pending: " ", in_progress: "~", completed
 
 /** Render the task list as a compact checklist for prompt injection + tool replies; empty list → a stable sentinel. Accepts the plain or class shape structurally. */
 export const formatTodos = (
-  items: ReadonlyArray<{ readonly content: string; readonly status: string }>,
+  items: ReadonlyArray<PlainTodo>,
 ): string =>
   items.length === 0
     ? "(no todos)"

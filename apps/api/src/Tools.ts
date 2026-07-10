@@ -4,11 +4,11 @@
  */
 import {
   DEFAULT_TOOL_RULES,
+  JournalTodoWrite,
   resolveRule,
   type RulesMap,
   SkillSummary,
   SubagentTaskRequest,
-  TodoItem,
 } from "@efflux/shared"
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
@@ -319,7 +319,7 @@ export const SearchKnowledgeTool = Tool.make("search_knowledge", {
 export const TodoWriteTool = Tool.make("todo_write", {
   description:
     "Replace the session task list with the given items (each: content + status pending|in_progress|completed). Use this to plan and track multi-step work; the list persists across turns and is shown to you at the start of every turn. Pass the FULL list each time — it overwrites the previous one.",
-  parameters: Schema.Struct({ items: Schema.Array(TodoItem) }),
+  parameters: Schema.Struct({ items: JournalTodoWrite.fields.items }),
   success: Schema.String,
   dependencies: [TodoStore],
   needsApproval: needsApprovalFor("todo_write"),
