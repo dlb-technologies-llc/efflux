@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { Atom } from "effect/unstable/reactivity"
-import type { JournalEvent } from "@effect-flue/shared"
+import type { JournalEvent, JournalToolCall, JournalToolResult } from "@effect-flue/shared"
 import { ApiClient, runtime } from "../runtime.ts"
 import type { SessionArgs } from "../session.ts"
 
@@ -75,4 +75,30 @@ export const pendingApprovals = (events: ReadonlyArray<JournalEvent>): ReadonlyA
     })
   }
   return pending
+}
+
+/**
+ * Pure selector: each `tool-call` envelope paired with the `tool-result`
+ * sharing its `(turn, hop)` whose `part.id` matches the call's `part.id`,
+ * preserving tool-call order. `result` is present only once its matching
+ * `tool-result` has been journalled (a call still in flight yields just `call`).
+ */
+export const toolCallResults = (
+  events: ReadonlyArray<JournalEvent>,
+): ReadonlyArray<{ call: JournalToolCall; result?: JournalToolResult }> => {
+  const pairs: Array<{ call: JournalToolCall; result?: JournalToolResult }> = []
+  for (const envelope of events) {
+    const call = envelope.event
+    if (call._tag !== "tool-call") continue
+    const match = events.find(
+      (candidate) =>
+        candidate.event._tag === "tool-result" &&
+        candidate.event.turn === call.turn &&
+        candidate.event.hop === call.hop &&
+        candidate.event.part.id === call.part.id,
+    )
+    const result = match !== undefined && match.event._tag === "tool-result" ? match.event : undefined
+    pairs.push({ call, ...(result !== undefined ? { result } : {}) })
+  }
+  return pairs
 }

@@ -24,7 +24,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { formatParams, formatRelativeTime, formatTokens, formatUsd } from "./format.ts"
+import { formatParams, formatRelativeTime, formatTokens, formatUsd, prettyParams } from "./format.ts"
 
 const usdCases: ReadonlyArray<readonly [number, string]> = [
   [0, "$0.0000"],
@@ -58,7 +58,7 @@ const paramsCases: ReadonlyArray<readonly [unknown, string]> = [
   [[], "[]"],
   ["hello", `"hello"`],
   [42, "42"],
-  [undefined, "undefined"],
+  [undefined, ""],
 ]
 
 const relativeOffsetCases: ReadonlyArray<readonly [number, string]> = [
@@ -90,6 +90,13 @@ describe("formatParams", () => {
     it.effect(`${JSON.stringify(params) ?? String(params)} -> ${JSON.stringify(expected)}`, () =>
       Effect.sync(() => expect(formatParams(params)).toBe(expected)))
   }
+})
+
+describe("prettyParams", () => {
+  it.effect(`undefined -> ""`, () =>
+    Effect.sync(() => expect(prettyParams(undefined)).toBe("")))
+  it.effect(`{ a: 1 } -> 2-space JSON`, () =>
+    Effect.sync(() => expect(prettyParams({ a: 1 })).toBe(JSON.stringify({ a: 1 }, null, 2))))
 })
 
 describe("formatRelativeTime", () => {
