@@ -120,8 +120,10 @@ export const projectJournalEvent = (
     case "compaction":
     case "session-closed":
       return undefined
-    default:
-      return undefined
+    default: {
+      const _exhaustive: never = event
+      return _exhaustive
+    }
   }
 }
 

@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
+import type { PlainTodo } from "./Todo.ts"
 
 /** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
 const HistorySchema = Schema.Array(Message)
@@ -255,7 +256,7 @@ export class Agent extends DurableObject<Env> {
   }
 
   /** Items of the latest `todo-write` event (empty when none), as PLAIN objects across the RPC fence (Schema.Class instances cannot cross it — see ISSUES.md). */
-  async latestTodos(): Promise<Array<{ content: string; status: string }>> {
+  async latestTodos(): Promise<Array<PlainTodo>> {
     const row = this.ctx.storage.sql
       .exec("SELECT payload FROM journal WHERE type = 'todo-write' ORDER BY seq DESC LIMIT 1")
       .toArray()[0]
