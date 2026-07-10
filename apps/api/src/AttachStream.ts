@@ -110,26 +110,72 @@ export const projectJournalEvent = (
   }
 }
 
+/** The followed turn plus whether it is still OPEN (in-progress) at attach time. */
+type JournalAnalysis = {
+  /** LATEST `user-message` seq — the turn a bare `/attach` follows — or `undefined` when the session has no user messages yet. */
+  readonly targetTurn: number | undefined
+  /**
+   * True only when there is a target turn that is genuinely still running: no
+   * terminal (`done`/`error`) for it, no unresolved parked approval, and no
+   * `session-closed`. When false there is nothing to live-tail, so the tail must
+   * close right after replaying — otherwise a session with no in-flight turn (or
+   * an explicit cursor already past the terminal) would poll to the staleness cap.
+   */
+  readonly openAtAttach: boolean
+}
+
 /**
- * Scan the journal front-to-back for the LATEST `user-message` seq (seq is
- * monotonic, so the last one seen is the max), or `undefined` when the session
- * has no user messages yet. This is the turn a bare `/attach` follows.
+ * One front-to-back scan of the journal computing the followed turn (max
+ * `user-message` seq) and whether it is still open at attach time. Terminal,
+ * park, and closed state are collected per turn during the pass and resolved
+ * against the target turn at the end (the target is only known once the last
+ * `user-message` is seen).
  */
-const findLatestUserMessageSeq = (
+const analyzeJournal = (
   agent: ReturnType<AgentNamespace["getByName"]>,
-): Effect.Effect<number | undefined> =>
+): Effect.Effect<JournalAnalysis> =>
   Effect.gen(function* () {
     let after = 0
-    let latest: number | undefined
+    let targetTurn: number | undefined
+    const terminalTurns = new Set<number>()
+    const pendingApprovalsByTurn = new Map<number, Set<string>>()
+    let sessionClosed = false
     for (;;) {
       const page = yield* Effect.promise(() => agent.readJournal({ after, limit: PAGE_LIMIT }))
       for (const row of page.events) {
         const event = yield* decodeEventPayload(JSON.parse(row.payload)).pipe(Effect.orDie)
-        if (event._tag === "user-message") latest = row.seq
+        switch (event._tag) {
+          case "user-message":
+            targetTurn = row.seq
+            break
+          case "done":
+          case "error":
+            terminalTurns.add(event.turn)
+            break
+          case "session-closed":
+            sessionClosed = true
+            break
+          case "approval-requested": {
+            const set = pendingApprovalsByTurn.get(event.turn) ?? new Set<string>()
+            set.add(event.approvalId)
+            pendingApprovalsByTurn.set(event.turn, set)
+            break
+          }
+          case "approval-resolved":
+            pendingApprovalsByTurn.get(event.turn)?.delete(event.approvalId)
+            break
+          default:
+            break
+        }
       }
-      if (page.nextAfter === null) return latest
+      if (page.nextAfter === null) break
       after = page.nextAfter
     }
+    const parked =
+      targetTurn !== undefined && (pendingApprovalsByTurn.get(targetTurn)?.size ?? 0) > 0
+    const terminal = targetTurn !== undefined && terminalTurns.has(targetTurn)
+    const openAtAttach = targetTurn !== undefined && !terminal && !parked && !sessionClosed
+    return { targetTurn, openAtAttach }
   })
 
 /**
@@ -144,9 +190,10 @@ const runTail = (input: {
   queue: Queue.Enqueue<AttachFrame, Cause.Done>
   startCursor: number
   targetTurn: number | undefined
+  openAtAttach: boolean
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const { agent, queue, startCursor, targetTurn } = input
+    const { agent, openAtAttach, queue, startCursor, targetTurn } = input
     const startMillis = yield* Clock.currentTimeMillis
     const deadlineMillis = startMillis + ATTACH_TAIL_CAP_MILLIS
 
@@ -194,6 +241,7 @@ const runTail = (input: {
       if (stop) return
       if (page.nextAfter !== null) continue
 
+      if (!openAtAttach) return
       if (pendingApprovals.size > 0) return
 
       pollDelayMillis =
@@ -219,17 +267,17 @@ export const runAttachStream = (input: {
 
   const sseFrames = Stream.unwrap(
     Effect.gen(function* () {
-      const latestUserMsgSeq = yield* findLatestUserMessageSeq(agent)
+      const { openAtAttach, targetTurn } = yield* analyzeJournal(agent)
       const startCursor =
         initialAfter !== undefined
           ? initialAfter
-          : latestUserMsgSeq !== undefined
-            ? latestUserMsgSeq - 1
+          : targetTurn !== undefined
+            ? targetTurn - 1
             : 0
 
       const queue = yield* Queue.bounded<AttachFrame, Cause.Done>(64)
 
-      yield* runTail({ agent, queue, startCursor, targetTurn: latestUserMsgSeq }).pipe(
+      yield* runTail({ agent, queue, startCursor, targetTurn, openAtAttach }).pipe(
         Effect.ensuring(Queue.end(queue)),
         Effect.forkScoped,
       )
