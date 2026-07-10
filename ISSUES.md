@@ -384,6 +384,22 @@ For history-style endpoints that return arrays of `Schema.Class` items, the
 DO returns `Array<{role, content}>`, and the handler maps each element back
 into `new Message({...})` before wrapping in `new HistoryResponse({...})`.
 
+**The RPC TYPE transform also widens `typeof X.Encoded` — derive fence-crossing
+plain types with `Pick`, not the encoded alias.** This is a *compile-time* trap
+distinct from the runtime `DataCloneError` above. A DO method whose return (or a
+per-turn service type fed from that return) is annotated `typeof SomeSchemaClass.Encoded`
+will NOT typecheck against the RPC-proxied value: Cloudflare's DO-stub type transform
+collapses the opaque Effect encoded type (`ReadonlySide<Schema.Literals<…>>`) back to
+`string`, so a `Schema.Literals` field silently becomes `string` across the fence and
+fails to assign to the encoded-alias target. Derive the plain shape with
+`Pick<SomeSchemaClass, "field" | …>` instead — it yields a plain
+`{ readonly field: "a" | "b" }` that survives the transform and stays schema-derived
+(no re-listed literals). (prev1-quality-refactor #90: `PlainTodo = typeof TodoItem.Encoded`
+reddened the wave typecheck on `TodoStore.read`/`latestTodos`;
+`Pick<TodoItem, "content" | "status">` fixed it. `history()`/`PlainMessage` only compiled
+because its consumer `composeMessages` takes a plain union, which masked the same hazard —
+so a passing sibling is NOT evidence the encoded alias is fence-safe.)
+
 ### What the symptoms hide
 
 The early surface is **maximally unhelpful**:

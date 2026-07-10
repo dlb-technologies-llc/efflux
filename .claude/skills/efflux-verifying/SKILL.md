@@ -36,6 +36,8 @@ Local Miniflare state is SEPARATE from the deployed worker — its R2 buckets st
   for f in apps/api/skills/*.md; do bunx wrangler r2 object put "efflux-skills/skills/$(basename "$f")" --file "$f" --local; done
   for f in apps/api/roles/*.md;  do bunx wrangler r2 object put "efflux-skills/roles/$(basename "$f")"  --file "$f" --local; done
   ```
+- **A built `apps/web/dist`.** It is gitignored, so a FRESH worktree lacks it and `bun run dev` fails on `The directory specified by the "assets.directory" field … does not exist` (it loops on this until you build). Build it first with the FE token exported: `set -a; . .dev.vars; set +a; bun run build`. Only the *deploy* path builds `dist` for you (via `predeploy`); local `bun run dev` does NOT.
+- **`openai-smoke` needs `OPENAI_API_KEY` set to the bearer.** It feeds the OpenAI SDK `process.env.OPENAI_API_KEY ?? "unused"`, so without `export OPENAI_API_KEY=$API_TOKEN` (on top of sourcing `.dev.vars`) the `/v1` call 401s with the `unused` token. And a `/v1` **"404 status code (no body)"** through the SDK is almost always the empty-local-R2 `SkillNotFoundError` (which is HTTP 404) surfacing — not a routing bug; upload skills to local R2 (above) first.
 
 Then:
 
