@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react"
-import { type RulesMap, resolveRule, type ToolInfo, type ToolRule } from "@effect-flue/shared"
+import { type RulesMap, resolveRule, type ToolInfo, type ToolRule } from "@efflux/shared"
 import { AsyncResult } from "effect/unstable/reactivity"
 import { ChevronRightIcon } from "lucide-react"
 import * as React from "react"

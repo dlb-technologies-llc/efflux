@@ -1,4 +1,4 @@
-import { AgentApi } from "@effect-flue/shared"
+import { AgentApi } from "@efflux/shared"
 import { Context, Effect, Layer } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
@@ -39,7 +39,7 @@ const AuthedHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.effect(
  * Worker on port 8787 (see `vite.config.ts`).
  */
 export class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
-  "@effect-flue/web/ApiClient",
+  "@efflux/web/ApiClient",
 ) {
   static readonly layer: Layer.Layer<ApiClient> = Layer.effect(
     ApiClient,

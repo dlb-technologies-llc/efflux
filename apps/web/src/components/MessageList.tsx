@@ -1,4 +1,4 @@
-import type { Message as ChatMessage } from "@effect-flue/shared"
+import type { Message as ChatMessage } from "@efflux/shared"
 
 import { Message } from "./Message.tsx"
 

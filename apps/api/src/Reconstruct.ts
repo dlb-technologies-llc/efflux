@@ -1,4 +1,4 @@
-import { COMPACTION_SUMMARY_PREFIX, type JournalEventPayload } from "@effect-flue/shared"
+import { COMPACTION_SUMMARY_PREFIX, type JournalEventPayload } from "@efflux/shared"
 import { Prompt } from "effect/unstable/ai"
 
 /**

@@ -20,7 +20,7 @@ import {
   JournalCompaction,
   JournalHopMessages,
   JournalUserMessage,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect } from "effect"
 import { Prompt } from "effect/unstable/ai"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"

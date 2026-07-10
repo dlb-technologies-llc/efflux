@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
-import type { StreamPart } from "@effect-flue/shared"
+import type { StreamPart } from "@efflux/shared"
 import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import * as React from "react"

@@ -11,7 +11,7 @@ import {
   SessionInfo,
   SessionsResponse,
   SubagentTaskResponse,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect, Schema } from "effect"
 import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"

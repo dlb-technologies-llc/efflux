@@ -5,7 +5,7 @@ import {
   StreamPart,
   streamAgentSse,
   streamAgentSseFramed,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect, Ref, Schema, Stream } from "effect"
 import { HttpBody, HttpClient } from "effect/unstable/http"
 import { Atom } from "effect/unstable/reactivity"

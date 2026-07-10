@@ -1,4 +1,4 @@
-import { AgentApi, ToolInfo, ToolsResponse } from "@effect-flue/shared"
+import { AgentApi, ToolInfo, ToolsResponse } from "@efflux/shared"
 import { Effect } from "effect"
 import { Tool } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"

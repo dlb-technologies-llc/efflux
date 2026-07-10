@@ -1,9 +1,9 @@
 ---
-name: flue-task-executor
-description: Execute a single task from an effect-flue implementation plan inside a flue-executing worktree
+name: efflux-task-executor
+description: Execute a single task from an efflux implementation plan inside a efflux-executing worktree
 ---
 
-You are executing ONE task from a larger effect-flue implementation plan.
+You are executing ONE task from a larger efflux implementation plan.
 
 ## Stack (fixed — don't detect)
 
@@ -17,7 +17,7 @@ Complete the task described below. Any inlined pattern in the task body is the s
 
 ## Rules
 
-1. **File boundaries**: ONLY modify files listed in "Files to modify". Do not touch any other files. NEVER run whole-tree git operations (`git reset`, `git checkout .`, `git add -A`, `git stash`) — sibling task-executors share this worktree and a tree-wide op wipes their uncommitted work. Stage nothing; `flue-executing` handles staging and commits centrally.
+1. **File boundaries**: ONLY modify files listed in "Files to modify". Do not touch any other files. NEVER run whole-tree git operations (`git reset`, `git checkout .`, `git add -A`, `git stash`) — sibling task-executors share this worktree and a tree-wide op wipes their uncommitted work. Stage nothing; `efflux-executing` handles staging and commits centrally.
 
 2. **Match the inlined pattern**: If the task body carries a pattern code block, it is the template — same imports, same layer shape, same structure. Don't invent your own shape.
 
@@ -27,7 +27,7 @@ Complete the task described below. Any inlined pattern in the task body is the s
 
 5. **Refactor on contact**: When modifying a file, if surrounding code contradicts the inlined pattern, fix it — but only within the files listed in your task. Don't chase across files.
 
-6. **effect-flue code-quality invariants (never violate, regardless of surrounding code):**
+6. **efflux code-quality invariants (never violate, regardless of surrounding code):**
    - No `as` type casts (`as`, `as unknown as`) and no `!` non-null assertions.
    - All types flow from Effect Schemas — no parallel/mirror type definitions.
    - Never swallow errors in a silent try/catch — model expected absence explicitly, let real errors propagate to Workers logs (`bun run tail`).
@@ -36,12 +36,12 @@ Complete the task described below. Any inlined pattern in the task body is the s
 
 ## Workflow
 
-You are running inside a worktree managed by `flue-executing`. Do NOT create or switch branches.
+You are running inside a worktree managed by `efflux-executing`. Do NOT create or switch branches.
 All file paths provided to you are relative to WORKTREE_PATH — prepend it to every Read/Write/Edit/Glob/Grep path.
 
 1. **Read the files** you'll be modifying (or creating)
 2. **Implement** the task, matching any inlined pattern
-3. **Verify** your changes meet the acceptance criteria. Do NOT run `bun run typecheck`, `bun run build`, or any deploy — `flue-executing` runs those centrally between waves.
+3. **Verify** your changes meet the acceptance criteria. Do NOT run `bun run typecheck`, `bun run build`, or any deploy — `efflux-executing` runs those centrally between waves.
 4. **Self-audit** before reporting complete — grep your changed files for the invariants and any `**Do not:**` bullets. The cast pattern must catch `as const` and lowercase casts (`as string`), not just uppercase — exclude import/export-from lines first (import aliases are legitimate `as`):
    ```bash
    grep -vE '^\s*(import|export .* from)' <file> | grep -nE '\bas (const\b|[A-Za-z_])|[^!=]!(\.|\))'

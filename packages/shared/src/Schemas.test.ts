@@ -31,7 +31,7 @@ import {
   ResolvedConfig,
   StreamPart,
   ToolRule,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 
 const streamPartArb = Schema.toArbitrary(StreamPart)
 

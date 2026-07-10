@@ -3,7 +3,7 @@ import {
   ChatCompletionChunk,
   JournalErrorEvent,
   type RulesMap,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Cause, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"

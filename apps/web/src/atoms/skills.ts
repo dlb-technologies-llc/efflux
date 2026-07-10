@@ -1,4 +1,4 @@
-import { PutSkillRequest } from "@effect-flue/shared"
+import { PutSkillRequest } from "@efflux/shared"
 import { Effect } from "effect"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "../runtime.ts"

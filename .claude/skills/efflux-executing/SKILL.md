@@ -1,14 +1,14 @@
 ---
-name: flue-executing
-description: Execute a /flue-planning plan with wave-based parallel agents in an isolated worktree, then open a PR against staging.
+name: efflux-executing
+description: Execute a /efflux-planning plan with wave-based parallel agents in an isolated worktree, then open a PR against staging.
 argument-hint: "[plan-path]"
 ---
 
-# flue-executing
+# efflux-executing
 
-Execute a plan produced by `/flue-planning` with wave-based parallel agents in an isolated worktree, verify against the live worker, and open a PR against `staging`. Feature PRs land on `staging`; `/flue-releasing` promotes `staging` → `main` when the user cuts a release. Invoking this skill IS the approval to execute — there is no separate `APPROVED` state.
+Execute a plan produced by `/efflux-planning` with wave-based parallel agents in an isolated worktree, verify against the live worker, and open a PR against `staging`. Feature PRs land on `staging`; `/efflux-releasing` promotes `staging` → `main` when the user cuts a release. Invoking this skill IS the approval to execute — there is no separate `APPROVED` state.
 
-This skill gets sharpened by `/flue-postmortem` findings over future PRs.
+This skill gets sharpened by `/efflux-postmortem` findings over future PRs.
 
 ## NEVER checkout in the main working copy (hard rule)
 
@@ -18,8 +18,8 @@ This skill gets sharpened by `/flue-postmortem` findings over future PRs.
 
 - **Install:** `bun install`.
 - **Verify:** `bun run typecheck`. There is NO lint script and NO test script today — do not attempt `bun run lint` or `bun run test`.
-- **Deploy + live verification:** via `/flue-verifying`, run FROM the worktree (`cd <WORKTREE_PATH>`). The canonical deploy is `bun run deploy` (never bare `wrangler deploy` — only the script fires the predeploy FE build + skills upload; requires Docker); if a PreToolUse hook blocks it, run its exact steps instead per the `/flue-verifying` fallback (`bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`). ⚠️ ALL sessions share ONE deployed worker — deploys race and last deploy wins; redeploy before smoking if another session may have deployed since. Treat the repo `CLAUDE.md` "Commands" section as the command authority.
-- **Base branch:** `origin/staging` (feature PRs target `staging`; only `/flue-releasing`'s promotion PR targets `main`). **Worktree task agent:** `flue-task-executor`.
+- **Deploy + live verification:** via `/efflux-verifying`, run FROM the worktree (`cd <WORKTREE_PATH>`). The canonical deploy is `bun run deploy` (never bare `wrangler deploy` — only the script fires the predeploy FE build + skills upload; requires Docker); if a PreToolUse hook blocks it, run its exact steps instead per the `/efflux-verifying` fallback (`bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`). ⚠️ ALL sessions share ONE deployed worker — deploys race and last deploy wins; redeploy before smoking if another session may have deployed since. Treat the repo `CLAUDE.md` "Commands" section as the command authority.
+- **Base branch:** `origin/staging` (feature PRs target `staging`; only `/efflux-releasing`'s promotion PR targets `main`). **Worktree task agent:** `efflux-task-executor`.
 - **Plan status vocabulary (exact):** `DRAFT → IN_PROGRESS → PR_CREATED → POSTMORTEM_COMPLETE`.
 - **Conventions:** merge commits only (never rebase/squash); never `--no-verify`; no `as` casts or `!` assertions; schema-first — types flow from Effect Schemas.
 - **Effect API truth:** the pinned `.claude/effect-smol` submodule (`packages/effect/src`, incl. `unstable/http`, `unstable/httpapi`) — never from memory and never via the `effect-agent` subagent (it reads a machine-global, unpinned checkout). Scope "existing usage" greps to `apps/ packages/`; reach into `.claude/effect-smol` deliberately.
@@ -28,7 +28,7 @@ This skill gets sharpened by `/flue-postmortem` findings over future PRs.
 
 ### Step 1: Load the plan
 
-If a path was given as the argument, read it. Otherwise glob `~/c0de/plans/effect-flue/*.md`, filter to plans whose Status is `DRAFT` or `IN_PROGRESS`, and ask the user to pick one. Set Status → `IN_PROGRESS` when execution starts.
+If a path was given as the argument, read it. Otherwise glob `~/c0de/plans/efflux/*.md`, filter to plans whose Status is `DRAFT` or `IN_PROGRESS`, and ask the user to pick one. Set Status → `IN_PROGRESS` when execution starts.
 
 ### Step 2: Validate
 
@@ -89,7 +89,7 @@ Installing dependencies (bun install)...
 
 **Do NOT use the `EnterWorktree` tool** — it has path-confusion / stale-lock bugs. Use raw `git worktree add`.
 
-**Create the worktree at its FINAL path directly** — `git worktree move` (and `remove`) are blocked by the in-tree `.claude/effect-smol` submodule, so a misplaced worktree can't be relocated; disposal (in `/flue-cleaning-up`) is `checkout --detach` + `rm -rf` + `git worktree prune`.
+**Create the worktree at its FINAL path directly** — `git worktree move` (and `remove`) are blocked by the in-tree `.claude/effect-smol` submodule, so a misplaced worktree can't be relocated; disposal (in `/efflux-cleaning-up`) is `checkout --detach` + `rm -rf` + `git worktree prune`.
 
 ### Step 4: Execute Waves
 
@@ -97,7 +97,7 @@ For each wave:
 
 **1. Announce:** `━━━ WAVE <N>: <count> tasks in parallel ━━━`
 
-**2. Spawn parallel agents — launch ALL tasks for a wave in a SINGLE message with multiple Task calls**, each `subagent_type: "flue-task-executor"`. Prompt structure, in order:
+**2. Spawn parallel agents — launch ALL tasks for a wave in a SINGLE message with multiple Task calls**, each `subagent_type: "efflux-task-executor"`. Prompt structure, in order:
 
 1. **WORKTREE_PATH block** (below).
 2. Task ID + description.
@@ -113,7 +113,7 @@ CRITICAL: All file paths are relative to the worktree. Prepend WORKTREE_PATH to 
 Read/Write/Edit/Glob/Grep path. `apps/api/src/x.ts` → `<WORKTREE_PATH>/apps/api/src/x.ts`.
 Do NOT run whole-tree git ops (`git reset`, `git checkout .`, `git add -A`, `git stash`) —
 sibling agents share this worktree. Do NOT run `bun run typecheck` or deploy —
-`/flue-executing` runs those centrally after the wave.
+`/efflux-executing` runs those centrally after the wave.
 ```
 
 **3. Wait for all agents to complete.**
@@ -124,7 +124,7 @@ sibling agents share this worktree. Do NOT run `bun run typecheck` or deploy —
 cd <WORKTREE_PATH> && bun run typecheck
 ```
 
-Fix failures before moving on. A wave boundary should be typecheck-clean by construction — `/flue-planning` co-locates an interface with its consumers in one wave precisely so no boundary is left red; a failure here is a real defect, not an expected structural gap.
+Fix failures before moving on. A wave boundary should be typecheck-clean by construction — `/efflux-planning` co-locates an interface with its consumers in one wave precisely so no boundary is left red; a failure here is a real defect, not an expected structural gap.
 
 **4b. Post-wave compliance check** — sub-agent self-audits are unreliable; grep the wave's changed `.ts`/`.tsx` files centrally:
 
@@ -162,16 +162,16 @@ If a task agent fails: capture its output, `AskUserQuestion`: "Retry task" / "Sk
 
 **Quality gate (before the PR):** run `/code-review` on the full branch diff and address real findings. Typecheck and the compliance greps catch style, not efficiency, oversized files, or error-masking — this gate exists because this suite's approvals PR shipped, then needed three rework commits (an O(n) scan that should've been one SQL query, a 1196-line handler, and a caught-and-remapped error) that a review pass flags.
 
-If the diff has any runtime surface, run `/flue-verifying` from the worktree (`cd <WORKTREE_PATH>` — deploy + live-worker checks, e.g. `bun scripts/agent.ts <name> <id> --message "hi" --url <worker-url>`). Markdown/docs-only diffs may skip deploy. Remember: ALL sessions share the single live worker — deploys race (last deploy wins), so don't overlap another plan's deploy, and redeploy before smoking if another session may have deployed since.
+If the diff has any runtime surface, run `/efflux-verifying` from the worktree (`cd <WORKTREE_PATH>` — deploy + live-worker checks, e.g. `bun scripts/agent.ts <name> <id> --message "hi" --url <worker-url>`). Markdown/docs-only diffs may skip deploy. Remember: ALL sessions share the single live worker — deploys race (last deploy wins), so don't overlap another plan's deploy, and redeploy before smoking if another session may have deployed since.
 
 ### Step 6: Open the PR
 
 1. Existing PR? `gh pr list --head <branch> --json number,url` — if found, skip to updating the plan file.
 2. No commits vs `<BASE_BRANCH>` → skip the PR and notify the user.
 3. Push from the worktree: `git -C <WORKTREE_PATH> push -u origin <branch>`.
-4. `cd <WORKTREE_PATH> && gh pr create` against `staging`. The body uses **`Refs #N`** for related issues — NEVER `Closes #N` here: issues close when `/flue-releasing`'s staging→main promotion PR (which carries the `Closes #N` lines) merges, not when the feature lands on staging. The self-contained rule extends here: no other project/client/codebase named in commit messages or the PR body.
+4. `cd <WORKTREE_PATH> && gh pr create` against `staging`. The body uses **`Refs #N`** for related issues — NEVER `Closes #N` here: issues close when `/efflux-releasing`'s staging→main promotion PR (which carries the `Closes #N` lines) merges, not when the feature lands on staging. The self-contained rule extends here: no other project/client/codebase named in commit messages or the PR body.
 5. Update the plan: Status → `PR_CREATED` and record a `> **PR:** <url>` line — edit ONLY the header block with an anchored edit (status strings like `DRAFT` can legitimately appear inside task bodies; a global replace once corrupted a plan).
-6. Display the PR URL and the worktree path — the worktree stays alive until `/flue-cleaning-up` removes it post-merge.
+6. Display the PR URL and the worktree path — the worktree stays alive until `/efflux-cleaning-up` removes it post-merge.
 
 ### Step 7: If the PR later conflicts with staging
 
@@ -184,5 +184,5 @@ git -C <WORKTREE_PATH> merge origin/staging   # a MERGE commit — never rebase/
 
 - **Both-added conflicts are the common case and almost always "keep BOTH sides":** two features each appended an endpoint/handler/import at the same spot. Merge the import lists into one, keep both endpoint blocks, keep both handlers (and preserve YOUR wrapping — e.g. if you wrapped a handler the other side left bare, keep your wrapped version, not theirs).
 - **Trust the central `bun run typecheck` over mid-merge editor diagnostics** — the LSP reports stale phantom errors (missing exports, unread imports, conflict-marker leftovers) until the merge is fully staged and reprocessed; a clean `bun run typecheck` (EXIT 0) is the authority.
-- **RE-VERIFY the merged runtime live**, not just typecheck: the merge pulls in the other feature's runtime code, so redeploy from the worktree and re-smoke YOUR surface plus one cross-feature sanity hit (per `/flue-verifying`, including the deploy-clobber guard). Typecheck-green is not verification.
+- **RE-VERIFY the merged runtime live**, not just typecheck: the merge pulls in the other feature's runtime code, so redeploy from the worktree and re-smoke YOUR surface plus one cross-feature sanity hit (per `/efflux-verifying`, including the deploy-clobber guard). Typecheck-green is not verification.
 - Push (`git -C <WORKTREE_PATH> push`); the PR recomputes to `MERGEABLE`.

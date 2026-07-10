@@ -7,7 +7,7 @@ import {
   StreamPartTextDelta,
   StreamPartToolCall,
   StreamPartToolResult,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { type Cause, Clock, Duration, Effect, Queue, Schema, Stream } from "effect"
 import { Sse } from "effect/unstable/encoding"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"

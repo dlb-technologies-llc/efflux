@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { failureMessage } from "@effect-flue/shared"
-import type { StreamPart } from "@effect-flue/shared"
+import { failureMessage } from "@efflux/shared"
+import type { StreamPart } from "@efflux/shared"
 import { Effect, Exit, Function, Stream } from "effect"
 import { render } from "ink"
 import { App } from "./App.tsx"

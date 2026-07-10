@@ -17,7 +17,7 @@ import {
   JournalSessionClosed,
   JournalUserMessage,
   SessionArchive,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect, Schema } from "effect"
 import { type JournalRow, buildArchive } from "./Archive.ts"
 

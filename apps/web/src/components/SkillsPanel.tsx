@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { SafeName } from "@effect-flue/shared"
+import { SafeName } from "@efflux/shared"
 import { Exit, Schema } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import { BookOpen } from "lucide-react"

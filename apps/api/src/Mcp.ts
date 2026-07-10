@@ -7,7 +7,7 @@
  * `Mcp-Session-Id`; `listTools`/`callTool` reuse them. One connected client per
  * (server, turn). No long-lived listener, resources/prompts/sampling, or auth.
  */
-import type { McpServer } from "@effect-flue/shared"
+import type { McpServer } from "@efflux/shared"
 import { Data, Effect, Predicate, Schema } from "effect"
 import { McpSchema } from "effect/unstable/ai"
 import { isBlockedHost } from "./Ssrf.ts"
@@ -16,7 +16,7 @@ import { isBlockedHost } from "./Ssrf.ts"
 const PROTOCOL_VERSION = "2025-06-18"
 
 /** Client identity sent in the `initialize` handshake. */
-const CLIENT_INFO = { name: "effect-flue", version: "0.1.0" }
+const CLIENT_INFO = { name: "efflux", version: "0.1.0" }
 
 /** Rendered in place of image/audio/other non-text content blocks when flattening a tool result. */
 const NON_TEXT_PLACEHOLDER = "[non-text content omitted]"

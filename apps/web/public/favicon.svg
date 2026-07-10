@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="effect-flue">
-  <title>effect-flue</title>
-  <rect width="32" height="32" rx="7" fill="#2563eb"/>
-  <g fill="#fff">
-    <rect x="11" y="8" width="4" height="16"/>
-    <rect x="11" y="8" width="11" height="4"/>
-    <rect x="11" y="14" width="8" height="4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="efflux">
+  <title>efflux</title>
+  <rect width="32" height="32" rx="7" fill="#0A0C0F"/>
+  <g fill="none" stroke="#28D7E5" stroke-width="2.5" stroke-linecap="round">
+    <path d="M6 11c5 0 5 4 10 4s5-4 10-4" opacity="1"/>
+    <path d="M6 17c5 0 5 4 10 4s5-4 10-4" opacity="0.6"/>
+    <path d="M6 23c5 0 5 3 10 3" opacity="0.3"/>
   </g>
 </svg>

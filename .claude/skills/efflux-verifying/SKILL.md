@@ -1,5 +1,5 @@
 ---
-name: flue-verifying
+name: efflux-verifying
 description: The exercise-it-for-real checklist — a change counts as verified only after driving it against a running worker (local `bun run dev` by default, deployed for a final pass).
 argument-hint: "[worker-url]"
 ---
@@ -33,8 +33,8 @@ Local Miniflare state is SEPARATE from the deployed worker — its R2 buckets st
 - **A real `OPENROUTER_API_KEY` in `.dev.vars`.** The template ships the placeholder `sk-or-your-key-here` (19 chars); with it, every model turn 401s ("Missing Authentication header") and the SSE stream is EMPTY (200, zero frames). The deployed worker hides this because it uses a real `wrangler secret`. Verify: `curl -s https://openrouter.ai/api/v1/auth/key -H "Authorization: Bearer $(grep '^OPENROUTER_API_KEY=' .dev.vars | cut -d= -f2-)"` returns key metadata, not a 401.
 - **Skills uploaded to LOCAL R2.** `scripts/upload-skills.ts` uses `--remote` (deployed bucket only). Populate local R2 once per fresh Miniflare state:
   ```bash
-  for f in apps/api/skills/*.md; do bunx wrangler r2 object put "effect-flue-skills/skills/$(basename "$f")" --file "$f" --local; done
-  for f in apps/api/roles/*.md;  do bunx wrangler r2 object put "effect-flue-skills/roles/$(basename "$f")"  --file "$f" --local; done
+  for f in apps/api/skills/*.md; do bunx wrangler r2 object put "efflux-skills/skills/$(basename "$f")" --file "$f" --local; done
+  for f in apps/api/roles/*.md;  do bunx wrangler r2 object put "efflux-skills/roles/$(basename "$f")"  --file "$f" --local; done
   ```
 
 Then:
@@ -69,7 +69,7 @@ If a hook/policy blocks the `deploy` package script, run its exact steps directl
 
 Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck) and `bun scripts/upload-skills.ts`. Bare `wrangler deploy` skips the hook and can ship a stale `apps/web/dist`. `bun run deploy` needs a local Docker daemon (it builds the Sandbox container image).
 
-Capture the worker URL from the deploy output (currently https://effect-flue.david-0e2.workers.dev). If it isn't printed, use the `[worker-url]` argument or `BASE_URL` env; if neither exists, ask the user.
+Capture the worker URL from the deploy output (currently https://efflux.david-0e2.workers.dev). If it isn't printed, use the `[worker-url]` argument or `BASE_URL` env; if neither exists, ask the user.
 
 Concurrent sessions share this ONE worker — last deploy wins. If another session may have deployed since yours, redeploy immediately before smoking; a mid-smoke deploy by another session invalidates results (rerun the affected checks). A clobber by another session has a recognizable SIGNATURE — before blaming your code: routes you ADDED return 404 (or 405, when a `PUT`/`POST` to an added route falls through to the static-asset handler, which only serves GET/HEAD), config/model changes you made silently don't apply, and turns may 500 mid-swap. Confirm YOUR build is live by polling a route unique to your branch (a new endpoint) for a STABLE 200 — several hits over ~20s, not one — before running the affected checks. A fresh `wrangler deploy` also needs a few seconds to propagate, so a curl fired within ~1s of deploy can transiently 404/500 on your own routes; poll for the stable 200 first. `wrangler tail` is UNHELPFUL for diagnosing this — the clobbering deploy makes your request show `outcome: ok` with empty logs from the other build, not an error. Container-image changes roll out gradually — when the diff touches the container, probe it first (e.g. a `pwd`-style Bash-tool turn) before judging dependent checks.
 

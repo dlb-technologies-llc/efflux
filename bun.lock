@@ -18,12 +18,12 @@
       },
     },
     "apps/api": {
-      "name": "@effect-flue/api",
+      "name": "@efflux/api",
       "version": "0.0.0",
       "dependencies": {
         "@cloudflare/containers": "^0.3.7",
-        "@effect-flue/shared": "workspace:*",
         "@effect/ai-openrouter": "4.0.0-beta.94",
+        "@efflux/shared": "workspace:*",
         "effect": "4.0.0-beta.94",
       },
       "devDependencies": {
@@ -31,10 +31,10 @@
       },
     },
     "apps/tui": {
-      "name": "@effect-flue/tui",
+      "name": "@efflux/tui",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-flue/shared": "workspace:*",
+        "@efflux/shared": "workspace:*",
         "effect": "4.0.0-beta.94",
         "ink": "^7.1.0",
         "ink-text-input": "^6.0.0",
@@ -46,11 +46,11 @@
       },
     },
     "apps/web": {
-      "name": "@effect-flue/web",
+      "name": "@efflux/web",
       "version": "0.0.0",
       "dependencies": {
-        "@effect-flue/shared": "workspace:*",
         "@effect/atom-react": "4.0.0-beta.94",
+        "@efflux/shared": "workspace:*",
         "@fontsource-variable/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
         "@hookform/resolvers": "^5.4.0",
@@ -82,7 +82,7 @@
       },
     },
     "packages/shared": {
-      "name": "@effect-flue/shared",
+      "name": "@efflux/shared",
       "version": "0.0.0",
       "dependencies": {
         "effect": "4.0.0-beta.94",
@@ -131,19 +131,19 @@
 
     "@cspotcode/source-map-support": ["@cspotcode/source-map-support@0.8.1", "", { "dependencies": { "@jridgewell/trace-mapping": "0.3.9" } }, "sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw=="],
 
-    "@effect-flue/api": ["@effect-flue/api@workspace:apps/api"],
-
-    "@effect-flue/shared": ["@effect-flue/shared@workspace:packages/shared"],
-
-    "@effect-flue/tui": ["@effect-flue/tui@workspace:apps/tui"],
-
-    "@effect-flue/web": ["@effect-flue/web@workspace:apps/web"],
-
     "@effect/ai-openrouter": ["@effect/ai-openrouter@4.0.0-beta.94", "", { "peerDependencies": { "effect": "^4.0.0-beta.94" } }, "sha512-LYgqh4AJSdGtCY4AiXuNcgGKxRkS7o4tfit+eO/mPcTAG+Q4L+MolsG3D5Td5T/3V2K9L05yU3sIoMFZ/qjQNA=="],
 
     "@effect/atom-react": ["@effect/atom-react@4.0.0-beta.94", "", { "peerDependencies": { "effect": "^4.0.0-beta.94", "react": "^19.2.4", "scheduler": "*" } }, "sha512-6A3Dhw8dC5f5ThuUH+JENgUZjrXdsiTTWWfgOr7gB4Rjj5JS4Ws5jzqbu+fpXlyBhwl3bEd+VmiyXNOOgtcslQ=="],
 
     "@effect/vitest": ["@effect/vitest@4.0.0-beta.94", "", { "peerDependencies": { "effect": "^4.0.0-beta.94", "vitest": "^3.0.0 || ^4.0.0" } }, "sha512-pCjcUMTBizn2wibiyP9Tl3VvGEkplvIA33iCvmK3y/toi54IWE3PNL7d0JkZvEaKV2OoaKVTaH1dOybRtpBuQw=="],
+
+    "@efflux/api": ["@efflux/api@workspace:apps/api"],
+
+    "@efflux/shared": ["@efflux/shared@workspace:packages/shared"],
+
+    "@efflux/tui": ["@efflux/tui@workspace:apps/tui"],
+
+    "@efflux/web": ["@efflux/web@workspace:apps/web"],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

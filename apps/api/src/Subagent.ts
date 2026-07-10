@@ -9,7 +9,7 @@ import type {
   AgentError,
   RoleNotFoundError,
   SkillNotFoundError,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"

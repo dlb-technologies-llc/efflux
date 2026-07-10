@@ -5,8 +5,8 @@ import {
   PromptRequest,
   StreamPart,
   streamAgentSse,
-} from "@effect-flue/shared"
-import type { PromptOverrides } from "@effect-flue/shared"
+} from "@efflux/shared"
+import type { PromptOverrides } from "@efflux/shared"
 import { Context, Effect, Layer, ManagedRuntime, Schema, Stream } from "effect"
 import {
   FetchHttpClient,
@@ -23,7 +23,7 @@ const encodeApprovalDecision = Schema.encodeSync(ApprovalDecision)
 
 /** Typed AgentApi client, provided from the same FetchHttpClient the streaming path uses. */
 class ApiClient extends Context.Service<ApiClient, HttpApiClient.ForApi<typeof AgentApi>>()(
-  "@effect-flue/tui/ApiClient",
+  "@efflux/tui/ApiClient",
 ) {}
 
 /** FetchHttpClient with the bearer credential stamped on every outgoing request, so both the typed `AgentApi` client and the raw streaming `post` satisfy the Worker's bearer `AuthMiddleware`. */

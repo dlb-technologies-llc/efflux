@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { Message } from "@effect-flue/shared"
+import { Message } from "@efflux/shared"
 
 const messageArb = Schema.toArbitrary(Message)
 

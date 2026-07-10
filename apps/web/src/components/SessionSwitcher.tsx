@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { SafeId, type SessionInfo, SUGGESTED_MODEL_IDS } from "@effect-flue/shared"
+import { SafeId, type SessionInfo, SUGGESTED_MODEL_IDS } from "@efflux/shared"
 import { Schema } from "effect"
 import { CheckIcon, ChevronsUpDownIcon, PlusIcon, RotateCwIcon } from "lucide-react"
 import * as React from "react"

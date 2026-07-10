@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react"
-import type { JournalEvent, JournalToolResult } from "@effect-flue/shared"
+import type { JournalEvent, JournalToolResult } from "@efflux/shared"
 import type * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"

@@ -1,4 +1,4 @@
-import { AgentError } from "@effect-flue/shared"
+import { AgentError } from "@efflux/shared"
 import { Context, Effect } from "effect"
 
 /** Runtime handle to the AI Search instance, provided per-isolate from `env.KNOWLEDGE_SEARCH`. */

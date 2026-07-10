@@ -1,10 +1,10 @@
 ---
-name: flue-releasing
+name: efflux-releasing
 description: Promote staging→main via a merge PR (carrying the Closes #N lines), then tag and publish a semver GitHub Release — the only path work takes into main.
 argument-hint: "[version]"
 ---
 
-# flue-releasing
+# efflux-releasing
 
 Purpose: releases are the ONLY way work reaches `main`. Feature PRs land on `staging` (with `Refs #N`); this skill opens the `staging`→`main` promotion PR (whose body carries the `Closes #N` lines so issues auto-close on release), and every merge to `main` gets a release — a semver git tag on the merge commit plus a GitHub Release with generated notes.
 
@@ -51,7 +51,7 @@ NEVER `git checkout` in the main working copy. Tag the fetched `origin/main` ref
 - `git log --oneline origin/main -1` — confirm this is the merge commit to tag.
 - `git tag --points-at origin/main` — if a tag already exists there, stop and report it.
 
-A release marks a **merged, PR-verified** state. Releases do NOT deploy — deploying stays a separate, manual `bun run deploy`. If the merged PR skipped live verification, say so and offer to deploy + run `/flue-verifying` first, but don't claim the tag itself proves deployability.
+A release marks a **merged, PR-verified** state. Releases do NOT deploy — deploying stays a separate, manual `bun run deploy`. If the merged PR skipped live verification, say so and offer to deploy + run `/efflux-verifying` first, but don't claim the tag itself proves deployability.
 
 ### 3. Compute the next version
 
@@ -82,4 +82,4 @@ Every commit to `main` gets its OWN release — including backfill. If several m
 
 ---
 
-Lean v1 — sharpened over time by `/flue-postmortem`.
+Lean v1 — sharpened over time by `/efflux-postmortem`.

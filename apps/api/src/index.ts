@@ -1,4 +1,4 @@
-import { AgentApi, ApiToken } from "@effect-flue/shared"
+import { AgentApi, ApiToken } from "@efflux/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
 import { Cause, Context, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"

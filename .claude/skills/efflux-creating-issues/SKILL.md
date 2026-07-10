@@ -1,5 +1,5 @@
 ---
-name: flue-creating-issues
+name: efflux-creating-issues
 description: Turn a rough problem statement into one well-formed gh issue create — right-sized, problem-not-prescription.
 argument-hint: "<rough problem statement>"
 ---

@@ -1,4 +1,4 @@
-import type { PromptOverrides } from "@effect-flue/shared"
+import type { PromptOverrides } from "@efflux/shared"
 
 export const USAGE =
   'Usage: bun run tui <name> <id> [--url URL] [--message TEXT] [--model M] [--skill S] [--role R]\n' +

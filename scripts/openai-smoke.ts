@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Stock `openai` SDK smoke: drives a tool-using conversation through the `/v1` facade to prove any OpenAI client can treat an effect-flue session as a model. */
+/** Stock `openai` SDK smoke: drives a tool-using conversation through the `/v1` facade to prove any OpenAI client can treat an efflux session as a model. */
 
 import { Console, Effect } from "effect"
 import OpenAI from "openai"
@@ -41,7 +41,7 @@ const main = Effect.gen(function*() {
   const messages: Array<OpenAI.ChatCompletionMessageParam> = [
     { role: "user", content: firstUser },
     { role: "assistant", content: firstReply },
-    { role: "user", content: "Now run `echo hello-from-flue` with bash and tell me exactly what it printed." },
+    { role: "user", content: "Now run `echo hello-from-efflux` with bash and tell me exactly what it printed." },
   ]
   const stream = yield* Effect.tryPromise({
     try: () => openai.chat.completions.create({ model, messages, stream: true }),

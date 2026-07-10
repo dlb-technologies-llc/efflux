@@ -186,7 +186,7 @@ export class SessionsResponse extends Schema.Class<SessionsResponse>("SessionsRe
   sessions: Schema.Array(SessionInfo),
 }) {}
 
-/** One archived session — the eval-corpus record written to `effect-flue-sessions/archives/<name>/<id>/<closedAt>/journal.json` on close or reap. `events` is the full journal at close time (including the terminal `session-closed` event). */
+/** One archived session — the eval-corpus record written to `efflux-sessions/archives/<name>/<id>/<closedAt>/journal.json` on close or reap. `events` is the full journal at close time (including the terminal `session-closed` event). */
 export class SessionArchive extends Schema.Class<SessionArchive>("SessionArchive")({
   name: Schema.String,
   id: Schema.String,

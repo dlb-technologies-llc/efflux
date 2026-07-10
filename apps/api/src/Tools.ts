@@ -9,7 +9,7 @@ import {
   SkillSummary,
   SubagentTaskRequest,
   TodoItem,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
@@ -149,7 +149,7 @@ const commandTooLarge = (what: string): BashResultValue => ({
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", "'\\''")}'`
 
-/** Build `FLUE_X=<base64> ... bun -e '<script>'`; base64 values are shell-safe unquoted and scripts use double quotes only so the single-quoted wrapper holds. */
+/** Build `EFFLUX_X=<base64> ... bun -e '<script>'`; base64 values are shell-safe unquoted and scripts use double quotes only so the single-quoted wrapper holds. */
 const bunEval = (env: Record<string, string>, script: string): string => {
   const assignments = Object.entries(env)
     .map(([key, value]) => `${key}=${value}`)
@@ -158,17 +158,17 @@ const bunEval = (env: Record<string, string>, script: string): string => {
 }
 
 const WRITE_SCRIPT = `
-const path = Buffer.from(process.env.FLUE_PATH ?? "", "base64").toString("utf8");
-const data = Buffer.from(process.env.FLUE_DATA ?? "", "base64");
+const path = Buffer.from(process.env.EFFLUX_PATH ?? "", "base64").toString("utf8");
+const data = Buffer.from(process.env.EFFLUX_DATA ?? "", "base64");
 const n = await Bun.write(path, data);
 console.log("Wrote " + n + " bytes to " + path);
 `.trim()
 
 const EDIT_SCRIPT = `
-const path = Buffer.from(process.env.FLUE_PATH ?? "", "base64").toString("utf8");
-const oldStr = Buffer.from(process.env.FLUE_OLD ?? "", "base64").toString("utf8");
-const newStr = Buffer.from(process.env.FLUE_NEW ?? "", "base64").toString("utf8");
-const replaceAll = process.env.FLUE_ALL === "1";
+const path = Buffer.from(process.env.EFFLUX_PATH ?? "", "base64").toString("utf8");
+const oldStr = Buffer.from(process.env.EFFLUX_OLD ?? "", "base64").toString("utf8");
+const newStr = Buffer.from(process.env.EFFLUX_NEW ?? "", "base64").toString("utf8");
+const replaceAll = process.env.EFFLUX_ALL === "1";
 if (oldStr.length === 0) {
   console.error("old_string must not be empty");
   process.exit(1);
@@ -197,8 +197,8 @@ console.log("Replaced " + (replaceAll ? count : 1) + " occurrence(s) in " + path
 `.trim()
 
 const GLOB_SCRIPT = `
-const pattern = Buffer.from(process.env.FLUE_PATTERN ?? "", "base64").toString("utf8");
-const cwd = Buffer.from(process.env.FLUE_CWD ?? "", "base64").toString("utf8") || ".";
+const pattern = Buffer.from(process.env.EFFLUX_PATTERN ?? "", "base64").toString("utf8");
+const cwd = Buffer.from(process.env.EFFLUX_CWD ?? "", "base64").toString("utf8") || ".";
 const matches = [];
 for await (const m of new Bun.Glob(pattern).scan({ cwd, dot: true })) {
   matches.push(m);
@@ -415,8 +415,8 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
   write_file: (params) => {
     const command = bunEval(
       {
-        FLUE_PATH: Encoding.encodeBase64(params.path),
-        FLUE_DATA: Encoding.encodeBase64(params.content),
+        EFFLUX_PATH: Encoding.encodeBase64(params.path),
+        EFFLUX_DATA: Encoding.encodeBase64(params.content),
       },
       WRITE_SCRIPT,
     )
@@ -430,10 +430,10 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
   edit_file: (params) => {
     const command = bunEval(
       {
-        FLUE_PATH: Encoding.encodeBase64(params.path),
-        FLUE_OLD: Encoding.encodeBase64(params.old_string),
-        FLUE_NEW: Encoding.encodeBase64(params.new_string),
-        FLUE_ALL: params.replace_all === true ? "1" : "0",
+        EFFLUX_PATH: Encoding.encodeBase64(params.path),
+        EFFLUX_OLD: Encoding.encodeBase64(params.old_string),
+        EFFLUX_NEW: Encoding.encodeBase64(params.new_string),
+        EFFLUX_ALL: params.replace_all === true ? "1" : "0",
       },
       EDIT_SCRIPT,
     )
@@ -450,8 +450,8 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       execCapped(
         bunEval(
           {
-            FLUE_PATTERN: Encoding.encodeBase64(params.pattern),
-            FLUE_CWD: Encoding.encodeBase64(params.path ?? "."),
+            EFFLUX_PATTERN: Encoding.encodeBase64(params.pattern),
+            EFFLUX_CWD: Encoding.encodeBase64(params.path ?? "."),
           },
           GLOB_SCRIPT,
         ),

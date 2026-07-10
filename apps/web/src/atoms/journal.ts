@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { Atom } from "effect/unstable/reactivity"
-import type { JournalEvent, JournalToolCall, JournalToolResult } from "@effect-flue/shared"
+import type { JournalEvent, JournalToolCall, JournalToolResult } from "@efflux/shared"
 import { ApiClient, runtime } from "../runtime.ts"
 import type { SessionArgs } from "../session.ts"
 

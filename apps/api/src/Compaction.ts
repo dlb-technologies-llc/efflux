@@ -6,7 +6,7 @@
  * rows; the history fold serves `summary + turns after throughSeq`.
  */
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { type AgentError, JournalCompaction } from "@effect-flue/shared"
+import { type AgentError, JournalCompaction } from "@efflux/shared"
 import { Effect } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import { MODEL_HOP_TIMEOUT, toAgentError } from "./AgentLoop.ts"

@@ -1,4 +1,4 @@
-import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@effect-flue/shared"
+import { COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { buildArchive } from "./Archive.ts"

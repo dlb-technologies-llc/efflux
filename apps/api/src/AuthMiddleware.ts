@@ -1,4 +1,4 @@
-import { AuthMiddleware, ApiToken } from "@effect-flue/shared"
+import { AuthMiddleware, ApiToken } from "@efflux/shared"
 import { Effect, Layer, Redacted } from "effect"
 import { HttpServerResponse } from "effect/unstable/http"
 

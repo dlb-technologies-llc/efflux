@@ -1,6 +1,6 @@
-# @effect-flue/web — Efflux console
+# @efflux/web — Efflux console
 
-The Efflux chat/agent console: a Vite + React 19 SPA driven by `@effect/atom-react`, talking to the Worker through the typed `HttpApiClient` and the `StreamPart` SSE contract from `@effect-flue/shared`.
+The Efflux chat/agent console: a Vite + React 19 SPA driven by `@effect/atom-react`, talking to the Worker through the typed `HttpApiClient` and the `StreamPart` SSE contract from `@efflux/shared`.
 
 ## Design system
 

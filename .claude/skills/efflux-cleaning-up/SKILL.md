@@ -1,23 +1,23 @@
 ---
-name: flue-cleaning-up
-description: Remove a plan's worktree and local branch after its PR merges and archive the plan file. Post-merge step, runs after /flue-postmortem.
+name: efflux-cleaning-up
+description: Remove a plan's worktree and local branch after its PR merges and archive the plan file. Post-merge step, runs after /efflux-postmortem.
 argument-hint: "[plan-path]"
 ---
 
-# flue-cleaning-up
+# efflux-cleaning-up
 
 Purpose: remove the plan's worktree and local branch after its PR merges, then archive the plan.
 
-Lifecycle position: `/flue-postmortem` runs PRE-merge on plans with Status `PR_CREATED`. This skill is the POST-merge step and only auto-targets plans with Status `POSTMORTEM_COMPLETE`.
+Lifecycle position: `/efflux-postmortem` runs PRE-merge on plans with Status `PR_CREATED`. This skill is the POST-merge step and only auto-targets plans with Status `POSTMORTEM_COMPLETE`.
 
 ## Steps
 
 ### 1. Identify the plan
 
 - If a plan path was passed as the argument, use it.
-- Otherwise, glob `~/c0de/plans/effect-flue/*.md` and filter to plans with Status `POSTMORTEM_COMPLETE`.
+- Otherwise, glob `~/c0de/plans/efflux/*.md` and filter to plans with Status `POSTMORTEM_COMPLETE`.
 - If multiple candidates match, list them and ask the user to pick one. Never guess.
-- If none match, stop and tell the user — the plan may still need `/flue-postmortem` first.
+- If none match, stop and tell the user — the plan may still need `/efflux-postmortem` first.
 
 ### 2. Check merge status
 
@@ -58,7 +58,7 @@ Lifecycle position: `/flue-postmortem` runs PRE-merge on plans with Status `PR_C
 - The `checkout --detach` above already freed the branch (git refuses to delete a branch checked out in a live worktree). Do NOT switch branches in the main checkout to do this — no `git checkout` there, ever.
 - Delete the local branch: `git branch -d <branch>` — only ever `-d`, never `-D`, so any unmerged work is protected by git itself. Ordering is load-bearing: the delete runs BEFORE `git fetch --prune` because `-d` accepts a branch as merged based on the (soon-to-be-pruned) `origin/<branch>` remote-tracking ref — local `main` is never updated by this flow (no checkout).
 - Prune stale remote refs: `git fetch --prune`.
-- Archive the plan: move the plan file to `~/c0de/plans/effect-flue/done/` (create the directory if it doesn't exist).
+- Archive the plan: move the plan file to `~/c0de/plans/efflux/done/` (create the directory if it doesn't exist).
 
 ## Done
 
@@ -68,7 +68,7 @@ Report:
 Cleanup complete: <plan-name>
 Worktree: <removed | already removed | kept (uncommitted changes)>
 Branch: <deleted | not found>
-Plan: archived to ~/c0de/plans/effect-flue/done/<plan-name>.md
+Plan: archived to ~/c0de/plans/efflux/done/<plan-name>.md
 ```
 
 ## Edge cases

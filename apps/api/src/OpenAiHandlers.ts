@@ -10,7 +10,7 @@ import {
   parseAgentModel,
   type RulesMap,
   type ToolRule,
-} from "@effect-flue/shared"
+} from "@efflux/shared"
 import { Effect, Schema } from "effect"
 import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
@@ -150,7 +150,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
                 id: formatAgentModel(row.name, row.id),
                 object: "model",
                 created: row.createdAt,
-                owned_by: "effect-flue",
+                owned_by: "efflux",
               }),
           ),
         })
