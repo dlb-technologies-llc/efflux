@@ -25,8 +25,15 @@ export const streamAgentSse = <A, RD, E, R>(
   request: Effect.Effect<HttpClientResponse.HttpClientResponse, E, R>,
   schema: Schema.ConstraintDecoder<A, RD>,
 ) =>
+  streamAgentSseFramed(request, schema).pipe(Stream.map((framed) => framed.data))
+
+/** Like `streamAgentSse` but also surfaces the SSE `id` (the journal `seq` the server stamps) for `Last-Event-ID` re-attach (#49). The `id` is `string | undefined` — text-delta frames reuse the last real seq; every server frame carries one in practice. */
+export const streamAgentSseFramed = <A, RD, E, R>(
+  request: Effect.Effect<HttpClientResponse.HttpClientResponse, E, R>,
+  schema: Schema.ConstraintDecoder<A, RD>,
+) =>
   HttpClientResponse.stream(request).pipe(
     Stream.decodeText(),
     Stream.pipeThroughChannel(Sse.decodeDataSchema(schema)),
-    Stream.map((event) => event.data),
+    Stream.map((event) => ({ data: event.data, id: event.id })),
   )
