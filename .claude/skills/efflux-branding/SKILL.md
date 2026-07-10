@@ -1,18 +1,16 @@
 ---
 name: efflux-branding
-description: The Efflux visual identity and design system — palette, typography, spacing, components, voice. The single source of truth for all UI/UX work; the Tailwind theme and shadcn/ui tokens derive from this file. Invoke before touching any frontend surface. Project-local to effect-flue/efflux; unrelated to the global brand-guidelines PDF generator.
+description: The Efflux visual identity and design system — palette, typography, spacing, components, voice. The single source of truth for all UI/UX work; the Tailwind theme and shadcn/ui tokens derive from this file. Invoke before touching any frontend surface. Project-local to efflux; unrelated to the global brand-guidelines PDF generator.
 argument-hint: "[component or surface you're styling]"
 ---
 
-# Efflux — Brand Guidelines v1
+# Efflux — Brand Guidelines 1.0
 
-The identity for the agent runtime (renamed `effect-flue` → **Efflux**). Dark-first, technical, restrained — modeled on the OpenRouter register. This file is the authority; the Tailwind theme (`apps/web`) and shadcn/ui token layer MUST mirror the values below, never diverge from them.
-
-**Visual reference:** the brand board renders every token and component live → https://claude.ai/code/artifact/fa7d55d2-dfcd-4033-975b-7882b6b01d42
+The identity for the agent runtime, **Efflux**. Dark-first, technical, restrained — modeled on the OpenRouter register. This file is the authority; the Tailwind theme (`apps/web`) and shadcn/ui token layer MUST mirror the values below, never diverge from them.
 
 ## The name
 
-**Efflux** — *(physics: the act of flowing outward; the streaming out of particles, energy, or a current from a source)*. It descends from the old name (`flue`), reads as infra-grade, and names exactly what the product does: stream agent output from the edge. Tagline: **"Effect-native agents, streamed from the edge."**
+**Efflux** — *(physics: the act of flowing outward; the streaming out of particles, energy, or a current from a source)*. It reads as infra-grade and names exactly what the product does: stream agent output from the edge. Tagline: **"Effect-native agents, streamed from the edge."**
 
 - Wordmark: lowercase `efflux` in the UI chrome; `Efflux` in prose/headings.
 - Never hyphenate or camelCase. Package scope becomes `@efflux/*`.

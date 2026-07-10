@@ -2,7 +2,7 @@
 
 > A deployable Cloudflare agent runtime built from Effect v4 on native Workers bindings. No framework required.
 
-Agent-harness frameworks bundle the primitives you need to run an agent — per-session state, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface — behind a convenient DX. Every one of those primitives is something you already have on Cloudflare + Effect. Efflux proves it: a complete streaming agent runtime with a chat UI, every line written in `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, deployed with plain `wrangler` — no framework required.
+Agent-harness frameworks bundle the primitives you need to run an agent — per-session state, R2-backed skills, a container sandbox, a model client, an HTTP trigger surface — behind a convenient DX. Every one of those primitives is something you already have on Cloudflare + Effect. Efflux proves it: a complete streaming agent runtime with a polished, dark-first web console, deployed with plain `wrangler` — no agent framework required. The runtime is pure `effect` + `@effect/ai-openrouter` on stock Cloudflare bindings; the console is React 19 + Tailwind v4 + shadcn/ui on the typed `@effect/atom-react` client.
 
 ## What's in here
 
@@ -18,13 +18,15 @@ apps/
       handlers.ts         # HttpApi handlers + the Worker-side hop-capped tool loop
       Sandbox.ts          # Sandbox container DO (@cloudflare/containers)
       Skills.ts           # R2 skills/roles loading
-  web/                    # Vite + React FE (chat UI)
-  tui/                    # Ink terminal client (shares the typed client + streamAgentSse)
+  web/                    # Vite + React 19 console — Tailwind v4 + shadcn/ui, dark-first
     src/
-      App.tsx             # Layout + transcript
-      atoms.ts            # @effect/atom-react atoms (history + streaming)
-      runtime.ts          # Effect runtime + HttpApiClient
-      components/         # Chat UI components
+      App.tsx             # AppShell composition (TopBar + rails + inspector tabs)
+      index.css           # Tailwind v4 token layer — the /efflux-branding design system
+      theme.ts            # dark-first theme atom + provider
+      components/         # shared primitives (Markdown, ToolCallCard, Message, …) + panels
+      atoms/              # @effect/atom-react state (history, journal, streaming)
+      runtime.ts          # Effect runtime + typed HttpApiClient
+  tui/                    # Ink terminal client (shares the typed client + streamAgentSse)
 packages/
   shared/                 # HttpApi definition, schemas, errors, journal, shared SSE Stream
     src/                  # AgentApi, Message, PromptResponse, StreamPart, Journal, Sse, ...
@@ -130,31 +132,35 @@ curl https://<your-worker>/tasks \
 
 ## Working on this repo
 
-Changes flow through a plan → execute → verify → postmortem loop, driven by six skills under `.claude/skills/`:
+Changes flow through a plan → execute → verify → postmortem loop, driven by the `efflux-*` skills under `.claude/skills/`:
 
 - `/efflux-planning` — wave-structured implementation plan for a task.
-- `/efflux-executing` — runs the plan wave-by-wave and opens the PR against `main`.
+- `/efflux-executing` — runs the plan wave-by-wave in an isolated worktree and opens a PR against `staging`.
 - `/efflux-creating-issues` — turns a rough problem statement into one well-formed GitHub issue.
 - `/efflux-verifying` — deploy + live-worker smoke checklist; typecheck alone never counts as verified.
-- `/efflux-postmortem` — pre-merge orchestration retrospective that feeds improvements back into the skills.
-- `/efflux-cleaning-up` — post-merge branch deletion and plan archival.
+- `/efflux-postmortem` — orchestration retrospective that feeds improvements back into the skills.
+- `/efflux-cleaning-up` — post-merge worktree removal, branch deletion, and plan archival.
+- `/efflux-releasing` — promotes `staging`→`main` via a merge PR, then tags and publishes a GitHub Release.
+- `/efflux-branding` — the design-system / brand-guidelines source of truth; invoke before any frontend work.
 
 `CLAUDE.md` at the repo root holds the current commands, conventions, and a skill index; `ISSUES.md` records known landmines — read it before touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
 
-Releases: every merge to `main` is tagged and published as a GitHub Release (semver, starting from 0.1.0).
+Feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes `staging`→`main` and tags the release. CI gates `typecheck` + `test` (vitest) + `lint` (biome) on every PR.
 
-## The chat UI
+## The web console
 
-`apps/web` is a Vite + React app. It does not duplicate any type from the Worker — every request and response goes through:
+`apps/web` is a Vite + React 19 console styled with **Tailwind v4 + shadcn/ui**, driven by the `/efflux-branding` design tokens: dark-first with a real light mode, self-hosted Inter + JetBrains Mono, one cyan accent. The UI is built from a small set of shared primitives — `Markdown` (sanitized `react-markdown` + `remark-gfm` + `rehype-sanitize`), `ToolCallCard`, `StatusPill`, `Message`, `AsyncBoundary`, and a slot-based `AppShell` — so the transcript renders real markdown, tool calls collapse into cards with their output, and the layout holds one scrolling conversation with a pinned composer, a free-entry model combobox, a Skills dialog, and a Journal/Tools inspector. See `apps/web/README.md` for the full design-system reference.
+
+It does not duplicate any type from the Worker — every request and response goes through the typed client:
 
 ```ts
 // apps/web/src/runtime.ts
 const client = yield* HttpApiClient.make(AgentApi, { baseUrl: window.location.origin });
 ```
 
-Mutations (send, reset) are `@effect/atom-react` mutation atoms; the history view is a query atom. The streaming endpoint is consumed as a `Stream<StreamPart>`, validated frame-by-frame via `Schema.decodeUnknownEffect(StreamPart)`. If the server adds a new part variant tomorrow, the client breaks at the schema, not at a `JSON.parse` followed by a `switch`.
+Send and reset are `@effect/atom-react` mutation atoms; history is a query atom. The streaming endpoint is consumed as a `Stream<StreamPart>`, validated frame-by-frame via `Schema.decodeUnknownEffect(StreamPart)` — if the server adds a new part variant, the client breaks at the schema, not at a `JSON.parse` followed by a `switch`.
 
-In dev, Vite's proxy forwards `/agents/*` to the local Worker at `http://localhost:8787`. In production, the FE is served from the same Worker, so `window.location.origin` resolves to the Worker hostname and no CORS is involved.
+In dev, Vite's proxy forwards `/agents/*` to the local Worker at `http://localhost:8787`. In production the FE is served from the same Worker, so `window.location.origin` resolves to the Worker hostname and no CORS is involved.
 
 ## Streaming
 
@@ -185,12 +191,26 @@ bun run build                                 # builds the FE then typechecks th
 
 ## Deploy
 
+First-time provisioning creates the named resources the bindings expect:
+
 ```sh
-wrangler secret put OPENROUTER_API_KEY   # once per Worker
-bun run deploy                           # requires Docker (container image build)
+# 1. R2 buckets — skills/roles + per-session workspace tarballs
+wrangler r2 bucket create efflux-skills
+wrangler r2 bucket create efflux-sessions
+
+# 2. AI Search instance — the KNOWLEDGE_SEARCH binding
+wrangler ai-search create efflux-knowledge --type builtin
+
+# 3. Worker secrets — OPENROUTER_API_KEY for model calls; API_TOKEN for the
+#    Authorization bearer the FE (VITE_API_TOKEN, inlined at build) must match
+wrangler secret put OPENROUTER_API_KEY
+wrangler secret put API_TOKEN
+
+# 4. Deploy — needs Docker (builds the Sandbox container image)
+bun run deploy
 ```
 
-The `predeploy` script runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale or missing `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc` at the repo root, which declares the Worker, the `Agent`, `Sandbox`, and `Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `SKILLS` and `SESSIONS` R2 buckets, the cron trigger, and the FE assets.
+The `predeploy` hook runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc`, which declares the Worker `efflux`, the `Agent`/`Sandbox`/`Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `efflux-skills`/`efflux-sessions` R2 buckets, the `efflux-knowledge` AI Search instance, the cron trigger, and the FE assets. On the first request after a cold deploy the `Sandbox` container spins up from zero instances, so the first tool call can 500 and then succeed on retry (see `ISSUES.md`).
 
 Useful root scripts:
 
@@ -216,14 +236,14 @@ A typical agent-framework "support agent" example is ~30 lines. Efflux is larger
 | Typed output                         | Valibot                   | `effect/Schema`                          |
 | Secrets                              | —                         | `wrangler secret` + `.dev.vars`          |
 | Streaming                            | SSE                       | `Stream` + `HttpServerResponse.stream`   |
-| Chat UI                              | —                         | React + `@effect/atom-react` + `HttpApiClient` |
+| Chat UI                              | —                         | React 19 + Tailwind v4 + shadcn/ui + `@effect/atom-react` + `HttpApiClient` |
 | Deploy                               | framework CLI             | `wrangler deploy`                        |
 
 **What you give up:** convenience and a zero-config DX. A framework does auto-wiring you do once here.
 
 **What you gain:**
 
-- No framework lock-in. Every line is `effect`, `@effect/ai-openrouter`, or `@effect/atom-react`, on stock Cloudflare bindings.
+- No agent-framework lock-in. The runtime is `effect` + `@effect/ai-openrouter` on stock Cloudflare bindings; the console is React + Tailwind + shadcn on the typed `@effect/atom-react` client.
 - One schema, two sides. `AgentApi` and `StreamPart` are defined once in `packages/shared` and consumed by the Worker and the FE — the typechecker enforces that they agree.
 - Full Effect composition — Layers, Fibers, structured concurrency, OpenTelemetry, retry policies, schema-validated streaming.
 - Infra-as-code in the same file tree. `wrangler.jsonc` declares the DOs, R2 bucket, container image, cron, assets, and Worker.

@@ -761,3 +761,46 @@ the server is unreachable at `/approve` time, the freshly rebuilt toolkit
 lacks that tool and the runtime raises `AiError.ToolNotFoundError`: the
 approved action is lost. An MCP tool's approval is only as durable as the
 server's availability at resume time.
+
+## Renamed `remote: true` binding (`ai_search`) blocks `wrangler dev` boot
+
+### Symptoms (2026-07-10, #85 rebrand)
+
+After renaming the `ai_search` `instance_name` in `wrangler.jsonc` (to `efflux-knowledge`), `wrangler dev` fails to start:
+
+```
+✘ [ERROR] AI Search binding 'KNOWLEDGE_SEARCH' references instance 'efflux-knowledge' in namespace 'default' which was not found.
+✘ [ERROR] Failed to start the remote proxy session. Failed to obtain a preview token.
+```
+
+`wrangler dev` fetches a preview token for every `remote: true` binding at startup, so a renamed-but-not-yet-created instance aborts the whole boot — even though the binding is only consumed lazily per-request (`Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH)` in `index.ts`), never at module load.
+
+### Fix
+
+Provision the instance first — `wrangler ai-search create efflux-knowledge --type builtin` — or, for a quick local smoke before it exists, comment the `ai_search` block out of the worktree `wrangler.jsonc` (uncommitted; the committed config keeps it). Only the knowledge-search feature then no-ops.
+
+## `Sandbox` container cold-starts at zero instances — the first tool call 500s
+
+### Symptoms (2026-07-10, #85 first deploy)
+
+Immediately after a fresh deploy, the first Bash (tool) turn returns `HTTP 500` (`error code: 1101`, a Worker exception); a retry seconds later returns `200`. Non-tool turns (pure model + markdown) succeed on the first try.
+
+### Root cause
+
+The `Sandbox` container application deploys with `instances: 0` and scales up on demand. The very first `/exec` request triggers a container cold start and can throw before the container is ready. This is a warm-up artifact, NOT a code bug — subsequent calls hit the warm container.
+
+### Fix
+
+None needed — retry. If a cold first call must not fail, warm the container with a throwaway tool turn right after deploy (fold it into the `/efflux-verifying` post-deploy smoke).
+
+## Renaming the repo folder mid-session breaks Claude skill/agent discovery
+
+### Symptoms (2026-07-10, #85 rebrand)
+
+Renaming the checkout directory while a Claude Code session is live orphaned the harness's `/efflux-*` skill and `efflux-task-executor` agent lookup — the session's project-root path no longer existed, so invocations failed with "Unknown skill". The sibling `git` worktrees under `.claude/worktrees/*` also went `prunable`, since their recorded absolute paths still pointed at the old folder name.
+
+### Fix
+
+- Re-link the moved worktrees with `git worktree repair <new-worktree-paths>` — with no args it can't find them at their old recorded locations, so pass the NEW paths; then `git worktree prune` clears any orphaned admin entries.
+- For the skills: run them from their files (`.claude/skills/<name>/SKILL.md`) for the rest of the session, or start a FRESH session at the new path, which restores the `/efflux-*` commands and the `efflux-task-executor` agent.
+- Prefer renaming the checkout folder BETWEEN sessions, never during one.
