@@ -119,7 +119,7 @@ const BashParameters = Schema.Struct({
 
 export const BashTool = Tool.make("Bash", {
   description:
-    "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. The working directory is /workspace — a writable but EPHEMERAL scratch space, wiped when the sandbox idles out (~10 minutes) or redeploys. Use this for devops-style operations the dedicated file tools do not cover.",
+    "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. The working directory is /workspace — a writable but EPHEMERAL scratch space, wiped when the sandbox idles out (~1 minute of inactivity) or redeploys. Use this for devops-style operations the dedicated file tools do not cover.",
   parameters: BashParameters,
   success: BashResult,
   dependencies: [BashRunner],
@@ -130,7 +130,7 @@ export const BashTool = Tool.make("Bash", {
 const MAX_COMMAND_CHARS = 90_000
 
 const EPHEMERAL_NOTE =
-  "Paths resolve relative to /workspace, a writable but EPHEMERAL scratch space — contents are wiped when the sandbox idles out (~10 minutes) or redeploys."
+  "Paths resolve relative to /workspace, a writable but EPHEMERAL scratch space — contents are wiped when the sandbox idles out (~1 minute of inactivity) or redeploys."
 
 const capExecResult = (result: BashResultValue): BashResultValue => ({
   exitCode: result.exitCode,
