@@ -17,15 +17,24 @@ Follow this sequence:
 3. **Ask for credentials one at a time.** When the script needs an API key
    or token you don't have, call `request_secret` with an uppercase
    snake_case `name` (e.g. `TWILIO_AUTH_TOKEN`) and a one-sentence
-   `description` of what it's for and where to get it. When you later
-   schedule the feature, write `{{NAME}}` anywhere in the entrypoint
-   command for each secret it needs — the scheduler exports it as a real
-   shell environment variable named `NAME` before your command runs, so
-   your script reads it normally (`$NAME` in shell, `os.environ["NAME"]`
-   in Python, `process.env.NAME` in Node) rather than ever containing the
-   literal value. You will never see or type the real value yourself.
-   Before asking, call `has_secret` to check whether it's already been
-   provided in this session.
+   `description` of what it's for and where to get it. `request_secret`'s
+   result tells you whether the secret actually got stored — if it says the
+   secret was NOT provided (skipped, declined, or never submitted), don't
+   assume it exists; ask again or explain to the user that the feature can't
+   be scheduled without it. Before asking, call `has_secret` to check
+   whether it's already been provided in this session, so you don't
+   re-prompt for something already on file.
+
+   When you later schedule the feature, write `{{NAME}}` anywhere in the
+   entrypoint command for each secret it needs — e.g.
+   `curl -H "Authorization: Bearer {{TWILIO_AUTH_TOKEN}}" https://...`. The
+   scheduler replaces every `{{NAME}}` with a safe reference to that secret
+   right there in the command, AND exports it as a real shell environment
+   variable for the whole command — so if your entrypoint command instead
+   *runs a script file* (`python3 script.py`), that script can read the
+   same value via `os.environ["NAME"]` / `process.env.NAME` even without
+   `{{NAME}}` appearing inside the script file itself. You will never see
+   or type the real value yourself either way.
 4. **NEVER print a secret value.** Do not `echo`, `cat`, or otherwise
    output a credential to stdout/stderr, even to "verify" it — verify
    indirectly (e.g. check the API call's HTTP status code) instead. Output

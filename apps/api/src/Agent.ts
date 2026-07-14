@@ -379,8 +379,8 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
   }
 
-  /** Encrypt and upsert a named secret; a fresh IV is generated every call, including overwrites of an existing name — an IV is never reused. */
-  async putSecret(input: { name: string; value: string }): Promise<void> {
+  /** Encrypt and upsert a named secret; a fresh IV is generated every call, including overwrites of an existing name — an IV is never reused. Returns the row's actual `created_at` (preserved across an overwrite, never reset to the call time) so callers never report a false creation timestamp. */
+  async putSecret(input: { name: string; value: string }): Promise<{ createdAt: number }> {
     const { ciphertext, iv } = await encryptSecret(this.env.SECRETS_ENCRYPTION_KEY, input.value)
     this.ctx.storage.sql.exec(
       `INSERT INTO secrets (name, iv, ciphertext, created_at)
@@ -391,6 +391,8 @@ export class Agent extends DurableObject<Env> {
       ciphertext,
       Date.now(),
     )
+    const row = this.ctx.storage.sql.exec("SELECT created_at FROM secrets WHERE name = ?", input.name).toArray()[0]
+    return { createdAt: row === undefined ? Date.now() : Number(row.created_at) }
   }
 
   /** Whether a secret with this name is currently stored. */
@@ -455,7 +457,7 @@ export class Agent extends DurableObject<Env> {
       nextRunAt,
       now,
     )
-    await this.#rearmAlarm()
+    await this.#touchActivity()
     return { id, nextRunAt }
   }
 
@@ -489,10 +491,26 @@ export class Agent extends DurableObject<Env> {
     }))
   }
 
-  /** Delete a scheduled job and re-arm the alarm to whatever deadline is now next (a job's own reaper suppression ends once this was the last row). */
+  /**
+   * Delete a scheduled job, best-effort reclaim its orphaned R2 snapshot, and treat the delete as
+   * activity so the idle-reap deadline is freshly computed rather than a possibly long-stale one
+   * armed the moment reaper suppression ends (deleting the LAST job re-enables reaping — arming an
+   * old `reapAt` there could fire immediately and wipe the session; #touchActivity recomputes it
+   * from `now` first).
+   */
   async deleteScheduledJob(input: { id: string }): Promise<void> {
+    const row = this.ctx.storage.sql
+      .exec("SELECT workspace_snapshot_key FROM scheduled_jobs WHERE id = ?", input.id)
+      .toArray()[0]
     this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", input.id)
-    await this.#rearmAlarm()
+    if (row !== undefined) {
+      try {
+        await this.env.SESSIONS.delete(String(row.workspace_snapshot_key))
+      } catch (error) {
+        console.error("deleteScheduledJob: snapshot delete failed (orphaned R2 object)", error)
+      }
+    }
+    await this.#touchActivity()
   }
 
   /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
@@ -776,7 +794,17 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
-  /** Build the actual command sent to the Runner: one `export NAME=<quoted value>;` per `{{NAME}}` reference found in the template, then the template itself UNCHANGED (it still contains the literal `{{NAME}}` tokens — the skill instructs the model to reference $NAME in its OWN script, not the `{{NAME}}` marker, which exists only so the DO knows which secrets to look up here). Missing secrets are silently skipped (no export) rather than throwing mid-schedule. */
+  /**
+   * Build the actual command sent to the Runner: one `export NAME=<quoted value>;` per `{{NAME}}`
+   * reference found in the template, followed by the template with every `{{NAME}}` token replaced
+   * by a bare `$NAME` shell-variable reference — so a model that writes `{{NAME}}` directly where it
+   * wants the value (e.g. inside an already-quoted header string) gets a working substitution, not an
+   * inert literal token left in the command. The raw secret value itself only ever appears in the
+   * `export` statement, shell-quoted; the substituted `$NAME` expands from that exported variable at
+   * execution time, never re-embedding the raw value as a second literal copy. Missing secrets are
+   * silently skipped (no export, marker left as `$NAME` which then expands empty) rather than
+   * throwing mid-schedule.
+   */
   async #buildScheduledCommand(template: string): Promise<string> {
     const names = [...template.matchAll(SECRET_REF_PATTERN)].map((m) => m[1])
     const exports: Array<string> = []
@@ -785,7 +813,8 @@ export class Agent extends DurableObject<Env> {
       const value = await this.#getSecretValue(name)
       if (value !== undefined) exports.push(`export ${name}=${shellQuote(value)};`)
     }
-    return [...exports, template].join(" ")
+    const substituted = template.replace(SECRET_REF_PATTERN, (_match, name: string) => `$${name}`)
+    return [...exports, substituted].join(" ")
   }
 
   /**
@@ -827,23 +856,14 @@ export class Agent extends DurableObject<Env> {
       }
       const text = await response.text()
       const decoded = decodeExecResult(JSON.parse(text))
-      this.ctx.storage.sql.exec(
-        "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
-        job.id,
-        startedAt,
-        Date.now(),
-        Result.isSuccess(decoded) ? decoded.success.exitCode : -1,
-        Result.isSuccess(decoded) ? decoded.success.stderr.slice(0, 2000) : `malformed exec result: ${text.slice(0, 500)}`,
-      )
+      const exitCode = Result.isSuccess(decoded) ? decoded.success.exitCode : -1
+      const stderrExcerpt = Result.isSuccess(decoded)
+        ? decoded.success.stderr.slice(0, 2000)
+        : `malformed exec result: ${text.slice(0, 500)}`
+      this.#recordJobRun(job.id, startedAt, exitCode, stderrExcerpt, exitCode === 0 ? "ok" : `failed (exit ${exitCode})`)
     } catch (error) {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
-        job.id,
-        startedAt,
-        Date.now(),
-        -1,
-        error instanceof Error ? error.message : String(error),
-      )
+      const message = error instanceof Error ? error.message : String(error)
+      this.#recordJobRun(job.id, startedAt, -1, message, `error: ${message.slice(0, 200)}`)
     } finally {
       try {
         await runner.destroyContainer()
@@ -851,5 +871,30 @@ export class Agent extends DurableObject<Env> {
         console.error("runner destroy failed", error)
       }
     }
+  }
+
+  /** Most recent runs to retain per job in `scheduled_job_runs` — bounds otherwise-unbounded growth for a long-lived recurring schedule. */
+  static readonly #MAX_RUNS_PER_JOB = 30
+
+  /** Record one job run's outcome: insert the run-log row, reflect its status onto `scheduled_jobs.last_run_status` (read by `listScheduledJobs`/the FE panel — previously never written, so it stayed NULL forever), and prune older runs for this job beyond `#MAX_RUNS_PER_JOB`. */
+  #recordJobRun(jobId: string, startedAt: number, exitCode: number, stderrExcerpt: string, lastRunStatus: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
+      jobId,
+      startedAt,
+      Date.now(),
+      exitCode,
+      stderrExcerpt,
+    )
+    this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET last_run_status = ? WHERE id = ?", lastRunStatus, jobId)
+    this.ctx.storage.sql.exec(
+      `DELETE FROM scheduled_job_runs
+       WHERE job_id = ? AND id NOT IN (
+         SELECT id FROM scheduled_job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT ?
+       )`,
+      jobId,
+      jobId,
+      Agent.#MAX_RUNS_PER_JOB,
+    )
   }
 }

@@ -10,8 +10,8 @@ export const SecretsHandlers = HttpApiBuilder.group(AgentApi, "secrets", (handle
       Effect.gen(function* () {
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
-        yield* Effect.promise(() => agent.putSecret({ name: params.key, value: payload.value }))
-        return new SecretSummary({ name: params.key, createdAt: Date.now() })
+        const { createdAt } = yield* Effect.promise(() => agent.putSecret({ name: params.key, value: payload.value }))
+        return new SecretSummary({ name: params.key, createdAt })
       }),
     )
     .handle("listSecrets", ({ params }) =>

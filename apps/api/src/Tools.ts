@@ -4,9 +4,12 @@
  */
 import {
   DEFAULT_TOOL_RULES,
+  HourUtc,
   JournalTodoWrite,
+  MinuteUtc,
   resolveRule,
   type RulesMap,
+  SafeName,
   SkillSummary,
   SubagentTaskRequest,
 } from "@efflux/shared"
@@ -363,8 +366,9 @@ export const RequestSecretTool = Tool.make("request_secret", {
   description:
     "Ask the user to provide a secret value (e.g. an API key) needed to complete the task. Always requires human approval before the secret is collected — check has_secret first so you don't re-request a secret that is already available.",
   parameters: Schema.Struct({
-    name: Schema.String.annotate({
-      description: "Secret name to request, e.g. STRIPE_API_KEY.",
+    name: SafeName.annotate({
+      description:
+        "Secret name to request, e.g. STRIPE_API_KEY — alphanumeric/hyphen/underscore only, 1-64 chars (must be a valid shell identifier and pass the storage endpoint's name validation).",
     }),
     description: Schema.String.annotate({
       description: "Human-readable explanation of why this secret is needed.",
@@ -372,11 +376,8 @@ export const RequestSecretTool = Tool.make("request_secret", {
   }),
   success: Schema.String,
   dependencies: [SecretsStore],
-  needsApproval: () => Effect.succeed(true),
+  needsApproval: needsApprovalFor("request_secret"),
 })
-
-const ScheduleHourUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(24))
-const ScheduleMinuteUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(60))
 
 export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
   description:
@@ -388,16 +389,16 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
     entrypointCommand: Schema.String.annotate({
       description: "Shell command to run when the job fires.",
     }),
-    runAtHourUtc: ScheduleHourUtc.annotate({
+    runAtHourUtc: HourUtc.annotate({
       description: "Hour of day (0-23, UTC) the job runs at.",
     }),
-    runAtMinuteUtc: ScheduleMinuteUtc.annotate({
+    runAtMinuteUtc: MinuteUtc.annotate({
       description: "Minute of the hour (0-59, UTC) the job runs at.",
     }),
   }),
   success: Schema.String,
   dependencies: [ScheduledJobs],
-  needsApproval: () => Effect.succeed(true),
+  needsApproval: needsApprovalFor("create_scheduled_job"),
 })
 
 export const AgentToolkit = Toolkit.make(
@@ -567,10 +568,14 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       return formatTodos(yield* store.read)
     }),
   has_secret: (params) => SecretsStore.use((store) => store.has(params.name)),
-  /** Runs only after human approval resumes the parked turn — by then the secret exists, so this just confirms presence. Never reads or returns the secret's raw value, only a static confirmation string. */
+  /** Runs after human approval resumes the parked turn — but approval only means "resume the turn," not "the secret was actually stored" (the generic /approve endpoint can resolve ANY parked call with approved:true, including one where the FE's submit-secret-then-approve two-step never ran, e.g. a direct API caller). Actually checks has() and reports the true outcome either way; never reads or returns the secret's raw value. */
   request_secret: (params) =>
     SecretsStore.use((store) => store.has(params.name)).pipe(
-      Effect.as(`${params.name} is now available`),
+      Effect.map((exists) =>
+        exists
+          ? `${params.name} is now available`
+          : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
+      ),
     ),
   create_scheduled_job: (params) =>
     ScheduledJobs.use((jobs) =>

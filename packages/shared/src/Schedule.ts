@@ -11,8 +11,10 @@
 import { Schema } from "effect"
 import { NonNegativeInt, SafeId } from "./Schemas.ts"
 
-const HourUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(24))
-const MinuteUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(60))
+/** Single source for the daily-schedule hour bound — also reused by `create_scheduled_job`'s tool parameters (`apps/api/src/Tools.ts`) so the two never drift apart. */
+export const HourUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(24))
+/** Single source for the daily-schedule minute bound — see {@link HourUtc}. */
+export const MinuteUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(60))
 
 /** A single scheduled job as surfaced to a caller (list endpoint / FE panel). */
 export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("ScheduledJobSummary")({
