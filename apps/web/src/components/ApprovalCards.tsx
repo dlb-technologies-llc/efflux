@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import { Exit } from "effect"
+import { Exit, Schema } from "effect"
 import * as React from "react"
 import {
   AlertDialog,
@@ -15,8 +15,11 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { approveStreamAtom, historyAtom } from "../atoms.ts"
 import { type PendingApproval, pendingApprovals } from "../atoms/journal.ts"
+import { putSecretFn } from "../atoms/secrets.ts"
 import { failureMessage } from "../errors.ts"
 import { prettyParams } from "../format.ts"
 import { currentSessionAtom, journalVersionAtom, type SessionArgs } from "../session.ts"
@@ -39,6 +42,13 @@ function CommandWell({ params }: { params: unknown }) {
   )
 }
 
+/** `request_secret` tool params, decoded defensively — `toolParams` arrives as `unknown` off the journal. */
+const RequestSecretParams = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+})
+const isRequestSecretParams = Schema.is(RequestSecretParams)
+
 /**
  * One parked approval, rendered as its own component so every hook (`busy` /
  * `error` state, the approve-stream setter, the version bump, the history
@@ -52,7 +62,9 @@ function CommandWell({ params }: { params: unknown }) {
 function ApprovalCard({ approval, session }: ApprovalCardProps) {
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [secretValue, setSecretValue] = React.useState("")
   const run = useAtomSet(approveStreamAtom, { mode: "promiseExit" })
+  const runPutSecret = useAtomSet(putSecretFn, { mode: "promiseExit" })
   const bump = useAtomSet(journalVersionAtom)
   const refreshHistory = useAtomRefresh(historyAtom(session))
 
@@ -74,6 +86,23 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
   }
 
   const toolName = approval.toolName ?? "tool call"
+  const secretParams = toolName === "request_secret" && isRequestSecretParams(approval.toolParams)
+    ? approval.toolParams
+    : null
+
+  const submitSecret = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (secretParams === null) return
+    setBusy(true)
+    setError(null)
+    const exit = await runPutSecret({ ...session, key: secretParams.name, value: secretValue })
+    if (Exit.isFailure(exit)) {
+      setError(failureMessage(exit.cause, "Failed to store secret"))
+      setBusy(false)
+      return
+    }
+    await decide(true)
+  }
 
   return (
     <Card className="gap-3 py-4 border-l-[3px] border-l-warning bg-warning/5">
@@ -87,37 +116,63 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <CommandWell params={approval.toolParams} />
+        {secretParams !== null ? null : <CommandWell params={approval.toolParams} />}
         {error !== null ? (
           <p role="alert" className="m-0 text-sm text-destructive">
             {error}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button type="button" disabled={busy}>
-                Approve
+        {secretParams !== null ? (
+          <form className="flex flex-col gap-3" onSubmit={submitSecret}>
+            <p className="m-0 text-sm text-muted-foreground">{secretParams.description}</p>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`secret-value-${approval.eventId}`}>{secretParams.name}</Label>
+              <Input
+                id={`secret-value-${approval.eventId}`}
+                type="password"
+                autoComplete="off"
+                value={secretValue}
+                onChange={(event) => setSecretValue(event.target.value)}
+                disabled={busy}
+                required
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="submit" disabled={busy || secretValue.length === 0}>
+                Submit
               </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Approve {toolName}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This runs the following in the sandbox. Confirm to proceed.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <CommandWell params={approval.toolParams} />
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={() => decide(true)}>Approve</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-          <Button type="button" variant="destructive" disabled={busy} onClick={() => decide(false)}>
-            Deny
-          </Button>
-        </div>
+              <Button type="button" variant="destructive" disabled={busy} onClick={() => decide(false)}>
+                Skip
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button type="button" disabled={busy}>
+                  Approve
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Approve {toolName}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This runs the following in the sandbox. Confirm to proceed.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <CommandWell params={approval.toolParams} />
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => decide(true)}>Approve</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button type="button" variant="destructive" disabled={busy} onClick={() => decide(false)}>
+              Deny
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
