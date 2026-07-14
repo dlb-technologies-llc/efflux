@@ -29,6 +29,7 @@ import { WaitUntil } from "./WaitUntil.ts"
 /** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
 export { Agent } from "./Agent.ts"
 export { Registry } from "./Registry.ts"
+export { Runner } from "./Runner.ts"
 export { Sandbox } from "./Sandbox.ts"
 
 /** Require a non-empty OPENROUTER_API_KEY, throwing a clear error rather than letting an undefined Bearer token reach OpenRouter. */

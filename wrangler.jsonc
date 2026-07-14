@@ -16,16 +16,23 @@
     "bindings": [
       { "name": "AGENTS", "class_name": "Agent" },
       { "name": "SANDBOX", "class_name": "Sandbox" },
-      { "name": "REGISTRY", "class_name": "Registry" }
+      { "name": "REGISTRY", "class_name": "Registry" },
+      { "name": "RUNNER", "class_name": "Runner" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Agent", "Sandbox"] },
-    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] },
+    { "tag": "v3", "new_sqlite_classes": ["Runner"] }
   ],
   "containers": [
     {
       "class_name": "Sandbox",
+      "image": "./apps/api/container/Dockerfile",
+      "instance_type": "standard-1"
+    },
+    {
+      "class_name": "Runner",
       "image": "./apps/api/container/Dockerfile",
       "instance_type": "standard-1"
     }
