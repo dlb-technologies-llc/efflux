@@ -13,6 +13,7 @@ import {
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
+import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 import { formatTodos, TodoStore } from "./Todo.ts"
@@ -41,6 +42,19 @@ export class BashRunner extends Context.Service<
     readonly exec: (command: string) => Effect.Effect<BashResultValue>
   }
 >()("api/BashRunner") {}
+
+/** Per-request handle to the DO's createScheduledJob(input) RPC, provided per-request from the resolved Agent stub (mirrors BashRunner). */
+export class ScheduledJobs extends Context.Service<
+  ScheduledJobs,
+  {
+    readonly create: (input: {
+      readonly description: string
+      readonly entrypointCommand: string
+      readonly runAtHourUtc: number
+      readonly runAtMinuteUtc: number
+    }) => Effect.Effect<{ readonly id: string; readonly nextRunAt: number }>
+  }
+>()("api/ScheduledJobs") {}
 
 /** Request-scoped per-tool permission rules; each turn provides the resolved rules, defaulting to DEFAULT_TOOL_RULES. */
 export const ApprovalRules = Context.Reference<RulesMap>("api/ApprovalRules", {
@@ -333,6 +347,59 @@ export const TodoReadTool = Tool.make("todo_read", {
   needsApproval: needsApprovalFor("todo_read"),
 })
 
+export const HasSecretTool = Tool.make("has_secret", {
+  description:
+    "Check whether a named secret is already available in this session, without revealing its value. Call this BEFORE request_secret to avoid re-prompting for a secret the user has already provided.",
+  parameters: Schema.Struct({
+    name: Schema.String.annotate({
+      description: "Secret name to check, e.g. STRIPE_API_KEY.",
+    }),
+  }),
+  success: Schema.Boolean,
+  dependencies: [SecretsStore],
+})
+
+export const RequestSecretTool = Tool.make("request_secret", {
+  description:
+    "Ask the user to provide a secret value (e.g. an API key) needed to complete the task. Always requires human approval before the secret is collected — check has_secret first so you don't re-request a secret that is already available.",
+  parameters: Schema.Struct({
+    name: Schema.String.annotate({
+      description: "Secret name to request, e.g. STRIPE_API_KEY.",
+    }),
+    description: Schema.String.annotate({
+      description: "Human-readable explanation of why this secret is needed.",
+    }),
+  }),
+  success: Schema.String,
+  dependencies: [SecretsStore],
+  needsApproval: () => Effect.succeed(true),
+})
+
+const ScheduleHourUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(24))
+const ScheduleMinuteUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(60))
+
+export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
+  description:
+    "Schedule a recurring daily job that runs a shell command in this session's sandbox at a fixed UTC time. Always requires human approval before the job is created.",
+  parameters: Schema.Struct({
+    description: Schema.String.annotate({
+      description: "Human-readable description of what the job does.",
+    }),
+    entrypointCommand: Schema.String.annotate({
+      description: "Shell command to run when the job fires.",
+    }),
+    runAtHourUtc: ScheduleHourUtc.annotate({
+      description: "Hour of day (0-23, UTC) the job runs at.",
+    }),
+    runAtMinuteUtc: ScheduleMinuteUtc.annotate({
+      description: "Minute of the hour (0-59, UTC) the job runs at.",
+    }),
+  }),
+  success: Schema.String,
+  dependencies: [ScheduledJobs],
+  needsApproval: () => Effect.succeed(true),
+})
+
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,
   SpawnSubagentTool,
@@ -348,6 +415,9 @@ export const AgentToolkit = Toolkit.make(
   SearchKnowledgeTool,
   TodoWriteTool,
   TodoReadTool,
+  HasSecretTool,
+  RequestSecretTool,
+  CreateScheduledJobTool,
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
@@ -496,4 +566,25 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       const store = yield* TodoStore
       return formatTodos(yield* store.read)
     }),
+  has_secret: (params) => SecretsStore.use((store) => store.has(params.name)),
+  /** Runs only after human approval resumes the parked turn — by then the secret exists, so this just confirms presence. Never reads or returns the secret's raw value, only a static confirmation string. */
+  request_secret: (params) =>
+    SecretsStore.use((store) => store.has(params.name)).pipe(
+      Effect.as(`${params.name} is now available`),
+    ),
+  create_scheduled_job: (params) =>
+    ScheduledJobs.use((jobs) =>
+      jobs.create({
+        description: params.description,
+        entrypointCommand: params.entrypointCommand,
+        runAtHourUtc: params.runAtHourUtc,
+        runAtMinuteUtc: params.runAtMinuteUtc,
+      }),
+    ).pipe(
+      Effect.as(
+        `Scheduled — runs daily at ${String(params.runAtHourUtc).padStart(2, "0")}:${
+          String(params.runAtMinuteUtc).padStart(2, "0")
+        } UTC`,
+      ),
+    ),
 })

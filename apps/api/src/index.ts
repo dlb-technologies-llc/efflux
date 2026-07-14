@@ -20,6 +20,8 @@ import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
+import { ScheduleHandlers } from "./ScheduleHandlers.ts"
+import { SecretsHandlers } from "./SecretsHandlers.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
 import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
@@ -73,6 +75,8 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
+  Layer.provide(SecretsHandlers),
+  Layer.provide(ScheduleHandlers),
   Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([

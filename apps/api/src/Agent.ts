@@ -1,8 +1,10 @@
 import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
+import { nextDailyOccurrence, soonestDeadline } from "./AlarmSchedule.ts"
 import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
+import { decryptSecret, encryptSecret } from "./SecretsCrypto.ts"
 import type { PlainTodo } from "./Todo.ts"
 
 /** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
@@ -31,6 +33,12 @@ const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
 /** Safe decode of the session's stored config overrides through the canonical `AgentConfig` schema; a failed decode means no usable overrides. */
 const decodeConfig = Schema.decodeUnknownResult(AgentConfig)
 
+/** Matches `{{NAME}}` secret references inside a scheduled job's entrypoint command template. */
+const SECRET_REF_PATTERN = /\{\{(\w+)\}\}/g
+
+/** POSIX single-quote escaping: wrap in '...', turning any embedded ' into '\''. Safe for arbitrary byte content, including shell metacharacters. */
+const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+
 /**
  * Per-session storage + sandbox Durable Object: holds the append-only event journal
  * (DO SQLite) and the sandbox exec/hydrate seam. RPC fence — every method takes/returns
@@ -45,6 +53,38 @@ export class Agent extends DurableObject<Env> {
         created_at INTEGER NOT NULL,
         type TEXT NOT NULL,
         payload TEXT NOT NULL
+      )`,
+    )
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS secrets (
+        name TEXT PRIMARY KEY,
+        iv TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    )
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS scheduled_jobs (
+        id TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        entrypoint_command TEXT NOT NULL,
+        run_at_hour_utc INTEGER NOT NULL,
+        run_at_minute_utc INTEGER NOT NULL,
+        workspace_snapshot_key TEXT NOT NULL,
+        script_hash TEXT NOT NULL,
+        next_run_at INTEGER NOT NULL,
+        approved_at INTEGER NOT NULL,
+        last_run_status TEXT
+      )`,
+    )
+    ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        exit_code INTEGER,
+        stderr_excerpt TEXT
       )`,
     )
     ctx.blockConcurrencyWhile(async () => {
@@ -155,7 +195,7 @@ export class Agent extends DurableObject<Env> {
     }
     if (sawUserMessage) {
       await this.#registerSession(now)
-      await this.#scheduleReap()
+      await this.#touchActivity()
     }
     return seqs
   }
@@ -201,7 +241,7 @@ export class Agent extends DurableObject<Env> {
       "approval-resolved",
       JSON.stringify(encodeEventPayload(resolved)),
     )
-    await this.#scheduleReap()
+    await this.#touchActivity()
     return {
       status: "ok",
       turn: decoded.turn,
@@ -339,12 +379,132 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
   }
 
+  /** Encrypt and upsert a named secret; a fresh IV is generated every call, including overwrites of an existing name — an IV is never reused. */
+  async putSecret(input: { name: string; value: string }): Promise<void> {
+    const { ciphertext, iv } = await encryptSecret(this.env.SECRETS_ENCRYPTION_KEY, input.value)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO secrets (name, iv, ciphertext, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (name) DO UPDATE SET iv = excluded.iv, ciphertext = excluded.ciphertext`,
+      input.name,
+      iv,
+      ciphertext,
+      Date.now(),
+    )
+  }
+
+  /** Whether a secret with this name is currently stored. */
+  async hasSecret(name: string): Promise<boolean> {
+    const rows = this.ctx.storage.sql.exec("SELECT 1 FROM secrets WHERE name = ? LIMIT 1", name).toArray()
+    return rows.length > 0
+  }
+
+  /** Names and creation times of every stored secret — NEVER the value; the value must never cross the RPC fence via this method. */
+  async listSecretNames(): Promise<Array<{ name: string; createdAt: number }>> {
+    const rows = this.ctx.storage.sql.exec("SELECT name, created_at FROM secrets ORDER BY name").toArray()
+    return rows.map((row) => ({ name: String(row.name), createdAt: Number(row.created_at) }))
+  }
+
+  /** Decrypt a stored secret's value. Private (real `#` field) so the raw value is structurally incapable of crossing the DO RPC fence — used only inside `#buildScheduledCommand`. */
+  async #getSecretValue(name: string): Promise<string | undefined> {
+    const row = this.ctx.storage.sql.exec("SELECT iv, ciphertext FROM secrets WHERE name = ?", name).toArray()[0]
+    if (row === undefined) return undefined
+    return decryptSecret(this.env.SECRETS_ENCRYPTION_KEY, String(row.iv), String(row.ciphertext))
+  }
+
+  /**
+   * Copy the CURRENT live workspace bytes to a NEW, separate R2 key at approval time — promotion
+   * is a real copy, not a pointer, so ongoing chat edits after approval can never change what's
+   * already scheduled.
+   */
+  async #promoteToScheduled(jobId: string): Promise<{ snapshotKey: string; hash: string }> {
+    await this.snapshotIfDirty()
+    const name = this.ctx.id.name
+    if (name === undefined) throw new Error("Agent DO id has no name")
+    const object = await this.env.SESSIONS.get(Agent.#workspaceKey(name))
+    const bytes = object === null ? new Uint8Array() : new Uint8Array(await object.arrayBuffer())
+    const digest = await crypto.subtle.digest("SHA-256", bytes)
+    const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
+    const key = `scheduled/${name}/${jobId}/${hash}.tar.gz`
+    await this.env.SESSIONS.put(key, bytes)
+    return { snapshotKey: key, hash }
+  }
+
+  /** Approve and create a scheduled job: promotes the current workspace to a dedicated R2 snapshot, computes the first `next_run_at`, and re-arms the alarm. */
+  async createScheduledJob(input: {
+    description: string
+    entrypointCommand: string
+    runAtHourUtc: number
+    runAtMinuteUtc: number
+  }): Promise<{ id: string; nextRunAt: number }> {
+    const id = crypto.randomUUID()
+    const { hash, snapshotKey } = await this.#promoteToScheduled(id)
+    const now = Date.now()
+    const nextRunAt = nextDailyOccurrence(input.runAtHourUtc, input.runAtMinuteUtc, now)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO scheduled_jobs
+        (id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, workspace_snapshot_key, script_hash, next_run_at, approved_at, last_run_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      id,
+      input.description,
+      input.entrypointCommand,
+      input.runAtHourUtc,
+      input.runAtMinuteUtc,
+      snapshotKey,
+      hash,
+      nextRunAt,
+      now,
+    )
+    await this.#rearmAlarm()
+    return { id, nextRunAt }
+  }
+
+  /** All scheduled jobs for this session, plain objects across the RPC fence. */
+  async listScheduledJobs(): Promise<
+    Array<{
+      id: string
+      description: string
+      entrypointCommand: string
+      runAtHourUtc: number
+      runAtMinuteUtc: number
+      nextRunAt: number
+      approvedAt: number
+      lastRunStatus: string | undefined
+    }>
+  > {
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, next_run_at, approved_at, last_run_status FROM scheduled_jobs ORDER BY next_run_at",
+      )
+      .toArray()
+    return rows.map((row) => ({
+      id: String(row.id),
+      description: String(row.description),
+      entrypointCommand: String(row.entrypoint_command),
+      runAtHourUtc: Number(row.run_at_hour_utc),
+      runAtMinuteUtc: Number(row.run_at_minute_utc),
+      nextRunAt: Number(row.next_run_at),
+      approvedAt: Number(row.approved_at),
+      lastRunStatus: row.last_run_status === null ? undefined : String(row.last_run_status),
+    }))
+  }
+
+  /** Delete a scheduled job and re-arm the alarm to whatever deadline is now next (a job's own reaper suppression ends once this was the last row). */
+  async deleteScheduledJob(input: { id: string }): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", input.id)
+    await this.#rearmAlarm()
+  }
+
   /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
   async #wipeStorage(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
+    this.ctx.storage.sql.exec("DELETE FROM secrets")
+    this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs")
+    this.ctx.storage.sql.exec("DELETE FROM scheduled_job_runs")
     await this.ctx.storage.delete("history")
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
     await this.ctx.storage.delete(Agent.#CONFIG_KEY)
+    await this.ctx.storage.delete(Agent.#REAP_AT_KEY)
     await this.ctx.storage.deleteAlarm()
     await this.#unregisterSession()
     const name = this.ctx.id.name
@@ -372,18 +532,69 @@ export class Agent extends DurableObject<Env> {
     }
   }
 
-  /** Slide the idle-reaper alarm to `now + ttlSeconds` from the session's stored config (fallback `DEFAULT_TTL_SECONDS`). Called on every activity signal; `setAlarm` replaces the single DO alarm, so this is a sliding window from last activity. */
-  async #scheduleReap(): Promise<void> {
+  /** DO-storage key for the armed idle-reap deadline (epoch ms) — only ever written by #touchActivity, never by #rearmAlarm, so a job firing can't silently extend it. */
+  static readonly #REAP_AT_KEY = "reapAt"
+
+  /** Real user/API activity: slide the reap deadline (sliding TTL window, same semantic as the old #scheduleReap) and re-arm. Called ONLY from appendEvents and resolveApproval — never from alarm()'s own job-dispatch path. */
+  async #touchActivity(): Promise<void> {
     const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
     const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
-    const ttl = Result.isSuccess(decoded)
-      ? decoded.success.ttlSeconds ?? DEFAULT_TTL_SECONDS
-      : DEFAULT_TTL_SECONDS
-    await this.ctx.storage.setAlarm(Date.now() + ttl * 1000)
+    const ttl = Result.isSuccess(decoded) ? decoded.success.ttlSeconds ?? DEFAULT_TTL_SECONDS : DEFAULT_TTL_SECONDS
+    await this.ctx.storage.put(Agent.#REAP_AT_KEY, Date.now() + ttl * 1000)
+    await this.#rearmAlarm()
   }
 
-  /** DO alarm handler: the idle TTL elapsed with no activity. Archive-and-purge the session (reaped sessions feed the eval corpus). */
+  /**
+   * Re-arm the single DO alarm to the next known deadline, WITHOUT changing what that deadline
+   * is. A live schedule (any scheduled_jobs row) suppresses reaping entirely — a session with an
+   * active feature is not idle, so the alarm arms to the soonest job run and the stored reapAt is
+   * left untouched until the schedule is empty again. Only once there are zero scheduled_jobs
+   * rows does the stored reapAt (if any) govern the alarm.
+   */
+  async #rearmAlarm(): Promise<void> {
+    const jobRows = this.ctx.storage.sql.exec("SELECT next_run_at FROM scheduled_jobs").toArray()
+    if (jobRows.length > 0) {
+      const soonest = soonestDeadline(jobRows.map((r) => Number(r.next_run_at)))
+      if (soonest !== undefined) await this.ctx.storage.setAlarm(soonest)
+      return
+    }
+    const reapAt = await this.ctx.storage.get(Agent.#REAP_AT_KEY)
+    if (reapAt === undefined) {
+      await this.ctx.storage.deleteAlarm()
+      return
+    }
+    await this.ctx.storage.setAlarm(Number(reapAt))
+  }
+
+  /**
+   * DO alarm handler: dispatches any scheduled jobs due now, rescheduling each to its next daily
+   * occurrence, then re-arms to whatever deadline is next. If no job was due, this firing must be
+   * the reap deadline — archive-and-purge the session (reaped sessions feed the eval corpus),
+   * unless a schedule appeared in the meantime (defensive guard; #rearmAlarm never arms to
+   * reapAt while scheduled_jobs has rows, so this shouldn't happen in practice).
+   */
   async alarm(): Promise<void> {
+    const now = Date.now()
+    const due = this.ctx.storage.sql.exec("SELECT * FROM scheduled_jobs WHERE next_run_at <= ?", now).toArray()
+    if (due.length > 0) {
+      for (const row of due) {
+        const job = {
+          id: String(row.id),
+          entrypointCommand: String(row.entrypoint_command),
+          workspaceSnapshotKey: String(row.workspace_snapshot_key),
+        }
+        await this.#runScheduledJob(job)
+        const next = nextDailyOccurrence(Number(row.run_at_hour_utc), Number(row.run_at_minute_utc), now)
+        this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?", next, row.id)
+      }
+      await this.#rearmAlarm()
+      return
+    }
+    const stillScheduled = this.ctx.storage.sql.exec("SELECT 1 FROM scheduled_jobs LIMIT 1").toArray()
+    if (stillScheduled.length > 0) {
+      await this.#rearmAlarm()
+      return
+    }
     await this.close({ mode: "archive", reason: "reaped" })
   }
 
@@ -561,6 +772,83 @@ export class Agent extends DurableObject<Env> {
         exitCode: -1,
         stdout: "",
         stderr: e instanceof Error ? e.message : String(e),
+      }
+    }
+  }
+
+  /** Build the actual command sent to the Runner: one `export NAME=<quoted value>;` per `{{NAME}}` reference found in the template, then the template itself UNCHANGED (it still contains the literal `{{NAME}}` tokens — the skill instructs the model to reference $NAME in its OWN script, not the `{{NAME}}` marker, which exists only so the DO knows which secrets to look up here). Missing secrets are silently skipped (no export) rather than throwing mid-schedule. */
+  async #buildScheduledCommand(template: string): Promise<string> {
+    const names = [...template.matchAll(SECRET_REF_PATTERN)].map((m) => m[1])
+    const exports: Array<string> = []
+    for (const name of names) {
+      if (name === undefined) continue
+      const value = await this.#getSecretValue(name)
+      if (value !== undefined) exports.push(`export ${name}=${shellQuote(value)};`)
+    }
+    return [...exports, template].join(" ")
+  }
+
+  /**
+   * Dispatch one scheduled job on a fresh `Runner`: restore its dedicated workspace snapshot,
+   * export any referenced secrets, run the entrypoint command, and record the run. `Runner`
+   * cold-starts on every invocation (unlike the long-lived `Sandbox`), so `/restore` and `/exec`
+   * each get one retry for a cold-start-shaped failure. `/snapshot` is never called — the
+   * Runner's disk is meant to be discarded, not persisted.
+   */
+  async #runScheduledJob(job: {
+    id: string
+    entrypointCommand: string
+    workspaceSnapshotKey: string
+  }): Promise<void> {
+    const name = this.ctx.id.name
+    if (name === undefined) return
+    const startedAt = Date.now()
+    const runner = this.env.RUNNER.get(this.env.RUNNER.idFromName(`${name}:${job.id}`))
+    try {
+      const snapshot = await this.env.SESSIONS.get(job.workspaceSnapshotKey)
+      const body = snapshot === null ? undefined : await snapshot.arrayBuffer()
+      let restore = await runner.fetch("http://runner/restore", { method: "POST", ...(body !== undefined ? { body } : {}) })
+      if (!restore.ok) {
+        restore = await runner.fetch("http://runner/restore", { method: "POST", ...(body !== undefined ? { body } : {}) })
+      }
+      if (!restore.ok) throw new Error(`runner restore failed ${restore.status}: ${await restore.text()}`)
+      const command = await this.#buildScheduledCommand(job.entrypointCommand)
+      let response = await runner.fetch("http://runner/exec", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command }),
+      })
+      if (!response.ok) {
+        response = await runner.fetch("http://runner/exec", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ command }),
+        })
+      }
+      const text = await response.text()
+      const decoded = decodeExecResult(JSON.parse(text))
+      this.ctx.storage.sql.exec(
+        "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
+        job.id,
+        startedAt,
+        Date.now(),
+        Result.isSuccess(decoded) ? decoded.success.exitCode : -1,
+        Result.isSuccess(decoded) ? decoded.success.stderr.slice(0, 2000) : `malformed exec result: ${text.slice(0, 500)}`,
+      )
+    } catch (error) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
+        job.id,
+        startedAt,
+        Date.now(),
+        -1,
+        error instanceof Error ? error.message : String(error),
+      )
+    } finally {
+      try {
+        await runner.destroyContainer()
+      } catch (error) {
+        console.error("runner destroy failed", error)
       }
     }
   }

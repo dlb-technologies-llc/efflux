@@ -26,10 +26,11 @@ import { Cause, Effect, Layer, type Duration } from "effect"
 import type { Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson } from "./JournalWrite.ts"
+import { makeSecretsStoreLayer } from "./Secrets.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import { loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { makeTodoStoreLayer } from "./Todo.ts"
-import { ApprovalRules, BashRunner } from "./Tools.ts"
+import { ApprovalRules, BashRunner, ScheduledJobs } from "./Tools.ts"
 
 /**
  * Hop cap for the manual multi-hop tool loop. Effect AI's
@@ -118,13 +119,30 @@ export const makeBashRunnerLayer = (
   )
 
 /**
+ * Per-request `ScheduledJobs` layer bound to one DO instance's
+ * `createScheduledJob` RPC. Provided into the toolkit pipe in each handler to
+ * satisfy `CreateScheduledJobTool`'s dependency without leaking it to the
+ * Worker root (mirrors `makeBashRunnerLayer`).
+ */
+export const makeScheduledJobsLayer = (
+  agent: ReturnType<AgentNamespace["getByName"]>,
+): Layer.Layer<ScheduledJobs> =>
+  Layer.succeed(
+    ScheduledJobs,
+    ScheduledJobs.of({
+      create: (input) => Effect.promise(() => agent.createScheduledJob(input)),
+    }),
+  )
+
+/**
  * Single-sources the per-turn tool-execution layer stack that all four turn
  * drivers share: the per-request `BashRunner` (bound to this DO's `exec` RPC),
- * the per-turn `TodoStore`, the resolved `ApprovalRules`, and the session
- * `toolLayer` that consumes them. `provideMerge` feeds the merged
- * bash/todo/rules layers into `toolLayer`'s dependencies while still exposing
- * all four services in the output, so a driver provides this ONE layer
- * (`Effect.provide` / `Stream.provide`) instead of the four separately.
+ * the per-turn `TodoStore`, the per-request `SecretsStore` and
+ * `ScheduledJobs` (both bound to this DO instance), the resolved
+ * `ApprovalRules`, and the session `toolLayer` that consumes them.
+ * `provideMerge` feeds the merged layers into `toolLayer`'s dependencies
+ * while still exposing all of them in the output, so a driver provides this
+ * ONE layer (`Effect.provide` / `Stream.provide`) instead of each separately.
  */
 export const makeTurnLayers = (
   agent: ReturnType<AgentNamespace["getByName"]>,
@@ -137,6 +155,8 @@ export const makeTurnLayers = (
     Layer.mergeAll(
       makeBashRunnerLayer((command) => agent.exec(command)),
       makeTodoStoreLayer(agent, turn),
+      makeSecretsStoreLayer(agent),
+      makeScheduledJobsLayer(agent),
       Layer.succeed(ApprovalRules, rules),
     ),
   )
