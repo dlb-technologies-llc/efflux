@@ -213,7 +213,7 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
         <div className="px-1">
           <Spinner label="Running job" />
         </div>
-      ) : runNowResult !== null && runNowResult.run !== null ? (
+      ) : !expanded && runNowResult !== null && runNowResult.run !== null ? (
         <div className="flex flex-col gap-1">
           <span className="px-1 text-xs text-muted-foreground">Run now output</span>
           <RunDetailView run={runNowResult.run} />

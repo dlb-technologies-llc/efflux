@@ -1008,9 +1008,9 @@ export class Agent extends DurableObject<Env> {
     const name = this.ctx.id.name
     if (name === undefined) return false
     if (this.#runningJobs.has(job.id)) return false
-    this.#runningJobs.add(job.id)
     const startedAt = Date.now()
     const runner = this.env.RUNNER.get(this.env.RUNNER.idFromName(`${name}:${job.id}`))
+    this.#runningJobs.add(job.id)
     try {
       const snapshot = await this.env.SESSIONS.get(job.workspaceSnapshotKey)
       const body = snapshot === null ? undefined : await snapshot.arrayBuffer()
