@@ -37,6 +37,7 @@ export function Chat() {
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
+  const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null)
   const [atBottom, setAtBottom] = React.useState(true)
 
   const session = useAtomValue(currentSessionAtom)
@@ -161,6 +162,7 @@ export function Chat() {
     setInput("")
     setCursor(0)
     setDismissedToken(null)
+    setPendingUserMessage(message)
     setPending(true)
     const exit = await runStream({
       ...session,
@@ -184,20 +186,22 @@ export function Chat() {
   const previousHistoryLengthRef = React.useRef(0)
   React.useEffect(() => {
     setParts(noParts)
+    setPendingUserMessage(null)
     setSubmitError(null)
     previousHistoryLengthRef.current = 0
     setResuming(false)
     resumingRef.current = false
   }, [session.name, session.id])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (!AsyncResult.isSuccess(historyResult)) return
     const length = historyResult.value.history.length
-    if (length > previousHistoryLengthRef.current && parts.length > 0) {
+    if (length > previousHistoryLengthRef.current) {
       setParts(noParts)
+      setPendingUserMessage(null)
     }
     previousHistoryLengthRef.current = length
-  }, [historyResult, parts.length])
+  }, [historyResult])
 
   React.useEffect(() => {
     if (resumeHandledRef.current === sessionKey) return
@@ -302,6 +306,9 @@ export function Chat() {
                 />
               )}
             </AsyncBoundary>
+            {pendingUserMessage !== null ? (
+              <Message variant="user" content={pendingUserMessage} />
+            ) : null}
             {streamActive || pending ? (
               <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
             ) : null}
