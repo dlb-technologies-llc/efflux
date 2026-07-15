@@ -1,8 +1,8 @@
 /**
  * Round-trip characterization of the scheduled-job contract schemas: encode →
  * decode → re-encode must be stable, pinning today's shape so a later change
- * to `ScheduledJobSummary`'s bounded numeric fields (`HourUtc`/`MinuteUtc` via
- * `NonNegativeInt`) or `ScheduledJobListResponse`'s envelope breaks the test.
+ * to `ScheduledJobSummary`'s cron `schedule` string field or
+ * `ScheduledJobListResponse`'s envelope breaks the test.
  *
  * `ScheduledJobSummary.id` is a `SafeId` — a regex-refined schema — so per
  * the project convention (see `Journal.test.ts`) it is NOT property-tested
@@ -32,8 +32,7 @@ describe("ScheduledJobSummary codec", () => {
         id: "job-nightly-report",
         description: "generate nightly report",
         entrypointCommand: "bun run report.ts",
-        runAtHourUtc: 6,
-        runAtMinuteUtc: 30,
+        schedule: "30 6 * * *",
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
         lastRunStatus: "success",
@@ -47,22 +46,20 @@ describe("ScheduledJobSummary codec", () => {
         id: "job-never-run",
         description: "first run pending",
         entrypointCommand: "bun run task.ts",
-        runAtHourUtc: 0,
-        runAtMinuteUtc: 0,
+        schedule: "0 0 * * *",
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
       }),
     ))
 
-  it.effect("pins hour/minute at their upper bounds", () =>
+  it.effect("pins a summary with a sub-hourly schedule", () =>
     assertStable(
       ScheduledJobSummary,
       new ScheduledJobSummary({
         id: "job-late-run",
-        description: "last minute of the day",
+        description: "polls every ten minutes",
         entrypointCommand: "bun run late.ts",
-        runAtHourUtc: 23,
-        runAtMinuteUtc: 59,
+        schedule: "*/10 * * * *",
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
         lastRunStatus: "failed",
@@ -83,8 +80,7 @@ describe("ScheduledJobListResponse codec", () => {
             id: "job-one",
             description: "first job",
             entrypointCommand: "bun run one.ts",
-            runAtHourUtc: 6,
-            runAtMinuteUtc: 30,
+            schedule: "0 9 * * 1-5",
             nextRunAt: 1_700_000_000_000,
             approvedAt: 1_699_000_000_000,
             lastRunStatus: "success",
@@ -93,8 +89,7 @@ describe("ScheduledJobListResponse codec", () => {
             id: "job-two",
             description: "second job",
             entrypointCommand: "bun run two.ts",
-            runAtHourUtc: 12,
-            runAtMinuteUtc: 0,
+            schedule: "0 12 * * *",
             nextRunAt: 1_700_100_000_000,
             approvedAt: 1_699_100_000_000,
           }),

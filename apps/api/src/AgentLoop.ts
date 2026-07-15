@@ -130,7 +130,10 @@ export const makeScheduledJobsLayer = (
   Layer.succeed(
     ScheduledJobs,
     ScheduledJobs.of({
-      create: (input) => Effect.promise(() => agent.createScheduledJob(input)),
+      create: (input) =>
+        Effect.promise<{ readonly id: string; readonly nextRunAt: number } | { readonly error: string }>(() =>
+          agent.createScheduledJob(input),
+        ),
     }),
   )
 

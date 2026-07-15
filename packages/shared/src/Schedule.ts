@@ -12,18 +12,17 @@
 import { Schema } from "effect"
 import { NonNegativeInt, SafeId } from "./Schemas.ts"
 
-/** Single source for the daily-schedule hour bound — also reused by `create_scheduled_job`'s tool parameters (`apps/api/src/Tools.ts`) so the two never drift apart. */
-export const HourUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(24))
-/** Single source for the daily-schedule minute bound — see {@link HourUtc}. */
-export const MinuteUtc = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThan(60))
-
-/** A single scheduled job as surfaced to a caller (list endpoint / FE panel). */
+/**
+ * A single scheduled job as surfaced to a caller (list endpoint / FE panel).
+ * The job's cadence is described by a cron `schedule` string (server-generated
+ * from a previously-validated expression), not a daily hour/minute pair; a
+ * loose `Schema.String` on this read path stays forward-compatible.
+ */
 export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("ScheduledJobSummary")({
   id: SafeId,
   description: Schema.String,
   entrypointCommand: Schema.String,
-  runAtHourUtc: HourUtc,
-  runAtMinuteUtc: MinuteUtc,
+  schedule: Schema.String,
   nextRunAt: NonNegativeInt,
   approvedAt: NonNegativeInt,
   lastRunStatus: Schema.optionalKey(Schema.String),

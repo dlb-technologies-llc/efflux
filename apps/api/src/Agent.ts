@@ -1,7 +1,7 @@
-import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, ToolRule, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, nextCronOccurrence, ToolRule, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
-import { nextDailyOccurrence, soonestDeadline } from "./AlarmSchedule.ts"
+import { soonestDeadline } from "./AlarmSchedule.ts"
 import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
 import { decryptSecret, encryptSecret } from "./SecretsCrypto.ts"
@@ -70,6 +70,7 @@ export class Agent extends DurableObject<Env> {
         entrypoint_command TEXT NOT NULL,
         run_at_hour_utc INTEGER NOT NULL,
         run_at_minute_utc INTEGER NOT NULL,
+        cron_expression TEXT,
         workspace_snapshot_key TEXT NOT NULL,
         script_hash TEXT NOT NULL,
         next_run_at INTEGER NOT NULL,
@@ -89,6 +90,7 @@ export class Agent extends DurableObject<Env> {
       )`,
     )
     Agent.#addColumnIfMissing(ctx, "scheduled_job_runs", "stdout_excerpt", "TEXT")
+    Agent.#backfillCronExpression(ctx)
     ctx.blockConcurrencyWhile(async () => {
       const count = ctx.storage.sql
         .exec("SELECT COUNT(*) AS n FROM journal")
@@ -147,6 +149,26 @@ export class Agent extends DurableObject<Env> {
         throw error
       }
     }
+  }
+
+  /**
+   * Additive migration to the cron scheduling model. Adds the nullable `cron_expression` column and
+   * backfills every pre-existing row (created before this column) to its equivalent daily cron —
+   * `<minute> <hour> * * *` — from the retained `run_at_minute_utc`/`run_at_hour_utc` values, so no
+   * previously-scheduled job loses its schedule. From here on `cron_expression` is the SOLE
+   * scheduling source of truth: `createScheduledJob` writes it and every reschedule reads it. The
+   * `run_at_hour_utc`/`run_at_minute_utc` columns are retained ONLY to satisfy their `NOT NULL`
+   * constraint on pre-existing tables — they are written as sentinel `0` on every new job and never
+   * read again. They cannot be dropped additively (an `ALTER TABLE ... DROP COLUMN` / table rebuild
+   * is out of scope), so they persist as harmless vestige. Runs synchronously, outside
+   * `blockConcurrencyWhile`, immediately after the `CREATE TABLE` statements — same as the other
+   * `#addColumnIfMissing` migrations.
+   */
+  static #backfillCronExpression(ctx: DurableObjectState): void {
+    Agent.#addColumnIfMissing(ctx, "scheduled_jobs", "cron_expression", "TEXT")
+    ctx.storage.sql.exec(
+      "UPDATE scheduled_jobs SET cron_expression = CAST(run_at_minute_utc AS TEXT) || ' ' || CAST(run_at_hour_utc AS TEXT) || ' * * *' WHERE cron_expression IS NULL",
+    )
   }
 
   /** Insert one already-validated Encoded-JSON payload verbatim; returns the assigned monotonic seq. */
@@ -470,26 +492,39 @@ export class Agent extends DurableObject<Env> {
     return { snapshotKey: key, hash }
   }
 
-  /** Approve and create a scheduled job: promotes the current workspace to a dedicated R2 snapshot, computes the first `next_run_at`, and re-arms the alarm. */
+  /**
+   * Approve and create a scheduled job: computes the first `next_run_at` from the cron expression,
+   * promotes the current workspace to a dedicated R2 snapshot, and re-arms the alarm (via
+   * `#touchActivity`). Returns `{ error }` — never throws — when the expression has no future
+   * occurrence: a structurally-valid-but-never-occurring cron (e.g. `0 0 30 2 *`, Feb 30th) passes
+   * the `CronExpression` refine yet `nextCronOccurrence` yields `undefined`. A throw here would
+   * surface as an uncatchable defect through the caller's `Effect.promise`, 500-ing and terminating
+   * the turn, so the impossible schedule is reported in-band and the workspace is neither promoted
+   * nor inserted. `run_at_hour_utc`/`run_at_minute_utc` are written as sentinel `0` (vestigial —
+   * `cron_expression` is the sole scheduling source of truth; see `#backfillCronExpression`).
+   */
   async createScheduledJob(input: {
     description: string
     entrypointCommand: string
-    runAtHourUtc: number
-    runAtMinuteUtc: number
-  }): Promise<{ id: string; nextRunAt: number }> {
+    schedule: string
+  }): Promise<{ id: string; nextRunAt: number } | { error: string }> {
+    const now = Date.now()
+    const nextRunAt = nextCronOccurrence(input.schedule, now)
+    if (nextRunAt === undefined) {
+      return { error: "cron expression has no future occurrence: " + input.schedule }
+    }
     const id = crypto.randomUUID()
     const { hash, snapshotKey } = await this.#promoteToScheduled(id)
-    const now = Date.now()
-    const nextRunAt = nextDailyOccurrence(input.runAtHourUtc, input.runAtMinuteUtc, now)
     this.ctx.storage.sql.exec(
       `INSERT INTO scheduled_jobs
-        (id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, workspace_snapshot_key, script_hash, next_run_at, approved_at, last_run_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        (id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, cron_expression, workspace_snapshot_key, script_hash, next_run_at, approved_at, last_run_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       id,
       input.description,
       input.entrypointCommand,
-      input.runAtHourUtc,
-      input.runAtMinuteUtc,
+      0,
+      0,
+      input.schedule,
       snapshotKey,
       hash,
       nextRunAt,
@@ -505,8 +540,7 @@ export class Agent extends DurableObject<Env> {
       id: string
       description: string
       entrypointCommand: string
-      runAtHourUtc: number
-      runAtMinuteUtc: number
+      schedule: string
       nextRunAt: number
       approvedAt: number
       lastRunStatus: string | undefined
@@ -514,15 +548,14 @@ export class Agent extends DurableObject<Env> {
   > {
     const rows = this.ctx.storage.sql
       .exec(
-        "SELECT id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, next_run_at, approved_at, last_run_status FROM scheduled_jobs ORDER BY next_run_at",
+        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status FROM scheduled_jobs ORDER BY next_run_at",
       )
       .toArray()
     return rows.map((row) => ({
       id: String(row.id),
       description: String(row.description),
       entrypointCommand: String(row.entrypoint_command),
-      runAtHourUtc: Number(row.run_at_hour_utc),
-      runAtMinuteUtc: Number(row.run_at_minute_utc),
+      schedule: String(row.cron_expression),
       nextRunAt: Number(row.next_run_at),
       approvedAt: Number(row.approved_at),
       lastRunStatus: row.last_run_status === null ? undefined : String(row.last_run_status),
@@ -623,11 +656,20 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * DO alarm handler: dispatches any scheduled jobs due now, rescheduling each to its next daily
+   * DO alarm handler: dispatches any scheduled jobs due now, rescheduling each to its next cron
    * occurrence, then re-arms to whatever deadline is next. If no job was due, this firing must be
    * the reap deadline — archive-and-purge the session (reaped sessions feed the eval corpus),
    * unless a schedule appeared in the meantime (defensive guard; #rearmAlarm never arms to
    * reapAt while scheduled_jobs has rows, so this shouldn't happen in practice).
+   *
+   * Two reschedule guards, both load-bearing. (1) The next occurrence is computed from a FRESH
+   * `Date.now()`, NOT the loop-top `now`: `#runScheduledJob` above `await`s a slow cold-start Runner,
+   * so by the time it returns the loop-top `now` is stale by the run's wall time. Rescheduling a
+   * sub-daily cron from that stale `now` can land `next_run_at` in the past → immediate re-fire →
+   * back-to-back Runner containers (a billed-Container storm). Recomputing `now` guarantees `next` is
+   * strictly after the reschedule instant. (2) A `undefined` next occurrence — an exhausted or
+   * impossible schedule — DELETEs the row rather than leaving `next_run_at <= now`, which would
+   * hot-loop the alarm; removing it matches `deleteScheduledJob`'s no-stale-rows intent.
    */
   async alarm(): Promise<void> {
     const now = Date.now()
@@ -640,8 +682,12 @@ export class Agent extends DurableObject<Env> {
           workspaceSnapshotKey: String(row.workspace_snapshot_key),
         }
         await this.#runScheduledJob(job)
-        const next = nextDailyOccurrence(Number(row.run_at_hour_utc), Number(row.run_at_minute_utc), now)
-        this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?", next, row.id)
+        const next = nextCronOccurrence(String(row.cron_expression), Date.now())
+        if (next === undefined) {
+          this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", row.id)
+        } else {
+          this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?", next, row.id)
+        }
       }
       await this.#rearmAlarm()
       return
