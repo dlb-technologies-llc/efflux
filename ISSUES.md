@@ -400,6 +400,22 @@ reddened the wave typecheck on `TodoStore.read`/`latestTodos`;
 because its consumer `composeMessages` takes a plain union, which masked the same hazard —
 so a passing sibling is NOT evidence the encoded alias is fence-safe.)
 
+**A DISCRIMINATED-UNION DO-method return trips the type transform a second, distinct
+way — the provider layer needs an explicit `Effect.promise<T>` type arg.** A DO method
+returning `Promise<{a}|{b}>` (e.g. a `{ id; nextRunAt } | { error }` result) is proxied as
+a UNION of Promise-intersections — `(Promise<{a}&Disposable>&Pick<…>) | (Promise<{b}&Disposable>&Pick<…>)`.
+TypeScript will NOT collapse that union into a single `PromiseLike<{a}|{b}>` when inferring
+the type parameter of `Effect.promise(() => stub.method())` at the layer that wraps the RPC:
+it infers the FIRST arm and reds on the second (`Type '{b}&Disposable' is not assignable to
+type '{a}&Disposable'`). Fix: give `Effect.promise` an explicit type argument —
+`Effect.promise<{a}|{b}>(() => stub.method())` — matching the union the DO method declares.
+This is unrelated to the `structuredClone` runtime rule and the `typeof X.Encoded` widening
+above; all three are separate DO-fence traps. (full-cron-scheduling #121: `createScheduledJob`'s
+`{ id; nextRunAt } | { error }` return reddened the wave typecheck at `AgentLoop.ts`'s
+`makeScheduledJobsLayer`; an explicit `Effect.promise<CreateScheduledJobResult>(…)` fixed it,
+and the union was extracted to one shared `type` referenced by the DO method, the `ScheduledJobs`
+service, and the layer.)
+
 ### What the symptoms hide
 
 The early surface is **maximally unhelpful**:
