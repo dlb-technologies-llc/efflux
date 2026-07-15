@@ -25,12 +25,13 @@ interface SecretRowProps {
   readonly onChanged: () => void
 }
 
-/** One secret row: name + creation date, a destructive Delete button, and an inline rotate form (a password input + Rotate button that overwrites the value via the existing `putSecretFn` upsert). Both mutations refresh the parent list on success (`onChanged`), mirroring `ScheduledJobRow` in `ScheduledFeaturesPanel.tsx`. */
+/** One secret row: name + creation date, a two-step Delete button (a stored secret value is write-only and unrecoverable, so a stray click must not destroy it — the first click arms a Confirm/Cancel pair), and an inline rotate form (a password input + Rotate button that overwrites the value via the existing `putSecretFn` upsert). Both mutations refresh the parent list on success (`onChanged`), mirroring `ScheduledJobRow` in `ScheduledFeaturesPanel.tsx`. */
 function SecretRow({ session, secret, onChanged }: SecretRowProps) {
   const runDelete = useAtomSet(deleteSecretFn, { mode: "promiseExit" })
   const runRotate = useAtomSet(putSecretFn, { mode: "promiseExit" })
   const [newValue, setNewValue] = React.useState("")
   const [busy, setBusy] = React.useState(false)
+  const [confirming, setConfirming] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const handleDelete = async () => {
@@ -64,9 +65,20 @@ function SecretRow({ session, secret, onChanged }: SecretRowProps) {
     <li className="flex flex-col gap-2 rounded-md border border-border px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <span className="font-mono text-sm font-medium text-foreground">{secret.name}</span>
-        <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>
-          {busy ? "Working..." : "Delete"}
-        </Button>
+        {confirming ? (
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>
+              {busy ? "Working..." : "Confirm delete"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button type="button" variant="destructive" size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+            Delete
+          </Button>
+        )}
       </div>
       <span className="font-mono text-xs text-muted-foreground">
         Added {new Date(secret.createdAt).toLocaleDateString()}
@@ -97,11 +109,7 @@ function SecretsManager() {
 
   return (
     <ScrollArea className="min-h-0 flex-1 rounded-md border">
-      <AsyncBoundary
-        result={list}
-        onRetry={refreshList}
-        empty={<p className="p-3 text-sm text-muted-foreground">No secrets stored yet.</p>}
-      >
+      <AsyncBoundary result={list} onRetry={refreshList}>
         {(value) =>
           value.secrets.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">No secrets stored yet.</p>
