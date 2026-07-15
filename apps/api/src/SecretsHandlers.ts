@@ -21,5 +21,12 @@ export const SecretsHandlers = HttpApiBuilder.group(AgentApi, "secrets", (handle
         const secrets = yield* Effect.promise(() => agent.listSecretNames())
         return new SecretListResponse({ secrets: secrets.map((s) => new SecretSummary(s)) })
       }),
+    )
+    .handle("deleteSecret", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() => agent.deleteSecret({ name: params.key }))
+      }),
     ),
 )
