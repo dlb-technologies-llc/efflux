@@ -64,6 +64,8 @@ export const shouldContinueToolLoop = (
  * The optional `todos` system message (a `Current task list:` prefix over the
  * current todo list) is injected AFTER skill/role and BEFORE history.
  * System messages are NOT persisted to history — only user + assistant.
+ * History is projected to `{ role, content }` so a persisted `PlainMessage.skill`
+ * (kept for the transcript's skill chip) never leaks into the model payload.
  */
 export const composeMessages = (input: {
   skillBody: string
@@ -82,7 +84,8 @@ export const composeMessages = (input: {
   if (input.todos !== undefined) {
     systemMessages.push({ role: "system", content: `Current task list:\n${input.todos}` })
   }
-  return [...systemMessages, ...input.history, { role: "user", content: input.message }]
+  const historyMessages = input.history.map((m) => ({ role: m.role, content: m.content }))
+  return [...systemMessages, ...historyMessages, { role: "user", content: input.message }]
 }
 
 /**
