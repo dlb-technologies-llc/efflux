@@ -21,6 +21,7 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
                 schedule: job.schedule,
                 nextRunAt: job.nextRunAt,
                 approvedAt: job.approvedAt,
+                paused: job.paused,
                 ...(job.lastRunStatus !== undefined ? { lastRunStatus: job.lastRunStatus } : {}),
               }),
           ),
@@ -42,6 +43,20 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
         return new ScheduledJobRunResponse({
           run: run === undefined ? null : new ScheduledJobRunDetail(run),
         })
+      }),
+    )
+    .handle("pauseScheduledJob", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() => agent.pauseScheduledJob({ id: params.jobId }))
+      }),
+    )
+    .handle("resumeScheduledJob", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() => agent.resumeScheduledJob({ id: params.jobId }))
       }),
     ),
 )

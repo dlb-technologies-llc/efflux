@@ -29,6 +29,28 @@ export const deleteScheduledJobFn = runtime.fn(
     }),
 )
 
+/** Mutation fn: pause a scheduled job via `POST /agents/:name/:id/schedule/:jobId/pause`. Retains config; the job stops firing until resumed. */
+export const pauseScheduledJobFn = runtime.fn(
+  (args: SessionArgs & { readonly jobId: string }) =>
+    Effect.gen(function*() {
+      const client = yield* ApiClient
+      return yield* client.schedule.pauseScheduledJob({
+        params: { name: args.name, id: args.id, jobId: args.jobId },
+      })
+    }),
+)
+
+/** Mutation fn: resume a paused scheduled job via `POST /agents/:name/:id/schedule/:jobId/resume`. It fires again on the next upcoming slot of its existing schedule. */
+export const resumeScheduledJobFn = runtime.fn(
+  (args: SessionArgs & { readonly jobId: string }) =>
+    Effect.gen(function*() {
+      const client = yield* ApiClient
+      return yield* client.schedule.resumeScheduledJob({
+        params: { name: args.name, id: args.id, jobId: args.jobId },
+      })
+    }),
+)
+
 /**
  * On-demand fetch fn (not an auto-fetching atom): a job's most recent run —
  * its actual captured stdout/stderr, otherwise generated and discarded with

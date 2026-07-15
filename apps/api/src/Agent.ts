@@ -76,7 +76,8 @@ export class Agent extends DurableObject<Env> {
         script_hash TEXT NOT NULL,
         next_run_at INTEGER NOT NULL,
         approved_at INTEGER NOT NULL,
-        last_run_status TEXT
+        last_run_status TEXT,
+        paused INTEGER
       )`,
     )
     ctx.storage.sql.exec(
@@ -91,6 +92,7 @@ export class Agent extends DurableObject<Env> {
       )`,
     )
     Agent.#addColumnIfMissing(ctx, "scheduled_job_runs", "stdout_excerpt", "TEXT")
+    Agent.#addColumnIfMissing(ctx, "scheduled_jobs", "paused", "INTEGER")
     Agent.#backfillCronExpression(ctx)
     ctx.blockConcurrencyWhile(async () => {
       const count = ctx.storage.sql
@@ -535,7 +537,7 @@ export class Agent extends DurableObject<Env> {
     return { id, nextRunAt }
   }
 
-  /** All scheduled jobs for this session, plain objects across the RPC fence. */
+  /** All scheduled jobs for this session, plain objects across the RPC fence. `paused` is derived from the nullable `paused` column (NULL/0 → false, 1 → true). */
   async listScheduledJobs(): Promise<
     Array<{
       id: string
@@ -545,11 +547,12 @@ export class Agent extends DurableObject<Env> {
       nextRunAt: number
       approvedAt: number
       lastRunStatus: string | undefined
+      paused: boolean
     }>
   > {
     const rows = this.ctx.storage.sql
       .exec(
-        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status FROM scheduled_jobs ORDER BY next_run_at",
+        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status, paused FROM scheduled_jobs ORDER BY next_run_at",
       )
       .toArray()
     return rows.map((row) => ({
@@ -560,6 +563,7 @@ export class Agent extends DurableObject<Env> {
       nextRunAt: Number(row.next_run_at),
       approvedAt: Number(row.approved_at),
       lastRunStatus: row.last_run_status === null ? undefined : String(row.last_run_status),
+      paused: row.paused !== null && Number(row.paused) === 1,
     }))
   }
 
@@ -583,6 +587,28 @@ export class Agent extends DurableObject<Env> {
       }
     }
     await this.#touchActivity()
+  }
+
+  /** Pause a scheduled job: it stops firing but retains all config (command, schedule, snapshot, run history). Idempotent — a missing or already-paused id is a no-op. Re-arms the single DO alarm (via #rearmAlarm) so the now-paused job's deadline no longer holds an alarm slot; NOT treated as conversational activity, so the idle-reap TTL window is untouched. A paused row still suppresses idle-reaping (see #rearmAlarm). */
+  async pauseScheduledJob(input: { id: string }): Promise<void> {
+    this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET paused = 1 WHERE id = ?", input.id)
+    await this.#rearmAlarm()
+  }
+
+  /** Resume a paused scheduled job: it fires again on its existing cron schedule. `next_run_at` is RECOMPUTED from the cron expression relative to NOW (the next upcoming slot) — missed occurrences during the pause are skipped and the job does NOT fire immediately on resume. Idempotent AND resume-only: a missing id OR a job that is not currently paused (`paused` NULL/0) is a no-op — so a stale/double-submitted resume on an already-active job can never shift its schedule past an imminent fire. Defensive: a cron with no future occurrence (unreachable for any job that passed creation validation, since a recurring expression always recurs within the ~9-year horizon) leaves the job paused rather than arming a past deadline. */
+  async resumeScheduledJob(input: { id: string }): Promise<void> {
+    const row = this.ctx.storage.sql
+      .exec("SELECT cron_expression, paused FROM scheduled_jobs WHERE id = ?", input.id)
+      .toArray()[0]
+    if (row === undefined) return
+    if (row.paused === null || Number(row.paused) !== 1) return
+    const next = nextCronOccurrence(String(row.cron_expression), Date.now())
+    if (next === undefined) {
+      console.error("resumeScheduledJob: schedule has no future occurrence; leaving paused", input.id)
+      return
+    }
+    this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET paused = 0, next_run_at = ? WHERE id = ?", next, input.id)
+    await this.#rearmAlarm()
   }
 
   /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
@@ -635,17 +661,34 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Re-arm the single DO alarm to the next known deadline, WITHOUT changing what that deadline
-   * is. A live schedule (any scheduled_jobs row) suppresses reaping entirely — a session with an
-   * active feature is not idle, so the alarm arms to the soonest job run and the stored reapAt is
-   * left untouched until the schedule is empty again. Only once there are zero scheduled_jobs
-   * rows does the stored reapAt (if any) govern the alarm.
+   * Re-arm the single DO alarm to the next known deadline, WITHOUT changing what that deadline is.
+   * ANY scheduled_jobs row (paused or active) suppresses reaping entirely — a session holding a
+   * scheduled feature, even a paused one, is not idle, so its stored reapAt is left untouched. The
+   * armed deadline, however, is the soonest ACTIVE (non-paused) job run: paused jobs never hold an
+   * alarm slot. A session whose only rows are paused therefore keeps its state but arms NO alarm
+   * (deleteAlarm). Only once there are ZERO rows does the stored reapAt (if any) govern the alarm.
+   *
+   * INTENDED TRADEOFF, not a leak: a paused-only session is deliberately immortal — reaping it would
+   * archive-and-purge the DO (see `close`), destroying the exact config (command, schedule, promoted
+   * snapshot, run history) that pausing exists to retain. This is the same immortal-until-deleted
+   * property any ACTIVE scheduled job already has (the any-row reap guard predates pause/resume) —
+   * and strictly cheaper, since a paused session runs no Runner containers. The only cleanup paths
+   * are an explicit resume (re-arms) or delete (drops the last row, re-enabling reaping via the
+   * #touchActivity in deleteScheduledJob). A bounded max-pause TTL, if ever wanted, would be a
+   * separate feature.
    */
   async #rearmAlarm(): Promise<void> {
-    const jobRows = this.ctx.storage.sql.exec("SELECT next_run_at FROM scheduled_jobs").toArray()
-    if (jobRows.length > 0) {
-      const soonest = soonestDeadline(jobRows.map((r) => Number(r.next_run_at)))
-      if (soonest !== undefined) await this.ctx.storage.setAlarm(soonest)
+    const rows = this.ctx.storage.sql.exec("SELECT next_run_at, paused FROM scheduled_jobs").toArray()
+    if (rows.length > 0) {
+      const activeDeadlines = rows
+        .filter((r) => r.paused === null || Number(r.paused) === 0)
+        .map((r) => Number(r.next_run_at))
+      const soonest = soonestDeadline(activeDeadlines)
+      if (soonest !== undefined) {
+        await this.ctx.storage.setAlarm(soonest)
+      } else {
+        await this.ctx.storage.deleteAlarm()
+      }
       return
     }
     const reapAt = await this.ctx.storage.get(Agent.#REAP_AT_KEY)
@@ -676,7 +719,9 @@ export class Agent extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     const now = Date.now()
-    const due = this.ctx.storage.sql.exec("SELECT * FROM scheduled_jobs WHERE next_run_at <= ?", now).toArray()
+    const due = this.ctx.storage.sql
+      .exec("SELECT * FROM scheduled_jobs WHERE next_run_at <= ? AND (paused IS NULL OR paused = 0)", now)
+      .toArray()
     if (due.length > 0) {
       for (const row of due) {
         const job = {

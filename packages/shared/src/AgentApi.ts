@@ -277,11 +277,27 @@ const getLastRun = HttpApiEndpoint.get("getLastRun", "/agents/:name/:id/schedule
   error: AgentError,
 })
 
+/** Pause a scheduled job — it stops firing while retaining all config. Idempotent. */
+const pauseScheduledJob = HttpApiEndpoint.post("pauseScheduledJob", "/agents/:name/:id/schedule/:jobId/pause", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** Resume a paused scheduled job — it fires again on its existing schedule (next upcoming slot; missed occurrences are skipped, no immediate catch-up fire). Idempotent. */
+const resumeScheduledJob = HttpApiEndpoint.post("resumeScheduledJob", "/agents/:name/:id/schedule/:jobId/resume", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
 /** All scheduled-job endpoints grouped. */
 export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(listScheduledJobs)
   .add(deleteScheduledJob)
   .add(getLastRun)
+  .add(pauseScheduledJob)
+  .add(resumeScheduledJob)
   .middleware(AuthMiddleware)
 
 /** All agent endpoints grouped. */
