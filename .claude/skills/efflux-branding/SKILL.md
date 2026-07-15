@@ -102,6 +102,7 @@ Keep running prose ≤ ~68ch. Headings get `text-wrap: balance`.
 - **Journal / timeline.** A typed timeline: a rail with a colored node per event (accent = model turn, success = ok tool, danger = failed), title + mono meta, right-aligned per-turn cost in `tabular-nums`. Order is meaningful — numbering/rail is information, not decoration.
 - **Approval card.** `--warning` left border (3px) + warning-ghost fill, the command in a mono well, `Approve` (primary) / `Deny` (danger) actions.
 - **Composer.** Surface input, accent focus ring + `--accent-ghost` glow. Placeholder shows the send shortcut.
+- **Loading indicator / Spinner.** The house loading indicator is the animated flux wave-mark — `apps/web/src/components/Spinner.tsx`. Cyan comes from the `primary` token (`text-primary` on the wrapper + `stroke="currentColor"` on the paths), so it matches the favicon in dark mode. Its motion is the `--animate-flux` token + `@keyframes efflux-flux` pair in `index.css`. This is *functional* loading feedback, not decorative animation: the pulse is gated behind the `motion-safe:` variant, so reduced-motion users see the waves hold still at their graduated favicon opacities.
 - **Scroll.** The chat transcript owns its own scroll region (the current build has none). Rails scroll independently. The page body never scrolls sideways — wide content gets its own `overflow-x: auto`.
 
 ## shadcn/ui token mapping
