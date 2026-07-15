@@ -595,12 +595,13 @@ export class Agent extends DurableObject<Env> {
     await this.#rearmAlarm()
   }
 
-  /** Resume a paused scheduled job: it fires again on its existing cron schedule. `next_run_at` is RECOMPUTED from the cron expression relative to NOW (the next upcoming slot) — missed occurrences during the pause are skipped and the job does NOT fire immediately on resume. Idempotent — a missing id is a no-op. Defensive: a cron with no future occurrence (unreachable for any job that passed creation validation, since a recurring expression always recurs within the ~9-year horizon) leaves the job paused rather than arming a past deadline. */
+  /** Resume a paused scheduled job: it fires again on its existing cron schedule. `next_run_at` is RECOMPUTED from the cron expression relative to NOW (the next upcoming slot) — missed occurrences during the pause are skipped and the job does NOT fire immediately on resume. Idempotent AND resume-only: a missing id OR a job that is not currently paused (`paused` NULL/0) is a no-op — so a stale/double-submitted resume on an already-active job can never shift its schedule past an imminent fire. Defensive: a cron with no future occurrence (unreachable for any job that passed creation validation, since a recurring expression always recurs within the ~9-year horizon) leaves the job paused rather than arming a past deadline. */
   async resumeScheduledJob(input: { id: string }): Promise<void> {
     const row = this.ctx.storage.sql
-      .exec("SELECT cron_expression FROM scheduled_jobs WHERE id = ?", input.id)
+      .exec("SELECT cron_expression, paused FROM scheduled_jobs WHERE id = ?", input.id)
       .toArray()[0]
     if (row === undefined) return
+    if (row.paused === null || Number(row.paused) !== 1) return
     const next = nextCronOccurrence(String(row.cron_expression), Date.now())
     if (next === undefined) {
       console.error("resumeScheduledJob: schedule has no future occurrence; leaving paused", input.id)
@@ -666,6 +667,15 @@ export class Agent extends DurableObject<Env> {
    * armed deadline, however, is the soonest ACTIVE (non-paused) job run: paused jobs never hold an
    * alarm slot. A session whose only rows are paused therefore keeps its state but arms NO alarm
    * (deleteAlarm). Only once there are ZERO rows does the stored reapAt (if any) govern the alarm.
+   *
+   * INTENDED TRADEOFF, not a leak: a paused-only session is deliberately immortal — reaping it would
+   * archive-and-purge the DO (see `close`), destroying the exact config (command, schedule, promoted
+   * snapshot, run history) that pausing exists to retain. This is the same immortal-until-deleted
+   * property any ACTIVE scheduled job already has (the any-row reap guard predates pause/resume) —
+   * and strictly cheaper, since a paused session runs no Runner containers. The only cleanup paths
+   * are an explicit resume (re-arms) or delete (drops the last row, re-enabling reaping via the
+   * #touchActivity in deleteScheduledJob). A bounded max-pause TTL, if ever wanted, would be a
+   * separate feature.
    */
   async #rearmAlarm(): Promise<void> {
     const rows = this.ctx.storage.sql.exec("SELECT next_run_at, paused FROM scheduled_jobs").toArray()
