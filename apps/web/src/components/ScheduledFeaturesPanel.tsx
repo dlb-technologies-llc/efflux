@@ -13,7 +13,13 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { deleteScheduledJobFn, getLastRunFn, scheduledJobsAtom } from "../atoms/schedule.ts"
+import {
+  deleteScheduledJobFn,
+  getLastRunFn,
+  pauseScheduledJobFn,
+  resumeScheduledJobFn,
+  scheduledJobsAtom,
+} from "../atoms/schedule.ts"
 import { failureMessage } from "../errors.ts"
 import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
@@ -92,17 +98,21 @@ function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; read
 interface ScheduledJobRowProps {
   readonly session: SessionArgs
   readonly job: ScheduledJobSummary
-  readonly onDeleted: () => void
+  readonly onChanged: () => void
 }
 
 /**
- * One scheduled job row: description, formatted next-run time, optional last-run
- * status, and a delete button that cancels the job via `deleteScheduledJobFn` and
- * refreshes the parent list (`onDeleted`) on success — mirrors `SkillEditor`'s
+ * One scheduled job row: description, formatted next-run time (or a "Paused"
+ * indicator while paused), optional last-run status, a pause/resume button that
+ * toggles the job via `pauseScheduledJobFn`/`resumeScheduledJobFn`, and a delete
+ * button that cancels the job via `deleteScheduledJobFn`. All three refresh the
+ * parent list (`onChanged`) on success — mirrors `SkillEditor`'s
  * delete-then-refresh shape in `SkillsPanel.tsx`.
  */
-function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
+function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
   const runDelete = useAtomSet(deleteScheduledJobFn, { mode: "promiseExit" })
+  const runPause = useAtomSet(pauseScheduledJobFn, { mode: "promiseExit" })
+  const runResume = useAtomSet(resumeScheduledJobFn, { mode: "promiseExit" })
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [expanded, setExpanded] = React.useState(false)
@@ -114,7 +124,20 @@ function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
     setBusy(false)
     Exit.match(exit, {
       onFailure: (cause) => setError(failureMessage(cause, "Delete failed")),
-      onSuccess: () => onDeleted(),
+      onSuccess: () => onChanged(),
+    })
+  }
+
+  const handleTogglePause = async () => {
+    setBusy(true)
+    setError(null)
+    const exit = job.paused
+      ? await runResume({ ...session, jobId: job.id })
+      : await runPause({ ...session, jobId: job.id })
+    setBusy(false)
+    Exit.match(exit, {
+      onFailure: (cause) => setError(failureMessage(cause, job.paused ? "Resume failed" : "Pause failed")),
+      onSuccess: () => onChanged(),
     })
   }
 
@@ -122,15 +145,24 @@ function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
     <li className="flex flex-col gap-1 rounded-md border border-border px-3 py-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium text-foreground">{job.description}</span>
-        <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>
-          {busy ? "Working..." : "Delete"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={handleTogglePause} disabled={busy}>
+            {busy ? "Working..." : job.paused ? "Resume" : "Pause"}
+          </Button>
+          <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>
+            {busy ? "Working..." : "Delete"}
+          </Button>
+        </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
         <span>
           Schedule: <span className="text-foreground">{job.schedule}</span> UTC
         </span>
-        <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
+        {job.paused ? (
+          <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Paused</span>
+        ) : (
+          <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
+        )}
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
         {job.lastRunStatus !== undefined ? (
           <button
@@ -172,7 +204,7 @@ function ScheduledFeaturesManager() {
           ) : (
             <ul className="flex flex-col gap-2 p-3">
               {value.jobs.map((job) => (
-                <ScheduledJobRow key={job.id} session={session} job={job} onDeleted={refreshList} />
+                <ScheduledJobRow key={job.id} session={session} job={job} onChanged={refreshList} />
               ))}
             </ul>
           )}
