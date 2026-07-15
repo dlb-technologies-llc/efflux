@@ -16,7 +16,9 @@ import { NonNegativeInt, SafeId } from "./Schemas.ts"
  * A single scheduled job as surfaced to a caller (list endpoint / FE panel).
  * The job's cadence is described by a cron `schedule` string (server-generated
  * from a previously-validated expression), not a daily hour/minute pair; a
- * loose `Schema.String` on this read path stays forward-compatible.
+ * loose `Schema.String` on this read path stays forward-compatible. `paused`
+ * reports whether the job is currently paused — a paused job stops firing while
+ * its config is retained, so it can be resumed later.
  */
 export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("ScheduledJobSummary")({
   id: SafeId,
@@ -26,6 +28,7 @@ export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("Sche
   nextRunAt: NonNegativeInt,
   approvedAt: NonNegativeInt,
   lastRunStatus: Schema.optionalKey(Schema.String),
+  paused: Schema.Boolean,
 }) {}
 
 /** Envelope for the scheduled-job list endpoint. */

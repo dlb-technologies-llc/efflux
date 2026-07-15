@@ -36,6 +36,7 @@ describe("ScheduledJobSummary codec", () => {
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
         lastRunStatus: "success",
+        paused: false,
       }),
     ))
 
@@ -49,6 +50,7 @@ describe("ScheduledJobSummary codec", () => {
         schedule: "0 0 * * *",
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
+        paused: false,
       }),
     ))
 
@@ -63,6 +65,22 @@ describe("ScheduledJobSummary codec", () => {
         nextRunAt: 1_700_000_000_000,
         approvedAt: 1_699_000_000_000,
         lastRunStatus: "failed",
+        paused: false,
+      }),
+    ))
+
+  it.effect("pins a paused summary", () =>
+    assertStable(
+      ScheduledJobSummary,
+      new ScheduledJobSummary({
+        id: "job-paused-nightly",
+        description: "paused nightly report",
+        entrypointCommand: "bun run report.ts",
+        schedule: "30 6 * * *",
+        nextRunAt: 1_700_000_000_000,
+        approvedAt: 1_699_000_000_000,
+        lastRunStatus: "success",
+        paused: true,
       }),
     ))
 })
@@ -84,6 +102,7 @@ describe("ScheduledJobListResponse codec", () => {
             nextRunAt: 1_700_000_000_000,
             approvedAt: 1_699_000_000_000,
             lastRunStatus: "success",
+            paused: false,
           }),
           new ScheduledJobSummary({
             id: "job-two",
@@ -92,6 +111,7 @@ describe("ScheduledJobListResponse codec", () => {
             schedule: "0 12 * * *",
             nextRunAt: 1_700_100_000_000,
             approvedAt: 1_699_100_000_000,
+            paused: true,
           }),
         ],
       }),
