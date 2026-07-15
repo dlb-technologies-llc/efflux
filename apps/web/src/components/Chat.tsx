@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 
 import { historyAtom, noParts, resumeAtom, streamAtom } from "../atoms.ts"
 import { latestTurnInFlight } from "../atoms/journal.ts"
+import { skillsListAtom } from "../atoms/skills.ts"
 import { failureMessage } from "../errors.ts"
 import { historyForResume } from "../format.ts"
 import {
@@ -18,10 +19,12 @@ import {
   selectedModelAtom,
   selectedSkillAtom,
 } from "../session.ts"
+import { activeSlashToken, parseSlashCommand } from "../slashCommand.ts"
 import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
+import { SlashCommandMenu } from "./SlashCommandMenu.tsx"
 import { StatusPill } from "./StatusPill.tsx"
 import type { ToolCallView } from "./ToolCallCard.tsx"
 
@@ -40,6 +43,29 @@ export function Chat() {
   const model = useAtomValue(selectedModelAtom)
   const skill = useAtomValue(selectedSkillAtom)
   const bumpJournal = useAtomSet(journalVersionAtom)
+
+  const skillsResult = useAtomValue(skillsListAtom)
+  const skills = AsyncResult.isSuccess(skillsResult) ? skillsResult.value.skills : []
+  const skillNames = skills.map((entry) => entry.name)
+
+  const [menuIndex, setMenuIndex] = React.useState(0)
+  const [dismissedToken, setDismissedToken] = React.useState<string | null>(null)
+
+  const token = activeSlashToken(input)
+  const filtered =
+    token === null
+      ? []
+      : skills.filter((entry) => entry.name.toLowerCase().includes(token.toLowerCase()))
+  const menuOpen = token !== null && filtered.length > 0 && dismissedToken !== token
+
+  React.useEffect(() => {
+    setMenuIndex(0)
+  }, [token])
+
+  const acceptSkill = (name: string) => {
+    setInput(`/${name} `)
+    setDismissedToken(null)
+  }
 
   const sessionAtom = historyAtom(session)
   const historyResult = useAtomValue(sessionAtom)
@@ -104,17 +130,19 @@ export function Chat() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const message = input.trim()
+    const parsed = parseSlashCommand(input, skillNames)
+    const message = parsed.message.trim()
     if (message.length === 0) return
     setParts(noParts)
     setSubmitError(null)
     setInput("")
+    setDismissedToken(null)
     setPending(true)
     const exit = await runStream({
       ...session,
       message,
       ...(model !== "" ? { model } : {}),
-      ...(skill !== "" ? { skill } : {}),
+      ...(parsed.skill !== undefined ? { skill: parsed.skill } : skill !== "" ? { skill } : {}),
     })
     setPending(false)
     Exit.match(exit, {
@@ -205,11 +233,36 @@ export function Chat() {
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (menuOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault()
+        setMenuIndex((current) => (current + 1) % filtered.length)
+        return
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault()
+        setMenuIndex((current) => (current - 1 + filtered.length) % filtered.length)
+        return
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault()
+        const choice = filtered[menuIndex]
+        if (choice !== undefined) acceptSkill(choice.name)
+        return
+      }
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setDismissedToken(token)
+        return
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       event.currentTarget.form?.requestSubmit()
     }
   }
+
+  const sendable = parseSlashCommand(input, skillNames).message.trim().length > 0
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -247,16 +300,24 @@ export function Chat() {
         )}
       </div>
       <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
-        <Textarea
-          className="flex-1 max-h-40 resize-none"
-          rows={1}
-          placeholder="Message the agent…  ⌘↵ to send"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={pending || resuming}
-        />
-        <Button type="submit" disabled={pending || resuming || input.trim().length === 0}>
+        <div className="relative flex-1">
+          {menuOpen ? (
+            <SlashCommandMenu items={filtered} activeIndex={menuIndex} onSelect={acceptSkill} />
+          ) : null}
+          <Textarea
+            className="w-full max-h-40 resize-none"
+            rows={1}
+            placeholder="Message the agent…  /skill to apply a skill · ⌘↵ to send"
+            value={input}
+            onChange={(event) => {
+              setInput(event.target.value)
+              setDismissedToken(null)
+            }}
+            onKeyDown={handleKeyDown}
+            disabled={pending || resuming}
+          />
+        </div>
+        <Button type="submit" disabled={pending || resuming || !sendable}>
           {pending ? "Sending…" : "Send"}
         </Button>
       </form>
