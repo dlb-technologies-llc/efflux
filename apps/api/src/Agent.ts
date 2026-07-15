@@ -428,6 +428,11 @@ export class Agent extends DurableObject<Env> {
     return rows.map((row) => ({ name: String(row.name), createdAt: Number(row.created_at) }))
   }
 
+  /** Delete a stored secret by name. Idempotent — a missing name is a no-op with no error. Activity-neutral like `putSecret`: never touches the reaper alarm, since secret writes are not conversational activity. */
+  async deleteSecret(input: { name: string }): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM secrets WHERE name = ?", input.name)
+  }
+
   /** Decrypt a stored secret's value. Private (real `#` field) so the raw value is structurally incapable of crossing the DO RPC fence — used only inside `#buildScheduledCommand`. */
   async #getSecretValue(name: string): Promise<string | undefined> {
     const row = this.ctx.storage.sql.exec("SELECT iv, ciphertext FROM secrets WHERE name = ?", name).toArray()[0]

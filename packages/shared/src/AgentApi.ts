@@ -231,10 +231,18 @@ const listSecrets = HttpApiEndpoint.get("listSecrets", "/agents/:name/:id/secret
   error: AgentError,
 })
 
+/** Delete a single stored secret by key. Idempotent — deleting an absent key still succeeds with no error, mirroring `deleteScheduledJob`. */
+const deleteSecret = HttpApiEndpoint.delete("deleteSecret", "/agents/:name/:id/secrets/:key", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
 /** All secrets CRUD endpoints grouped. */
 export const SecretsGroup = HttpApiGroup.make("secrets")
   .add(putSecret)
   .add(listSecrets)
+  .add(deleteSecret)
   .middleware(AuthMiddleware)
 
 /** Every scheduled job for a session. */
