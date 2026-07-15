@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label"
 import { approveStreamAtom, historyAtom } from "../atoms.ts"
 import { type PendingApproval, pendingApprovals } from "../atoms/journal.ts"
 import { putSecretFn } from "../atoms/secrets.ts"
+import { setToolRuleFn, sessionConfigAtom } from "../atoms/tools.ts"
 import { failureMessage } from "../errors.ts"
 import { prettyParams } from "../format.ts"
 import { currentSessionAtom, journalVersionAtom, type SessionArgs } from "../session.ts"
@@ -67,6 +68,8 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
   const runPutSecret = useAtomSet(putSecretFn, { mode: "promiseExit" })
   const bump = useAtomSet(journalVersionAtom)
   const refreshHistory = useAtomRefresh(historyAtom(session))
+  const runSetRule = useAtomSet(setToolRuleFn, { mode: "promiseExit" })
+  const refreshConfig = useAtomRefresh(sessionConfigAtom(session))
 
   const decide = async (approved: boolean) => {
     setBusy(true)
@@ -83,6 +86,21 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
         setBusy(false)
       },
     })
+  }
+
+  const allowAlways = async () => {
+    const name = approval.toolName
+    if (name === undefined) return
+    setBusy(true)
+    setError(null)
+    const exit = await runSetRule({ ...session, tool: name, rule: "allow" })
+    if (Exit.isFailure(exit)) {
+      setError(failureMessage(exit.cause, "Could not update approval rule"))
+      setBusy(false)
+      return
+    }
+    refreshConfig()
+    await decide(true)
   }
 
   const toolName = approval.toolName ?? "tool call"
@@ -168,6 +186,28 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+            {approval.toolName !== undefined ? (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button type="button" variant="outline" disabled={busy}>
+                    Always allow
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Always allow {toolName} this session?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {toolName} will run for the rest of this session without asking again. Confirm to approve this
+                      call and stop parking future ones.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={allowAlways}>Always allow</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            ) : null}
             <Button type="button" variant="destructive" disabled={busy} onClick={() => decide(false)}>
               Deny
             </Button>
