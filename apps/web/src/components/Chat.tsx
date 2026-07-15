@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 
 import { historyAtom, noParts, resumeAtom, streamAtom } from "../atoms.ts"
 import { latestTurnInFlight } from "../atoms/journal.ts"
+import { skillsListAtom } from "../atoms/skills.ts"
 import { failureMessage } from "../errors.ts"
 import { historyForResume } from "../format.ts"
 import {
@@ -18,10 +19,12 @@ import {
   selectedModelAtom,
   selectedSkillAtom,
 } from "../session.ts"
+import { activeSlashToken, skillFromMessage } from "../slashCommand.ts"
 import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
+import { SLASH_MENU_LISTBOX_ID, SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx"
 import { StatusPill } from "./StatusPill.tsx"
 import type { ToolCallView } from "./ToolCallCard.tsx"
 
@@ -34,12 +37,59 @@ export function Chat() {
   const [submitError, setSubmitError] = React.useState<string | null>(null)
   const [pending, setPending] = React.useState(false)
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
+  const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null)
   const [atBottom, setAtBottom] = React.useState(true)
 
   const session = useAtomValue(currentSessionAtom)
   const model = useAtomValue(selectedModelAtom)
   const skill = useAtomValue(selectedSkillAtom)
   const bumpJournal = useAtomSet(journalVersionAtom)
+
+  const skillsResult = useAtomValue(skillsListAtom)
+  const skills = AsyncResult.isSuccess(skillsResult) ? skillsResult.value.skills : []
+  const skillNames = skills.map((entry) => entry.name)
+
+  const [menuIndex, setMenuIndex] = React.useState(0)
+  const [dismissedToken, setDismissedToken] = React.useState<string | null>(null)
+  const [cursor, setCursor] = React.useState(0)
+  const [pendingCursor, setPendingCursor] = React.useState<number | null>(null)
+  const composerRef = React.useRef<HTMLDivElement>(null)
+
+  const token = activeSlashToken(input, cursor)
+  const filtered =
+    token === null
+      ? []
+      : skills.filter((entry) => entry.name.toLowerCase().includes(token.toLowerCase()))
+  const menuOpen = token !== null && filtered.length > 0 && dismissedToken !== token
+
+  React.useEffect(() => {
+    setMenuIndex(0)
+  }, [token])
+
+  const composerTextarea = React.useCallback(
+    () => composerRef.current?.querySelector<HTMLTextAreaElement>('[data-slot="textarea"]') ?? null,
+    [],
+  )
+
+  React.useLayoutEffect(() => {
+    if (pendingCursor === null) return
+    const textarea = composerTextarea()
+    if (textarea !== null) {
+      textarea.focus()
+      textarea.setSelectionRange(pendingCursor, pendingCursor)
+      setCursor(pendingCursor)
+    }
+    setPendingCursor(null)
+  }, [pendingCursor, composerTextarea])
+
+  /** Complete the token at the caret in place: replace the partial `/tok` with `/<name> `, leaving the rest of the message untouched, and park the caret after the inserted space. */
+  const acceptSkill = (name: string) => {
+    if (token === null) return
+    const slashIndex = cursor - token.length - 1
+    setInput(`${input.slice(0, slashIndex)}/${name} ${input.slice(cursor)}`)
+    setPendingCursor(slashIndex + name.length + 2)
+    setDismissedToken(null)
+  }
 
   const sessionAtom = historyAtom(session)
   const historyResult = useAtomValue(sessionAtom)
@@ -106,15 +156,19 @@ export function Chat() {
     event.preventDefault()
     const message = input.trim()
     if (message.length === 0) return
+    const inlineSkill = skillFromMessage(message, skillNames)
     setParts(noParts)
     setSubmitError(null)
     setInput("")
+    setCursor(0)
+    setDismissedToken(null)
+    setPendingUserMessage(message)
     setPending(true)
     const exit = await runStream({
       ...session,
       message,
       ...(model !== "" ? { model } : {}),
-      ...(skill !== "" ? { skill } : {}),
+      ...(inlineSkill !== undefined ? { skill: inlineSkill } : skill !== "" ? { skill } : {}),
     })
     setPending(false)
     Exit.match(exit, {
@@ -132,20 +186,22 @@ export function Chat() {
   const previousHistoryLengthRef = React.useRef(0)
   React.useEffect(() => {
     setParts(noParts)
+    setPendingUserMessage(null)
     setSubmitError(null)
     previousHistoryLengthRef.current = 0
     setResuming(false)
     resumingRef.current = false
   }, [session.name, session.id])
 
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (!AsyncResult.isSuccess(historyResult)) return
     const length = historyResult.value.history.length
-    if (length > previousHistoryLengthRef.current && parts.length > 0) {
+    if (length > previousHistoryLengthRef.current) {
       setParts(noParts)
+      setPendingUserMessage(null)
     }
     previousHistoryLengthRef.current = length
-  }, [historyResult, parts.length])
+  }, [historyResult])
 
   React.useEffect(() => {
     if (resumeHandledRef.current === sessionKey) return
@@ -205,10 +261,37 @@ export function Chat() {
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (menuOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault()
+        setMenuIndex((current) => (current + 1) % filtered.length)
+        return
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault()
+        setMenuIndex((current) => (current - 1 + filtered.length) % filtered.length)
+        return
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault()
+        const choice = filtered[menuIndex]
+        if (choice !== undefined) acceptSkill(choice.name)
+        return
+      }
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setDismissedToken(token)
+        return
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       event.currentTarget.form?.requestSubmit()
     }
+  }
+
+  const syncCursor = (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    setCursor(event.currentTarget.selectionStart)
   }
 
   return (
@@ -223,6 +306,9 @@ export function Chat() {
                 />
               )}
             </AsyncBoundary>
+            {pendingUserMessage !== null ? (
+              <Message variant="user" content={pendingUserMessage} />
+            ) : null}
             {streamActive || pending ? (
               <Message variant="assistant" streaming content={streamingText} tools={toolViews} />
             ) : null}
@@ -247,15 +333,32 @@ export function Chat() {
         )}
       </div>
       <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
-        <Textarea
-          className="flex-1 max-h-40 resize-none"
-          rows={1}
-          placeholder="Message the agent…  ⌘↵ to send"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={pending || resuming}
-        />
+        <div ref={composerRef} className="relative flex-1">
+          {menuOpen ? (
+            <SlashCommandMenu items={filtered} activeIndex={menuIndex} onSelect={acceptSkill} />
+          ) : null}
+          <Textarea
+            className="w-full max-h-40 resize-none"
+            rows={1}
+            placeholder="Message the agent…  type /skill anywhere to apply a skill · ⌘↵ to send"
+            value={input}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={menuOpen}
+            aria-controls={SLASH_MENU_LISTBOX_ID}
+            aria-activedescendant={menuOpen ? slashOptionId(menuIndex) : undefined}
+            onChange={(event) => {
+              setInput(event.target.value)
+              setCursor(event.target.selectionStart)
+              setDismissedToken(null)
+            }}
+            onKeyDown={handleKeyDown}
+            onKeyUp={syncCursor}
+            onClick={syncCursor}
+            onSelect={syncCursor}
+            disabled={pending || resuming}
+          />
+        </div>
         <Button type="submit" disabled={pending || resuming || input.trim().length === 0}>
           {pending ? "Sending…" : "Send"}
         </Button>
