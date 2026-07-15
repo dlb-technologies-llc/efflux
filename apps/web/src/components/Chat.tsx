@@ -19,7 +19,7 @@ import {
   selectedModelAtom,
   selectedSkillAtom,
 } from "../session.ts"
-import { activeSlashToken, parseSlashCommand } from "../slashCommand.ts"
+import { activeSlashToken, skillFromMessage } from "../slashCommand.ts"
 import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
@@ -50,8 +50,11 @@ export function Chat() {
 
   const [menuIndex, setMenuIndex] = React.useState(0)
   const [dismissedToken, setDismissedToken] = React.useState<string | null>(null)
+  const [cursor, setCursor] = React.useState(0)
+  const [pendingCursor, setPendingCursor] = React.useState<number | null>(null)
+  const composerRef = React.useRef<HTMLDivElement>(null)
 
-  const token = activeSlashToken(input)
+  const token = activeSlashToken(input, cursor)
   const filtered =
     token === null
       ? []
@@ -62,8 +65,28 @@ export function Chat() {
     setMenuIndex(0)
   }, [token])
 
+  const composerTextarea = React.useCallback(
+    () => composerRef.current?.querySelector<HTMLTextAreaElement>('[data-slot="textarea"]') ?? null,
+    [],
+  )
+
+  React.useLayoutEffect(() => {
+    if (pendingCursor === null) return
+    const textarea = composerTextarea()
+    if (textarea !== null) {
+      textarea.focus()
+      textarea.setSelectionRange(pendingCursor, pendingCursor)
+      setCursor(pendingCursor)
+    }
+    setPendingCursor(null)
+  }, [pendingCursor, composerTextarea])
+
+  /** Complete the token at the caret in place: replace the partial `/tok` with `/<name> `, leaving the rest of the message untouched, and park the caret after the inserted space. */
   const acceptSkill = (name: string) => {
-    setInput(`/${name} `)
+    if (token === null) return
+    const slashIndex = cursor - token.length - 1
+    setInput(`${input.slice(0, slashIndex)}/${name} ${input.slice(cursor)}`)
+    setPendingCursor(slashIndex + name.length + 2)
     setDismissedToken(null)
   }
 
@@ -130,19 +153,20 @@ export function Chat() {
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const parsed = parseSlashCommand(input, skillNames)
-    const message = parsed.message.trim()
+    const message = input.trim()
     if (message.length === 0) return
+    const inlineSkill = skillFromMessage(message, skillNames)
     setParts(noParts)
     setSubmitError(null)
     setInput("")
+    setCursor(0)
     setDismissedToken(null)
     setPending(true)
     const exit = await runStream({
       ...session,
       message,
       ...(model !== "" ? { model } : {}),
-      ...(parsed.skill !== undefined ? { skill: parsed.skill } : skill !== "" ? { skill } : {}),
+      ...(inlineSkill !== undefined ? { skill: inlineSkill } : skill !== "" ? { skill } : {}),
     })
     setPending(false)
     Exit.match(exit, {
@@ -262,7 +286,9 @@ export function Chat() {
     }
   }
 
-  const sendable = parseSlashCommand(input, skillNames).message.trim().length > 0
+  const syncCursor = (event: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    setCursor(event.currentTarget.selectionStart)
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -300,14 +326,14 @@ export function Chat() {
         )}
       </div>
       <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
-        <div className="relative flex-1">
+        <div ref={composerRef} className="relative flex-1">
           {menuOpen ? (
             <SlashCommandMenu items={filtered} activeIndex={menuIndex} onSelect={acceptSkill} />
           ) : null}
           <Textarea
             className="w-full max-h-40 resize-none"
             rows={1}
-            placeholder="Message the agent…  /skill to apply a skill · ⌘↵ to send"
+            placeholder="Message the agent…  type /skill anywhere to apply a skill · ⌘↵ to send"
             value={input}
             role="combobox"
             aria-autocomplete="list"
@@ -316,13 +342,17 @@ export function Chat() {
             aria-activedescendant={menuOpen ? slashOptionId(menuIndex) : undefined}
             onChange={(event) => {
               setInput(event.target.value)
+              setCursor(event.target.selectionStart)
               setDismissedToken(null)
             }}
             onKeyDown={handleKeyDown}
+            onKeyUp={syncCursor}
+            onClick={syncCursor}
+            onSelect={syncCursor}
             disabled={pending || resuming}
           />
         </div>
-        <Button type="submit" disabled={pending || resuming || !sendable}>
+        <Button type="submit" disabled={pending || resuming || input.trim().length === 0}>
           {pending ? "Sending…" : "Send"}
         </Button>
       </form>

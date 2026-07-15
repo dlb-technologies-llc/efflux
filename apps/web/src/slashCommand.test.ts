@@ -1,59 +1,69 @@
 /**
- * Ground-truth pins for the pure slash-command parser in `./slashCommand.ts`.
+ * Ground-truth pins for the pure slash-command helpers in `./slashCommand.ts`.
  *
- * `activeSlashToken` and `parseSlashCommand` are total pure functions with no
- * injected state, so every case is fully deterministic. The tables freeze the
- * EXACT return today so a future edit that changes slash-typing detection or
- * skill resolution breaks a pin instead of silently drifting the composer.
+ * `activeSlashToken` drives the composer autocomplete: given the input text and
+ * the caret offset it returns the partial skill token being typed at the caret,
+ * or `null` when the caret is not inside a word-boundary `/token`.
  *
- * The `parseSlashCommand` object pins use `toStrictEqual`, NOT `toEqual`:
- * vitest's `toEqual` ignores keys whose value is `undefined`, so a stray
- * `skill: undefined` on a "no skill" result would slip past `toEqual`.
+ * `skillFromMessage` decides which skill overlay a verbatim message invokes: the
+ * first word-boundary `/name` matching a known skill, resolved to the canonical
+ * name. The `/name` text is never stripped — these pins prove detection only.
  *
  * @module
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
-import { activeSlashToken, parseSlashCommand } from "./slashCommand.ts"
+import { activeSlashToken, skillFromMessage } from "./slashCommand.ts"
 
-const activeSlashTokenCases: ReadonlyArray<readonly [string, string | null]> = [
-  ["", null],
-  ["/", ""],
-  ["/feat", "feat"],
-  ["/feature-generating", "feature-generating"],
-  ["/feature-generating ", null],
-  ["/feature-generating add x", null],
-  ["hello", null],
-  ["hello /x", null],
-  [" /x", null],
-]
-
-const knownSkills: ReadonlyArray<string> = ["feature-generating", "support"]
-
-const parseSlashCommandCases: ReadonlyArray<
-  readonly [string, ReadonlyArray<string>, { readonly skill?: string; readonly message: string }]
-> = [
-  ["/feature-generating add dark mode", knownSkills, { skill: "feature-generating", message: "add dark mode" }],
-  ["/support help", knownSkills, { skill: "support", message: "help" }],
-  ["/feature-generating", knownSkills, { skill: "feature-generating", message: "" }],
-  ["/support   ", knownSkills, { skill: "support", message: "" }],
-  ["/SUPPORT help", knownSkills, { skill: "support", message: "help" }],
-  ["/unknown do thing", knownSkills, { message: "/unknown do thing" }],
-  ["hello world", knownSkills, { message: "hello world" }],
-  ["/support", [], { message: "/support" }],
-  ["", knownSkills, { message: "" }],
+const tokenCases: ReadonlyArray<{
+  readonly text: string
+  readonly cursor: number
+  readonly expected: string | null
+}> = [
+  { text: "", cursor: 0, expected: null },
+  { text: "/", cursor: 1, expected: "" },
+  { text: "/brai", cursor: 5, expected: "brai" },
+  { text: "/brainstorm", cursor: 11, expected: "brainstorm" },
+  { text: "help me /brai", cursor: 13, expected: "brai" },
+  { text: "help me /brainstorm ", cursor: 20, expected: null },
+  { text: "help me /brainstorm", cursor: 19, expected: "brainstorm" },
+  { text: "and/or", cursor: 6, expected: null },
+  { text: "http://x", cursor: 8, expected: null },
+  { text: "hello", cursor: 5, expected: null },
+  { text: "/brai more", cursor: 5, expected: "brai" },
+  { text: "/brai more", cursor: 10, expected: null },
 ]
 
 describe("activeSlashToken", () => {
-  for (const [input, expected] of activeSlashTokenCases) {
-    it.effect(`${JSON.stringify(input)} -> ${JSON.stringify(expected)}`, () =>
-      Effect.sync(() => expect(activeSlashToken(input)).toBe(expected)))
+  for (const { text, cursor, expected } of tokenCases) {
+    it.effect(`${JSON.stringify(text)}@${cursor} -> ${JSON.stringify(expected)}`, () =>
+      Effect.sync(() => expect(activeSlashToken(text, cursor)).toBe(expected)))
   }
 })
 
-describe("parseSlashCommand", () => {
-  for (const [input, known, expected] of parseSlashCommandCases) {
-    it.effect(`${JSON.stringify(input)} with ${JSON.stringify(known)} -> ${JSON.stringify(expected)}`, () =>
-      Effect.sync(() => expect(parseSlashCommand(input, known)).toStrictEqual(expected)))
+const known: ReadonlyArray<string> = ["brainstorm", "summarize", "support"]
+
+const skillCases: ReadonlyArray<{
+  readonly message: string
+  readonly names: ReadonlyArray<string>
+  readonly expected: string | undefined
+}> = [
+  { message: "help me /brainstorm ideas about carrots", names: known, expected: "brainstorm" },
+  { message: "/support please", names: known, expected: "support" },
+  { message: "compare /brainstorm and /summarize", names: known, expected: "brainstorm" },
+  { message: "just a normal message", names: known, expected: undefined },
+  { message: "check the /unknown thing", names: known, expected: undefined },
+  { message: "see and/or maybe", names: known, expected: undefined },
+  { message: "SILLY /BRAINSTORM caps", names: known, expected: "brainstorm" },
+  { message: "path /usr/bin somewhere", names: known, expected: undefined },
+  { message: "", names: known, expected: undefined },
+  { message: "/brainstorm", names: known, expected: "brainstorm" },
+  { message: "/support anything", names: [], expected: undefined },
+]
+
+describe("skillFromMessage", () => {
+  for (const { message, names, expected } of skillCases) {
+    it.effect(`${JSON.stringify(message)} -> ${JSON.stringify(expected)}`, () =>
+      Effect.sync(() => expect(skillFromMessage(message, names)).toBe(expected)))
   }
 })
