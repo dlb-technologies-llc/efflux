@@ -840,3 +840,41 @@ A routine feature PR's verification pass — plus the user's own manual testing 
 ### Why this matters
 
 Cloudflare Container memory bills for the full **provisioned** duration, not actual use (confirmed via Cloudflare's pricing docs) — CPU bills for active use only, but memory and disk do not. Combined with a keep-warm idle window, a bursty, low-utilization workload (a chat agent's occasional Bash calls) can rack up idle-billed time far out of proportion to real work, and — because `wrangler dev` runs Containers entirely through the local Docker daemon with zero Cloudflare billing — none of this shows up during local iteration at all. The bill is the first signal, well after the fact, unless local-first is actually followed.
+
+## `CREATE TABLE IF NOT EXISTS` never migrates an existing table — a new column on an existing table needs its own `ALTER TABLE`
+
+### Symptoms (2026-07-15, feature-generating #98)
+
+Added a `stdout_excerpt` column to an `Agent` DO's `scheduled_job_runs` table (a `CREATE TABLE IF NOT EXISTS ... stdout_excerpt TEXT ...` edit to the constructor). Every DO instance whose table had already been created by an EARLIER version of the constructor — i.e. any session that had already run a scheduled job once before this column was added — immediately started throwing on every subsequent write/read referencing the column:
+
+```
+Uncaught Error: table scheduled_job_runs has no column named stdout_excerpt: SQLITE_ERROR
+```
+
+Thrown from inside the DO's own `alarm()` handler (via `#recordJobRun`), on every alarm firing for that job, repeatedly (Cloudflare retries a throwing alarm handler with backoff, so the same error logs over and over rather than failing once).
+
+### Root cause
+
+`CREATE TABLE IF NOT EXISTS` only handles the case where the table doesn't exist yet — it is a no-op against a table that already exists, columns and all. It does NOT reconcile an existing table's schema with a newer `CREATE TABLE` statement. A DO's SQLite storage is durable across the constructor running again on every future wake-up, so any table created by an OLDER version of the constructor keeps its OLDER shape forever, even after the source code (and therefore the `CREATE TABLE` statement) changes.
+
+### Fix
+
+Pair any new column added to an EXISTING table with an idempotent `ALTER TABLE ... ADD COLUMN`, tolerating both possible states: a brand-new table already has the column (from the `CREATE TABLE` statement itself), so the `ALTER TABLE` fails with `"duplicate column name"` — expected, swallow it. An existing table predating the column genuinely lacks it, so the same statement adds it for real.
+
+```ts
+static #addColumnIfMissing(ctx: DurableObjectState, table: string, column: string, sqlType: string): void {
+  try {
+    ctx.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${sqlType}`)
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
+      throw error
+    }
+  }
+}
+```
+
+Call it right after the `CREATE TABLE IF NOT EXISTS` for that table, once per new column, in the constructor.
+
+### Why this matters
+
+`CREATE TABLE IF NOT EXISTS` reads as "this makes sure the table has this shape" — it doesn't; it only makes sure the table EXISTS, in whatever shape it already had. Every future column added to an existing DO SQLite table needs this same treatment, not just this one. The bug was caught live, before merge, by actually re-running an already-exercised feature after adding a column to it — a fresh `wrangler dev`/deploy with no prior state would never have hit this, since the table would be created fresh with the new column already present. Worth remembering when a fix "works" on a clean environment: a DO's persistent storage means "clean" and "already has real state from before" are genuinely different test conditions.
