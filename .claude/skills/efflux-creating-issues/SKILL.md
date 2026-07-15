@@ -21,6 +21,7 @@ Gather from the rough statement (grep the repo when the user is vague):
 - **Type prefix** for the title: `feat` / `fix` / `chore` / `refactor` / `docs` (conventional-commit style, e.g. `fix: streaming endpoint drops done frame`).
 - **Affected paths** by exact `file:line` — e.g. `packages/shared/src/AgentApi.ts:57`. Grep to pin these down; never hand-wave "somewhere in the API".
 - **Evidence** available now: live-worker `curl` output, `bun run tail` logs, exact repro steps. Quote it verbatim in the body.
+- **A user-facing affordance described by SYMPTOM ("when it's loading it says Loading…", "when X the button goes grey") — pin the observable MOMENT with the user BEFORE letting a `grep` pick the target.** The literal UI text's location is not necessarily the moment the user means: grepping the string finds *a* spot, but a rarely-hit, sub-second, or secondary one is easily the WRONG one. Ask which moment ("which loading — the chat waiting for a reply? a panel load? which screen?") and scope the issue to THAT moment, not to wherever the string happens to live. (branded-flux-spinner: "when it's loading it says Loading… i want a spinner" was grepped to the ONE literal `Loading…` in an obscure "view last run" panel; the user actually meant the chat's wait-for-first-token, so the whole feature was rebuilt in a second location after the PR.)
 
 ### 2. Dedup
 
