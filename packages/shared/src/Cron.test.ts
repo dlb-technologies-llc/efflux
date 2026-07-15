@@ -154,3 +154,31 @@ describe("CronExpression refine", () => {
     Effect.sync(() =>
       expect(Exit.isFailure(Schema.decodeUnknownExit(CronExpression)("60 * * * *"))).toBe(true)))
 })
+
+describe("Vixie OR-rule: a *-prefixed day field is unrestricted (AND), not OR", () => {
+  it.effect("*/2 day-of-month is NOT restricted", () =>
+    Effect.sync(() => expect(parseCron("0 9 */2 * 1-5")?.domRestricted).toBe(false)))
+
+  it.effect("0 9 */2 * 1-5 fires weekdays-only: skips an odd-dated Saturday to the next weekday", () =>
+    Effect.sync(() =>
+      expect(nextCronOccurrence("0 9 */2 * 1-5", Date.UTC(2026, 0, 3, 8, 0, 0, 0))).toBe(
+        Date.UTC(2026, 0, 5, 9, 0, 0, 0),
+      )))
+
+  it.effect("both restricted (13th OR Friday) still ORs", () =>
+    Effect.sync(() => {
+      const spec = parseCron("0 0 13 * 5")
+      expect(spec?.domRestricted).toBe(true)
+      expect(spec?.dowRestricted).toBe(true)
+    }))
+})
+
+describe("parseCron is total for Object.prototype member names (no throw)", () => {
+  const prototypeNames = ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf"]
+  prototypeNames.forEach((name) => {
+    it.effect(`${name} -> undefined, never throws`, () =>
+      Effect.sync(() => expect(parseCron(name)).toBeUndefined()))
+    it.effect(`CronExpression rejects ${name} without throwing`, () =>
+      Effect.sync(() => expect(Exit.isFailure(Schema.decodeUnknownExit(CronExpression)(name))).toBe(true)))
+  })
+})

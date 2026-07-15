@@ -122,8 +122,10 @@ function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
         </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
-        <span>Schedule: <span className="text-foreground">{job.schedule}</span></span>
-        <span>Next run: {new Date(job.nextRunAt).toLocaleString()}</span>
+        <span>
+          Schedule: <span className="text-foreground">{job.schedule}</span> UTC
+        </span>
+        <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
         {job.lastRunStatus !== undefined ? (
           <button

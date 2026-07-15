@@ -1,6 +1,17 @@
 import { Schema } from "effect"
 
-/** The expanded shape of a parsed 5-field cron expression: each time field as a sorted, de-duplicated set of matching integers, plus whether each day field was restricted (raw token other than `*`), which drives the Vixie OR-rule. */
+/**
+ * Hand-rolled rather than delegating to effect's `Cron` module deliberately: effect's `Cron.parse`
+ * has no `@daily`/`@hourly` macro support (this session's tool + skill advertise them), and its
+ * `next` has unbounded impossible-date behavior, whereas this module returns a clean `undefined`
+ * within a bounded horizon for a never-occurring date. Kept pure and fully pinned so those two
+ * behaviors stay under test.
+ *
+ * The expanded shape of a parsed 5-field cron expression: each time field as a sorted,
+ * de-duplicated set of matching integers, plus whether each day field is restricted (raw token
+ * does NOT start with `*` — a bare `*` or a `*`-prefixed step field is unrestricted), which drives
+ * the Vixie OR-rule.
+ */
 export interface CronSpec {
   readonly minutes: ReadonlyArray<number>
   readonly hours: ReadonlyArray<number>
@@ -94,14 +105,17 @@ const parseField = (
  * or `undefined` when structurally invalid. Fields: `minute hour day-of-month month
  * day-of-week`, numeric only, each supporting `*`, lists (`a,b`), ranges (`a-b`), and
  * steps (`*` + `/n` or `a-b/n`). `day-of-week` accepts `0-7`; `7` normalises to `0`
- * (Sunday). `domRestricted`/`dowRestricted` record whether each day field's raw token was
- * anything other than `*`, driving the Vixie OR-rule in {@link nextCronOccurrence}. Macros:
- * `@hourly @daily @weekly @monthly @yearly @annually`. Inverted ranges such as `5-1` are
- * rejected as malformed.
+ * (Sunday). `domRestricted`/`dowRestricted` record whether each day field's raw token does NOT
+ * start with `*` (so a bare `*` and a `*`-prefixed step field are unrestricted), driving the Vixie
+ * OR-rule in {@link nextCronOccurrence}. Macros: `@hourly @daily @weekly @monthly @yearly @annually`.
+ * Inverted ranges such as `5-1` are rejected as malformed. Total — never throws (a name colliding
+ * with an `Object.prototype` member like `constructor` is looked up own-key-only, so it falls
+ * through to normal field parsing and is rejected on field count).
  */
 export const parseCron = (expr: string): CronSpec | undefined => {
   const trimmed = expr.trim()
-  const expanded = MACROS[trimmed] ?? trimmed
+  const macro = MACROS[trimmed]
+  const expanded = typeof macro === "string" ? macro : trimmed
   const fields = expanded.split(/\s+/).filter((field) => field.length > 0)
   if (fields.length !== 5) return undefined
   const [minuteToken, hourToken, domToken, monthToken, dowToken] = fields
@@ -125,13 +139,13 @@ export const parseCron = (expr: string): CronSpec | undefined => {
     daysOfMonth,
     months,
     daysOfWeek,
-    domRestricted: domToken !== "*",
-    dowRestricted: dowToken !== "*",
+    domRestricted: domToken !== undefined && !domToken.startsWith("*"),
+    dowRestricted: dowToken !== undefined && !dowToken.startsWith("*"),
   }
 }
 
 const MINUTE = 60_000
-const HORIZON_MS = 5 * 366 * 24 * 60 * MINUTE
+const HORIZON_MS = 9 * 366 * 24 * 60 * MINUTE
 
 const dayMatches = (spec: CronSpec, date: Date): boolean => {
   const domOk = spec.daysOfMonth.includes(date.getUTCDate())
@@ -144,10 +158,13 @@ const dayMatches = (spec: CronSpec, date: Date): boolean => {
 
 /**
  * Next UTC epoch-ms occurrence of `expr` strictly after `nowMs`, at minute granularity, or
- * `undefined` when the expression is invalid or has no occurrence within a ~5-year horizon
- * (an impossible date such as Feb 30). Vixie semantics: when BOTH day-of-month and
- * day-of-week are restricted, a day matches if EITHER matches; when exactly one is `*`, only
- * the other constrains the day.
+ * `undefined` when the expression is invalid or has no occurrence within a ~9-year horizon. The
+ * horizon exceeds the largest gap any valid recurring expression can have — Feb 29 across a
+ * non-leap century year (e.g. 2096 → 2104 is 8 years) — so `undefined` means a genuinely
+ * never-occurring date (an impossible `30 2` Feb-30), NOT a valid-but-sparse schedule that would
+ * wrongly be treated as exhausted. Vixie semantics: when BOTH day-of-month and day-of-week are
+ * restricted, a day matches if EITHER matches; when exactly one starts with `*`, only the other
+ * constrains the day.
  */
 export const nextCronOccurrence = (expr: string, nowMs: number): number | undefined => {
   const spec = parseCron(expr)

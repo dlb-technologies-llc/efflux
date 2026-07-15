@@ -6,6 +6,7 @@ import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
 import { decryptSecret, encryptSecret } from "./SecretsCrypto.ts"
 import type { PlainTodo } from "./Todo.ts"
+import type { CreateScheduledJobResult } from "./Tools.ts"
 
 /** Legacy pre-journal history blob shape (KV key "history"), read only by the constructor's one-shot seed migration. */
 const HistorySchema = Schema.Array(Message)
@@ -507,7 +508,7 @@ export class Agent extends DurableObject<Env> {
     description: string
     entrypointCommand: string
     schedule: string
-  }): Promise<{ id: string; nextRunAt: number } | { error: string }> {
+  }): Promise<CreateScheduledJobResult> {
     const now = Date.now()
     const nextRunAt = nextCronOccurrence(input.schedule, now)
     if (nextRunAt === undefined) {
@@ -668,8 +669,10 @@ export class Agent extends DurableObject<Env> {
    * sub-daily cron from that stale `now` can land `next_run_at` in the past → immediate re-fire →
    * back-to-back Runner containers (a billed-Container storm). Recomputing `now` guarantees `next` is
    * strictly after the reschedule instant. (2) A `undefined` next occurrence — an exhausted or
-   * impossible schedule — DELETEs the row rather than leaving `next_run_at <= now`, which would
-   * hot-loop the alarm; removing it matches `deleteScheduledJob`'s no-stale-rows intent.
+   * impossible schedule (unreachable for any expression that passed creation validation, since the
+   * ~9-year horizon exceeds the largest real recurrence gap) — DELETEs the row rather than leaving
+   * `next_run_at <= now`, which would hot-loop the alarm, and best-effort reclaims its R2 snapshot,
+   * matching `deleteScheduledJob`'s no-stale-rows / no-orphaned-object intent.
    */
   async alarm(): Promise<void> {
     const now = Date.now()
@@ -685,6 +688,11 @@ export class Agent extends DurableObject<Env> {
         const next = nextCronOccurrence(String(row.cron_expression), Date.now())
         if (next === undefined) {
           this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", row.id)
+          try {
+            await this.env.SESSIONS.delete(job.workspaceSnapshotKey)
+          } catch (error) {
+            console.error("alarm: exhausted-job snapshot delete failed (orphaned R2 object)", error)
+          }
         } else {
           this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?", next, row.id)
         }

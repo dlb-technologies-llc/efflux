@@ -46,6 +46,9 @@ export class BashRunner extends Context.Service<
 >()("api/BashRunner") {}
 
 /** Per-request handle to the DO's createScheduledJob(input) RPC, provided per-request from the resolved Agent stub (mirrors BashRunner). */
+/** Result of creating a scheduled job across the DO RPC fence: the created id + first run, or an in-band error string for a structurally-valid-but-never-occurring schedule (a `throw` would become an uncatchable defect through `Effect.promise`). Single source shared by the DO method (`Agent.createScheduledJob`), this service, and its layer (`makeScheduledJobsLayer`). */
+export type CreateScheduledJobResult = { readonly id: string; readonly nextRunAt: number } | { readonly error: string }
+
 export class ScheduledJobs extends Context.Service<
   ScheduledJobs,
   {
@@ -53,9 +56,7 @@ export class ScheduledJobs extends Context.Service<
       readonly description: string
       readonly entrypointCommand: string
       readonly schedule: string
-    }) => Effect.Effect<
-      { readonly id: string; readonly nextRunAt: number } | { readonly error: string }
-    >
+    }) => Effect.Effect<CreateScheduledJobResult>
   }
 >()("api/ScheduledJobs") {}
 
