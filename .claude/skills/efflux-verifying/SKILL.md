@@ -52,6 +52,8 @@ Only after the local pass is green, do the deployed pass:
 
 Run every step; report a per-check pass/fail table at the end.
 
+**A feature whose success is an external side effect (an API call, a notification, a scheduled action, anything reaching outside this Worker) is only verified once the ACTUAL RESULT is captured and inspected — never from an exit code, a `200`, or an indirect corroborating check alone.** A process can exit 0 while its own HTTP call returned a non-2xx error body it never checked (`fetch(url).then(r => r.json())` happily parses and returns an error JSON without throwing) — that looks identical to real success from the outside. Confirming the mechanism ran (a `wrangler tail` line, a `lastRunStatus: "ok"`) is necessary but not sufficient; if the plan doesn't already capture the real output somewhere inspectable, build that capture as part of the feature, not as an afterthought once someone asks "but where do I see it?" (feature-generating #98: a scheduled job's real output was never captured or visible anywhere, so its first live-verification pass was declared "confirmed working" from an exit code plus an UNRELATED independent API call made separately — not from what that specific run actually printed. Once output capture was added, the exact same command shape was shown to have silently failed with a 401 the whole time.)
+
 ### 0. Validate the API key first
 
 ```bash
@@ -68,6 +70,8 @@ bun run deploy
 ```
 
 If a hook/policy blocks the `deploy` package script, run its exact steps directly instead: `bun run build && bun scripts/upload-skills.ts && bunx wrangler deploy`. Do NOT stop to ask the user to deploy — that raw-wrangler fallback IS the sanctioned agent path when the package script is hook-blocked; run it directly.
+
+**Exception: if the hook's own block MESSAGE says something like "deploy manually" (not just a generic block), that's a deliberate policy signal, not an incidental one — respect it and ask, don't route around it with the raw-wrangler fallback.** When asking the user to run the deploy themselves, relay the FULL prerequisite command sequence, not just `bun run deploy` — specifically `set -a; . .dev.vars; set +a` (or equivalent) BEFORE the deploy command, since `VITE_API_TOKEN` is read from the process env at build time (see the New secret / client build-time token note below) and a deploy run without it silently ships an empty-token FE bundle. (feature-generating #98: the deploy was correctly handed to the user after a "deploy manually" hook block, but the handoff message only said "run `bun run deploy`" — the resulting deploy shipped `VITE_API_TOKEN=""`, causing a real production 401 outage across every panel, reported by the user.)
 
 Always use the `deploy` **package script** — its `predeploy` hook runs `bun run build` (frontend + API typecheck) and `bun scripts/upload-skills.ts`. Bare `wrangler deploy` skips the hook and can ship a stale `apps/web/dist`. `bun run deploy` needs a local Docker daemon (it builds the Sandbox container image).
 
