@@ -3,10 +3,9 @@
  * file/search ops (all on the same exec seam as Bash) plus Worker-side web_fetch.
  */
 import {
+  CronExpression,
   DEFAULT_TOOL_RULES,
-  HourUtc,
   JournalTodoWrite,
-  MinuteUtc,
   resolveRule,
   type RulesMap,
   SafeName,
@@ -47,15 +46,17 @@ export class BashRunner extends Context.Service<
 >()("api/BashRunner") {}
 
 /** Per-request handle to the DO's createScheduledJob(input) RPC, provided per-request from the resolved Agent stub (mirrors BashRunner). */
+/** Result of creating a scheduled job across the DO RPC fence: the created id + first run, or an in-band error string for a structurally-valid-but-never-occurring schedule (a `throw` would become an uncatchable defect through `Effect.promise`). Single source shared by the DO method (`Agent.createScheduledJob`), this service, and its layer (`makeScheduledJobsLayer`). */
+export type CreateScheduledJobResult = { readonly id: string; readonly nextRunAt: number } | { readonly error: string }
+
 export class ScheduledJobs extends Context.Service<
   ScheduledJobs,
   {
     readonly create: (input: {
       readonly description: string
       readonly entrypointCommand: string
-      readonly runAtHourUtc: number
-      readonly runAtMinuteUtc: number
-    }) => Effect.Effect<{ readonly id: string; readonly nextRunAt: number }>
+      readonly schedule: string
+    }) => Effect.Effect<CreateScheduledJobResult>
   }
 >()("api/ScheduledJobs") {}
 
@@ -381,7 +382,7 @@ export const RequestSecretTool = Tool.make("request_secret", {
 
 export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
   description:
-    "Schedule a recurring daily job that runs a shell command in this session's sandbox at a fixed UTC time. Always requires human approval before the job is created.",
+    "Schedule a recurring job that runs a shell command in this session's sandbox on a UTC cron schedule. Always requires human approval before the job is created.",
   parameters: Schema.Struct({
     description: Schema.String.annotate({
       description: "Human-readable description of what the job does.",
@@ -389,11 +390,9 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
     entrypointCommand: Schema.String.annotate({
       description: "Shell command to run when the job fires.",
     }),
-    runAtHourUtc: HourUtc.annotate({
-      description: "Hour of day (0-23, UTC) the job runs at.",
-    }),
-    runAtMinuteUtc: MinuteUtc.annotate({
-      description: "Minute of the hour (0-59, UTC) the job runs at.",
+    schedule: CronExpression.annotate({
+      description:
+        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names.",
     }),
   }),
   success: Schema.String,
@@ -582,14 +581,13 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
-        runAtHourUtc: params.runAtHourUtc,
-        runAtMinuteUtc: params.runAtMinuteUtc,
+        schedule: params.schedule,
       }),
     ).pipe(
-      Effect.as(
-        `Scheduled — runs daily at ${String(params.runAtHourUtc).padStart(2, "0")}:${
-          String(params.runAtMinuteUtc).padStart(2, "0")
-        } UTC`,
+      Effect.map((result) =>
+        "error" in result
+          ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
+          : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
       ),
     ),
 })

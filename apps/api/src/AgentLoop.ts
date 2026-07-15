@@ -30,7 +30,7 @@ import { makeSecretsStoreLayer } from "./Secrets.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import { loadRoleBody, loadSkillBody } from "./Skills.ts"
 import { makeTodoStoreLayer } from "./Todo.ts"
-import { ApprovalRules, BashRunner, ScheduledJobs } from "./Tools.ts"
+import { ApprovalRules, BashRunner, type CreateScheduledJobResult, ScheduledJobs } from "./Tools.ts"
 
 /**
  * Hop cap for the manual multi-hop tool loop. Effect AI's
@@ -130,7 +130,7 @@ export const makeScheduledJobsLayer = (
   Layer.succeed(
     ScheduledJobs,
     ScheduledJobs.of({
-      create: (input) => Effect.promise(() => agent.createScheduledJob(input)),
+      create: (input) => Effect.promise<CreateScheduledJobResult>(() => agent.createScheduledJob(input)),
     }),
   )
 
