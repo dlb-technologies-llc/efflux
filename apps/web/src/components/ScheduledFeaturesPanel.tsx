@@ -17,6 +17,7 @@ import { deleteScheduledJobFn, getLastRunFn, scheduledJobsAtom } from "../atoms/
 import { failureMessage } from "../errors.ts"
 import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
+import { Spinner } from "./Spinner.tsx"
 
 /**
  * The expanded "view last run" body for one job: fetches lazily on first
@@ -48,7 +49,11 @@ function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; read
   }, [runFetch, session, jobId])
 
   if (state._tag === "loading") {
-    return <p className="px-1 text-xs text-muted-foreground">Loading…</p>
+    return (
+      <div className="px-1">
+        <Spinner label="Loading last run" />
+      </div>
+    )
   }
   if (state._tag === "error") {
     return <p className="px-1 text-xs text-destructive">{state.message}</p>
