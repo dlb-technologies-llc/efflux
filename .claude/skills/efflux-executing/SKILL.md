@@ -65,7 +65,7 @@ Task IDs are unique; no two tasks in the same wave touch the same file; every de
    cp .dev.vars .claude/worktrees/<plan-name>/.dev.vars
    comm -23 <(grep -oE '^[A-Z_]+' .dev.vars.example | sort -u) <(grep -oE '^[A-Z_]+' .claude/worktrees/<plan-name>/.dev.vars | sort -u)
    ```
-   If the main checkout has no `.dev.vars`, OR the `comm` prints any key (present in `.dev.vars.example` but missing locally — the compaction-todo #76 run hit exactly this: `API_TOKEN`, added with auth in #73, was absent from a pre-#73 `.dev.vars` and reddened the worktree typecheck), STOP and have the user add it from `.dev.vars.example` — existence alone is insufficient; `.dev.vars` must be COMPLETE. Don't proceed to a guaranteed-broken typecheck.
+   If the main checkout has no `.dev.vars`, OR the `comm` prints any key (present in `.dev.vars.example` but missing locally — the compaction-todo #76 run hit exactly this: `API_TOKEN`, added with auth in #73, was absent from a pre-#73 `.dev.vars` and reddened the worktree typecheck), STOP and have the user add it from `.dev.vars.example` — existence alone is insufficient; `.dev.vars` must be COMPLETE. Don't proceed to a guaranteed-broken typecheck. **Value-agnostic vs external-value keys:** a key whose VALUE doesn't matter — local crypto material like `SECRETS_ENCRYPTION_KEY`, where any consistent non-empty string works (it's hashed into an AES key) — can be AUTO-GENERATED rather than blocking on the user: offer to write `<KEY>=<generated>` into BOTH the main and worktree `.dev.vars` (both gitignored), which also unbreaks the user's own local dev. Reserve the STOP-and-ask for keys that need a real EXTERNAL value (`OPENROUTER_API_KEY`, `API_TOKEN`). (delete-rotate-secret #107: `SECRETS_ENCRYPTION_KEY` — added with the secrets feature but absent from the user's stale `.dev.vars` — reddened the worktree typecheck; auto-generating it into both files unblocked the run in one step and fixed the main checkout too.)
 6. **Init the pinned Effect submodule** — a fresh worktree has an empty `.claude/effect-smol`, which silently breaks the Effect-API-truth lookup:
    ```bash
    git -C .claude/worktrees/<plan-name> submodule update --init .claude/effect-smol
@@ -145,7 +145,7 @@ Also reject prose `//` comments — house style is JSDoc-on-declarations only (`
 
 **5. Commit the wave:**
 
-Before any `git -C <WORKTREE_PATH> add -A`, scan `git -C <WORKTREE_PATH> status --porcelain` for unexpected untracked directories (embedded git repos, generated artifacts) — an embedded repo once got committed this way. Then:
+Before any `git -C <WORKTREE_PATH> add -A`, scan `git -C <WORKTREE_PATH> status --porcelain` for unexpected untracked directories (embedded git repos, generated artifacts) — an embedded repo once got committed this way. **Also watch for a spuriously-dirtied `bun.lock`:** if `bun install` (Step 3) touched it with ONLY a metadata line (`configVersion`/`lockfileVersion`, written by a newer local Bun) and NO dependency change, revert it (`git -C <WORKTREE_PATH> checkout HEAD -- bun.lock`) to keep the diff staging-identical — `--frozen-lockfile` never rewrites the lockfile, so the metadata line's absence is safe, and committing it adds unexplained churn to a feature PR. Commit `bun.lock` ONLY on a real dep change. (delete-rotate-secret #107.) Then:
 
 Immediately before every commit, confirm `git -C <WORKTREE_PATH> branch --show-current` prints the plan branch — the one-line guard against the wrong-branch trap. Then:
 
