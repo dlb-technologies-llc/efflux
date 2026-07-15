@@ -10,12 +10,7 @@ export function MessageList({ messages }: { messages: ReadonlyArray<ChatMessage>
   return (
     <div className="flex flex-col gap-4">
       {messages.map((message, index) => (
-        <Message
-          key={`${message.role}-${index}`}
-          variant={message.role}
-          content={message.content}
-          {...(message.skill !== undefined ? { skill: message.skill } : {})}
-        />
+        <Message key={`${message.role}-${index}`} variant={message.role} content={message.content} />
       ))}
     </div>
   )

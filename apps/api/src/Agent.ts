@@ -338,14 +338,14 @@ export class Agent extends DurableObject<Env> {
         "SELECT seq, payload FROM journal WHERE type IN ('user-message', 'assistant-text') ORDER BY seq",
       )
       .toArray()
-    type Turn = { userContent: string | undefined; userSkill: string | undefined; texts: Array<string> }
+    type Turn = { userContent: string | undefined; texts: Array<string> }
     const turns = new Map<number, Turn>()
     const order: Array<number> = []
     for (const row of rows) {
       const decoded = decodeEventPayloadSync(JSON.parse(String(row.payload)))
       if (decoded._tag === "user-message") {
         const key = Number(row.seq)
-        turns.set(key, { userContent: decoded.content, userSkill: decoded.skill, texts: [] })
+        turns.set(key, { userContent: decoded.content, texts: [] })
         order.push(key)
       } else if (decoded._tag === "assistant-text") {
         const existing = turns.get(decoded.turn)
@@ -354,7 +354,6 @@ export class Agent extends DurableObject<Env> {
         } else {
           turns.set(decoded.turn, {
             userContent: undefined,
-            userSkill: undefined,
             texts: [decoded.text],
           })
           order.push(decoded.turn)
@@ -382,11 +381,7 @@ export class Agent extends DurableObject<Env> {
       const turn = turns.get(key)
       if (turn === undefined) continue
       if (turn.userContent !== undefined) {
-        out.push({
-          role: "user",
-          content: turn.userContent,
-          ...(turn.userSkill !== undefined ? { skill: turn.userSkill } : {}),
-        })
+        out.push({ role: "user", content: turn.userContent })
       }
       const text = turn.texts.join("")
       if (text.length > 0) out.push({ role: "assistant", content: text })

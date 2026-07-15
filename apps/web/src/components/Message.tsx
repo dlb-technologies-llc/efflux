@@ -5,30 +5,18 @@ import { ToolCallCard, type ToolCallView } from "./ToolCallCard.tsx"
 export function Message({
   variant,
   content,
-  skill,
   streaming,
   tools,
 }: {
   variant: "user" | "assistant"
   content: string
-  skill?: string
   streaming?: boolean
   tools?: ReadonlyArray<ToolCallView>
 }) {
   if (variant === "user") {
     return (
-      <div className="self-end flex flex-col items-end gap-1 max-w-[85%]">
-        {skill !== undefined ? (
-          <span
-            className="font-mono text-[0.7rem] leading-none px-1.5 py-1 rounded border border-accent-line bg-accent-ghost text-accent-bright"
-            title={`Invoked with the ${skill} skill`}
-          >
-            /{skill}
-          </span>
-        ) : null}
-        <div className="bg-accent-ghost border border-accent-line rounded-xl rounded-br-sm px-3.5 py-2.5 text-foreground whitespace-pre-wrap">
-          {content}
-        </div>
+      <div className="self-end max-w-[85%] bg-accent-ghost border border-accent-line rounded-xl rounded-br-sm px-3.5 py-2.5 text-foreground whitespace-pre-wrap">
+        {content}
       </div>
     )
   }

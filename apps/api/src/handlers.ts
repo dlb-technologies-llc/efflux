@@ -90,9 +90,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const history = yield* Effect.promise(() => agent.history())
         return new HistoryResponse({
-          history: history.map(
-            (m) => new Message({ role: m.role, content: m.content, ...(m.skill !== undefined ? { skill: m.skill } : {}) }),
-          ),
+          history: history.map((m) => new Message({ role: m.role, content: m.content })),
         })
       }),
     )

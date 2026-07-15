@@ -28,15 +28,14 @@ export const ApprovalHandle = Schema.Struct({
   toolCallId: Schema.String,
 })
 
-/** A single chat message (user or assistant). `skill` is the overlay a user turn was invoked with (via a `/skill` slash command or the persistent picker); present only on user messages that carried one, so the transcript can show which skill shaped the turn. */
+/** A single chat message (user or assistant). */
 export class Message extends Schema.Class<Message>("Message")({
   role: Schema.Literals(["user", "assistant"]),
   content: Schema.String,
-  skill: Schema.optionalKey(SafeName),
 }) {}
 
-/** RPC-safe plain message shape — `Pick<Message, …>` yields `{ role: "user"|"assistant"; content: string; skill?: string }`, which survives the DO RPC type fence where `typeof Message.Encoded` would widen `role` back to `string`. */
-export type PlainMessage = Pick<Message, "role" | "content" | "skill">
+/** RPC-safe plain message shape — `Pick<Message, …>` yields `{ role: "user"|"assistant"; content: string }`, which survives the DO RPC type fence where `typeof Message.Encoded` would widen `role` back to `string`. */
+export type PlainMessage = Pick<Message, "role" | "content">
 
 /** Max length for a model id (forwarded to OpenRouter) — the single source shared by every model-id cap across the contract. */
 export const MODEL_ID_MAX_LENGTH = 128

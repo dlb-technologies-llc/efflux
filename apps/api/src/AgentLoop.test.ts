@@ -139,24 +139,6 @@ const composeCases: ReadonlyArray<{
       { role: "user", content: "MSG" },
     ],
   },
-  {
-    name: "history skill is stripped from the model payload (projected to role+content)",
-    input: {
-      skillBody: "SKILL",
-      roleBody: undefined,
-      history: [
-        { role: "user", content: "h1", skill: "brainstorm" },
-        { role: "assistant", content: "h2" },
-      ],
-      message: "MSG",
-    },
-    expected: [
-      { role: "system", content: "SKILL" },
-      { role: "user", content: "h1" },
-      { role: "assistant", content: "h2" },
-      { role: "user", content: "MSG" },
-    ],
-  },
 ]
 
 describe("composeMessages", () => {
