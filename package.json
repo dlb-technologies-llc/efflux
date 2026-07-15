@@ -15,6 +15,7 @@
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "dev": "wrangler dev",
+    "dev:local": "bun scripts/dev-preflight.ts && bun scripts/upload-skills.ts --local && wrangler dev",
     "cf-typegen": "wrangler types",
     "agent": "bun scripts/agent.ts",
     "openai-smoke": "bun scripts/openai-smoke.ts",
