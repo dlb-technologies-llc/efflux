@@ -33,9 +33,14 @@ interface ApprovalCardProps {
   readonly approval: PendingApproval
 }
 
-/** The parked tool call's params in the shared mono well; renders nothing when the originating `tool-call` carried no params. */
+/** True when a parked tool call carried params worth showing — anything but `undefined` or an empty params object (e.g. `list_skills`, which takes none). Shared by `CommandWell` and the approve-dialog copy so the "parameters below" wording never appears without a params well. */
+const hasVisibleParams = (params: unknown): boolean =>
+  params !== undefined &&
+  !(typeof params === "object" && params !== null && Object.keys(params).length === 0)
+
+/** The parked tool call's params in the shared mono well; renders nothing when the tool call carried no visible params, so a paramless tool never shows a bare `{}`. */
 function CommandWell({ params }: { params: unknown }) {
-  if (params === undefined) return null
+  if (!hasVisibleParams(params)) return null
   return (
     <pre className="font-mono text-sm bg-bg-subtle border border-border rounded px-3 py-2 overflow-x-auto">
       {prettyParams(params)}
@@ -181,7 +186,7 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Approve {toolName}?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This runs the following in the sandbox. Confirm to proceed.
+                    Confirm to run this {toolName} call{hasVisibleParams(approval.toolParams) ? " with the parameters below" : ""}.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <CommandWell params={approval.toolParams} />
