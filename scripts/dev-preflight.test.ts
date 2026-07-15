@@ -25,4 +25,20 @@ describe("validateDevVars", () => {
   it("ignores comments and blank lines", () => {
     expect(validateDevVars("# comment\n\n" + good).errors).toEqual([])
   })
+  it("strips an inline # comment so a commented VITE line still matches API_TOKEN", () => {
+    const r = validateDevVars("API_TOKEN=dev-local-token\nVITE_API_TOKEN=dev-local-token # must equal API_TOKEN\nOPENROUTER_API_KEY=k\nSECRETS_ENCRYPTION_KEY=s\n")
+    expect(r.errors).toEqual([])
+  })
+  it("flags a present-but-empty required value", () => {
+    const r = validateDevVars("API_TOKEN=\nVITE_API_TOKEN=\nOPENROUTER_API_KEY=k\nSECRETS_ENCRYPTION_KEY=s\n")
+    expect(r.errors.some((e) => e.includes("API_TOKEN is missing or empty"))).toBe(true)
+  })
+  it("does not strip an unbalanced trailing quote (real mismatch stays visible)", () => {
+    const r = validateDevVars("API_TOKEN=abc\"\nVITE_API_TOKEN=abc\nOPENROUTER_API_KEY=k\nSECRETS_ENCRYPTION_KEY=s\n")
+    expect(r.errors.some((e) => e.includes("must equal API_TOKEN"))).toBe(true)
+  })
+  it("strips balanced surrounding quotes", () => {
+    const r = validateDevVars("API_TOKEN=\"abc\"\nVITE_API_TOKEN=abc\nOPENROUTER_API_KEY=k\nSECRETS_ENCRYPTION_KEY=s\n")
+    expect(r.errors).toEqual([])
+  })
 })

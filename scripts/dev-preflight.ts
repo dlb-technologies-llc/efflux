@@ -28,13 +28,14 @@ export const validateDevVars = (raw: string): DevVarsCheck => {
     const eq = trimmed.indexOf("=")
     if (eq === -1) continue
     const key = trimmed.slice(0, eq).trim()
-    const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "")
+    const value = trimmed.slice(eq + 1).trim().replace(/\s+#.*$/, "").trim().replace(/^(["'])([\s\S]*)\1$/, "$2")
     counts.set(key, (counts.get(key) ?? 0) + 1)
     values[key] = value
   }
   const errors: Array<string> = []
   for (const key of REQUIRED_KEYS) {
-    if (values[key] === undefined) errors.push(`${key} is missing from .dev.vars`)
+    const value = values[key]
+    if (value === undefined || value === "") errors.push(`${key} is missing or empty in .dev.vars`)
   }
   for (const [key, count] of counts) {
     if (count > 1) errors.push(`${key} appears ${count}× in .dev.vars — remove the duplicate (ambiguous which value the worker uses)`)
@@ -53,18 +54,18 @@ export const validateDevVars = (raw: string): DevVarsCheck => {
 /** Repo root, anchored to this script's dir (`<repoRoot>/scripts/`), so it works from any invocation cwd. */
 const repoRoot = path.dirname(import.meta.dirname)
 
-/** Fail unless SOME emitted `index-*.js` bundle contains the token — the definitive check that the empty-VITE_API_TOKEN trap did not recur. Scans ALL matches (not just the first) so a future Vite chunk-split of `runtime.ts` can't false-fail it. */
+/** Fail unless SOME emitted `.js` bundle contains the token — the definitive check that the empty-VITE_API_TOKEN trap did not recur. Scans EVERY emitted `.js` (not just `index-*.js`) so a future Vite chunk-split of `runtime.ts` into a vendor/other chunk can't false-fail it. */
 const assertTokenInlined = (token: string): Effect.Effect<void, Error> =>
   Effect.gen(function*() {
     const dir = path.join(repoRoot, "apps", "web", "dist", "assets")
     const files = yield* Effect.tryPromise({ try: () => readdir(dir), catch: (e) => new Error(`cannot read ${dir}: ${String(e)}`) })
-    const bundles = files.filter((f) => f.startsWith("index-") && f.endsWith(".js"))
+    const bundles = files.filter((f) => f.endsWith(".js"))
     if (bundles.length === 0) return yield* Effect.fail(new Error("no FE bundle emitted under apps/web/dist/assets"))
     for (const bundle of bundles) {
       const contents = yield* Effect.tryPromise({ try: () => readFile(path.join(dir, bundle), "utf8"), catch: (e) => new Error(String(e)) })
       if (contents.includes(token)) return
     }
-    return yield* Effect.fail(new Error("FE build did not inline VITE_API_TOKEN into any index-*.js bundle — the bundle would 401 on every call"))
+    return yield* Effect.fail(new Error("FE build did not inline VITE_API_TOKEN into any emitted .js bundle — the bundle would 401 on every call"))
   })
 
 const main = Effect.gen(function*() {
@@ -77,6 +78,7 @@ const main = Effect.gen(function*() {
   if (token === undefined) return yield* Effect.fail(new Error("VITE_API_TOKEN missing after validation"))
   yield* Console.log("preflight: .dev.vars OK — building FE with VITE_API_TOKEN inlined…")
   const proc = Bun.spawnSync(["bun", "run", "--filter", "@efflux/web", "build"], {
+    cwd: repoRoot,
     env: { ...process.env, VITE_API_TOKEN: token },
     stdout: "inherit",
     stderr: "inherit",
