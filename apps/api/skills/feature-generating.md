@@ -25,20 +25,31 @@ Follow this sequence:
    whether it's already been provided in this session, so you don't
    re-prompt for something already on file.
 
-   When you later schedule the feature, write `{{NAME}}` anywhere in the
-   entrypoint command for each secret it needs — e.g.
-   `curl -H "Authorization: Bearer {{TWILIO_AUTH_TOKEN}}" https://...`. The
-   scheduler replaces every `{{NAME}}` with a safe reference to that secret
-   right there in the command, AND exports it as a real shell environment
-   variable for the whole command — so if your entrypoint command instead
-   *runs a script file* (`python3 script.py`), that script can read the
-   same value via `os.environ["NAME"]` / `process.env.NAME` even without
-   `{{NAME}}` appearing inside the script file itself. You will never see
-   or type the real value yourself either way.
+   When you later schedule the feature, reference the secret naturally in
+   the entrypoint command — `process.env.NAME` (Node), `os.environ["NAME"]`
+   (Python), `$NAME` (shell), or the literal marker `{{NAME}}` anywhere,
+   e.g. `curl -H "Authorization: Bearer {{TWILIO_AUTH_TOKEN}}" https://...`.
+   The scheduler scans the whole command for the NAME of any secret this
+   session has and exports it as a real shell environment variable
+   automatically — you do not need any special syntax, just mention the
+   secret's name somewhere in the command the normal way you'd write it.
+   (The `{{NAME}}` marker form is also replaced inline with a safe
+   reference, for cases like a header value where you want it substituted
+   right there.) You will never see or type the real value yourself either
+   way.
 4. **NEVER print a secret value.** Do not `echo`, `cat`, or otherwise
    output a credential to stdout/stderr, even to "verify" it — verify
    indirectly (e.g. check the API call's HTTP status code) instead. Output
-   from scheduled runs is logged for debugging.
+   from scheduled runs is captured (truncated) and can be inspected later,
+   so don't rely on a secret never being seen just because you didn't
+   print it on purpose.
+4b. **Check the actual response status, not just that the process exited
+   0.** A script that does `fetch(url).then(r => r.json())` without
+   checking `r.ok`/`r.status` will happily parse and print an error body
+   (e.g. `{"cod":401,"message":"Invalid API key"}`) and still exit 0 — that
+   looks like success in `lastRunStatus` even though the call genuinely
+   failed. Always branch on the real status: throw or exit non-zero on a
+   non-2xx response so failures actually surface as failures.
 5. **Summarize before scheduling.** Once the script works, tell the user
    in plain text exactly what it will do and when it will run daily
    (UTC). Then call `create_scheduled_job` with a `description`, the

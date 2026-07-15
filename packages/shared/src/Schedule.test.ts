@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { ScheduledJobListResponse, ScheduledJobSummary } from "./Schedule.ts"
+import { ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Effect.gen(function* () {
@@ -99,6 +99,51 @@ describe("ScheduledJobListResponse codec", () => {
             approvedAt: 1_699_100_000_000,
           }),
         ],
+      }),
+    ))
+})
+
+describe("ScheduledJobRunDetail codec", () => {
+  it.effect("pins a successful run with both streams present", () =>
+    assertStable(
+      ScheduledJobRunDetail,
+      new ScheduledJobRunDetail({
+        startedAt: 1_700_000_000_000,
+        finishedAt: 1_700_000_001_500,
+        exitCode: 0,
+        stdoutExcerpt: '{"weather":"clear"}',
+        stderrExcerpt: "",
+      }),
+    ))
+
+  it.effect("pins a failed run (negative sentinel exit code)", () =>
+    assertStable(
+      ScheduledJobRunDetail,
+      new ScheduledJobRunDetail({
+        startedAt: 1_700_000_000_000,
+        finishedAt: 1_700_000_000_800,
+        exitCode: -1,
+        stdoutExcerpt: "",
+        stderrExcerpt: "runner restore failed 500",
+      }),
+    ))
+})
+
+describe("ScheduledJobRunResponse codec", () => {
+  it.effect("pins a job that hasn't run yet (null run)", () =>
+    assertStable(ScheduledJobRunResponse, new ScheduledJobRunResponse({ run: null })))
+
+  it.effect("pins a job with a recorded run", () =>
+    assertStable(
+      ScheduledJobRunResponse,
+      new ScheduledJobRunResponse({
+        run: new ScheduledJobRunDetail({
+          startedAt: 1_700_000_000_000,
+          finishedAt: 1_700_000_001_500,
+          exitCode: 0,
+          stdoutExcerpt: "ok",
+          stderrExcerpt: "",
+        }),
       }),
     ))
 })

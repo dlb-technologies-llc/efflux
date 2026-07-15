@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { ScheduledJobSummary } from "@efflux/shared"
+import type { ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
 import { Exit } from "effect"
 import { CalendarClock } from "lucide-react"
 import * as React from "react"
@@ -13,10 +13,76 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { deleteScheduledJobFn, scheduledJobsAtom } from "../atoms/schedule.ts"
+import { deleteScheduledJobFn, getLastRunFn, scheduledJobsAtom } from "../atoms/schedule.ts"
 import { failureMessage } from "../errors.ts"
 import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
+
+/**
+ * The expanded "view last run" body for one job: fetches lazily on first
+ * expand via `getLastRunFn`, then renders the captured stdout/stderr — a
+ * run's actual output is otherwise generated and immediately discarded,
+ * visible nowhere else.
+ */
+function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; readonly jobId: string }) {
+  const runFetch = useAtomSet(getLastRunFn, { mode: "promiseExit" })
+  const [state, setState] = React.useState<
+    | { readonly _tag: "loading" }
+    | { readonly _tag: "error"; readonly message: string }
+    | { readonly _tag: "loaded"; readonly response: ScheduledJobRunResponse }
+  >({ _tag: "loading" })
+
+  React.useEffect(() => {
+    let cancelled = false
+    setState({ _tag: "loading" })
+    void runFetch({ ...session, jobId }).then((exit) => {
+      if (cancelled) return
+      Exit.match(exit, {
+        onFailure: (cause) => setState({ _tag: "error", message: failureMessage(cause, "Failed to load last run") }),
+        onSuccess: (response) => setState({ _tag: "loaded", response }),
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [runFetch, session, jobId])
+
+  if (state._tag === "loading") {
+    return <p className="px-1 text-xs text-muted-foreground">Loading…</p>
+  }
+  if (state._tag === "error") {
+    return <p className="px-1 text-xs text-destructive">{state.message}</p>
+  }
+  const run = state.response.run
+  if (run === null) {
+    return <p className="px-1 text-xs text-muted-foreground">Hasn't run yet.</p>
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-subtle p-2 font-mono text-xs">
+      <div className="flex flex-wrap gap-3 text-muted-foreground">
+        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
+        <span>Exit code: {run.exitCode}</span>
+      </div>
+      {run.stdoutExcerpt.length > 0 ? (
+        <div>
+          <div className="text-muted-foreground">stdout</div>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words">{run.stdoutExcerpt}</pre>
+        </div>
+      ) : null}
+      {run.stderrExcerpt.length > 0 ? (
+        <div>
+          <div className="text-muted-foreground">stderr</div>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-destructive">
+            {run.stderrExcerpt}
+          </pre>
+        </div>
+      ) : null}
+      {run.stdoutExcerpt.length === 0 && run.stderrExcerpt.length === 0 ? (
+        <p className="text-muted-foreground">(no output captured)</p>
+      ) : null}
+    </div>
+  )
+}
 
 interface ScheduledJobRowProps {
   readonly session: SessionArgs
@@ -34,6 +100,7 @@ function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
   const runDelete = useAtomSet(deleteScheduledJobFn, { mode: "promiseExit" })
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [expanded, setExpanded] = React.useState(false)
 
   const handleDelete = async () => {
     setBusy(true)
@@ -57,7 +124,17 @@ function ScheduledJobRow({ session, job, onDeleted }: ScheduledJobRowProps) {
       <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
         <span>Next run: {new Date(job.nextRunAt).toLocaleString()}</span>
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
+        {job.lastRunStatus !== undefined ? (
+          <button
+            type="button"
+            className="text-accent underline-offset-2 hover:underline"
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? "Hide last run" : "View last run"}
+          </button>
+        ) : null}
       </div>
+      {expanded ? <LastRunDetail session={session} jobId={job.id} /> : null}
       {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
     </li>
   )

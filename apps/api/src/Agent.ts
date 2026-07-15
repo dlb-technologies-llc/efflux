@@ -84,9 +84,11 @@ export class Agent extends DurableObject<Env> {
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
         exit_code INTEGER,
+        stdout_excerpt TEXT,
         stderr_excerpt TEXT
       )`,
     )
+    Agent.#addColumnIfMissing(ctx, "scheduled_job_runs", "stdout_excerpt", "TEXT")
     ctx.blockConcurrencyWhile(async () => {
       const count = ctx.storage.sql
         .exec("SELECT COUNT(*) AS n FROM journal")
@@ -126,6 +128,25 @@ export class Agent extends DurableObject<Env> {
         )
       }
     })
+  }
+
+  /**
+   * Add a column to an already-existing table, tolerating both possible states of a fresh
+   * `CREATE TABLE IF NOT EXISTS` call: a brand-new table already has the column (declared
+   * inline), so `ALTER TABLE ADD COLUMN` fails with "duplicate column name" — expected,
+   * swallowed. An existing table predating the column genuinely lacks it, so the same
+   * statement adds it for real. Without this, every DO whose table was created before a
+   * later column was introduced throws `SQLITE_ERROR: no such column` on every read/write
+   * that references it — `CREATE TABLE IF NOT EXISTS` alone never migrates an existing table.
+   */
+  static #addColumnIfMissing(ctx: DurableObjectState, table: string, column: string, sqlType: string): void {
+    try {
+      ctx.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${sqlType}`)
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
+        throw error
+      }
+    }
   }
 
   /** Insert one already-validated Encoded-JSON payload verbatim; returns the assigned monotonic seq. */
@@ -795,26 +816,35 @@ export class Agent extends DurableObject<Env> {
   }
 
   /**
-   * Build the actual command sent to the Runner: one `export NAME=<quoted value>;` per `{{NAME}}`
-   * reference found in the template, followed by the template with every `{{NAME}}` token replaced
-   * by a bare `$NAME` shell-variable reference — so a model that writes `{{NAME}}` directly where it
-   * wants the value (e.g. inside an already-quoted header string) gets a working substitution, not an
-   * inert literal token left in the command. The raw secret value itself only ever appears in the
-   * `export` statement, shell-quoted; the substituted `$NAME` expands from that exported variable at
-   * execution time, never re-embedding the raw value as a second literal copy. Missing secrets are
-   * silently skipped (no export, marker left as `$NAME` which then expands empty) rather than
-   * throwing mid-schedule.
+   * Build the actual command sent to the Runner: one `export NAME=<quoted value>;` for every stored
+   * secret whose name appears ANYWHERE in the template (word-boundary match against the raw text —
+   * covers `process.env.NAME`, `$NAME`, a bare `NAME` in a curl header, and the `{{NAME}}` marker
+   * alike), followed by the template with every `{{NAME}}` token replaced by a bare `$NAME`
+   * shell-variable reference so an inline marker (e.g. inside an already-quoted header string) gets a
+   * working substitution rather than an inert literal token. Detection deliberately does NOT require
+   * the `{{NAME}}` marker specifically — an earlier version only exported a secret when the command
+   * contained that exact marker, so a script written the idiomatic way (`process.env.NAME`, with no
+   * marker anywhere) silently never got the variable exported and failed with an undefined key. The
+   * raw secret value itself only ever appears in the `export` statement, shell-quoted; `$NAME`
+   * expands from that exported variable at execution time, never re-embedding the raw value as a
+   * second literal copy. A secret the session doesn't have is silently skipped (no export) rather
+   * than throwing mid-schedule.
    */
   async #buildScheduledCommand(template: string): Promise<string> {
-    const names = [...template.matchAll(SECRET_REF_PATTERN)].map((m) => m[1])
+    const secretNames = await this.listSecretNames()
     const exports: Array<string> = []
-    for (const name of names) {
-      if (name === undefined) continue
+    for (const { name } of secretNames) {
+      if (!new RegExp(`\\b${Agent.#escapeRegExp(name)}\\b`).test(template)) continue
       const value = await this.#getSecretValue(name)
       if (value !== undefined) exports.push(`export ${name}=${shellQuote(value)};`)
     }
     const substituted = template.replace(SECRET_REF_PATTERN, (_match, name: string) => `$${name}`)
     return [...exports, substituted].join(" ")
+  }
+
+  /** Escape regex metacharacters so a secret name (bounded to `SafeName`'s alphanumeric/hyphen/underscore charset, but defensive regardless) can be used as a literal inside a `RegExp`. */
+  static #escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   }
 
   /**
@@ -857,13 +887,14 @@ export class Agent extends DurableObject<Env> {
       const text = await response.text()
       const decoded = decodeExecResult(JSON.parse(text))
       const exitCode = Result.isSuccess(decoded) ? decoded.success.exitCode : -1
+      const stdoutExcerpt = Result.isSuccess(decoded) ? decoded.success.stdout.slice(0, 2000) : ""
       const stderrExcerpt = Result.isSuccess(decoded)
         ? decoded.success.stderr.slice(0, 2000)
         : `malformed exec result: ${text.slice(0, 500)}`
-      this.#recordJobRun(job.id, startedAt, exitCode, stderrExcerpt, exitCode === 0 ? "ok" : `failed (exit ${exitCode})`)
+      this.#recordJobRun(job.id, startedAt, exitCode, stdoutExcerpt, stderrExcerpt, exitCode === 0 ? "ok" : `failed (exit ${exitCode})`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.#recordJobRun(job.id, startedAt, -1, message, `error: ${message.slice(0, 200)}`)
+      this.#recordJobRun(job.id, startedAt, -1, "", message, `error: ${message.slice(0, 200)}`)
     } finally {
       try {
         await runner.destroyContainer()
@@ -876,14 +907,22 @@ export class Agent extends DurableObject<Env> {
   /** Most recent runs to retain per job in `scheduled_job_runs` — bounds otherwise-unbounded growth for a long-lived recurring schedule. */
   static readonly #MAX_RUNS_PER_JOB = 30
 
-  /** Record one job run's outcome: insert the run-log row, reflect its status onto `scheduled_jobs.last_run_status` (read by `listScheduledJobs`/the FE panel — previously never written, so it stayed NULL forever), and prune older runs for this job beyond `#MAX_RUNS_PER_JOB`. */
-  #recordJobRun(jobId: string, startedAt: number, exitCode: number, stderrExcerpt: string, lastRunStatus: string): void {
+  /** Record one job run's outcome: insert the run-log row (stdout AND stderr, both truncated — a run's actual output was previously discarded entirely, visible nowhere), reflect its status onto `scheduled_jobs.last_run_status` (read by `listScheduledJobs`/the FE panel — previously never written, so it stayed NULL forever), and prune older runs for this job beyond `#MAX_RUNS_PER_JOB`. */
+  #recordJobRun(
+    jobId: string,
+    startedAt: number,
+    exitCode: number,
+    stdoutExcerpt: string,
+    stderrExcerpt: string,
+    lastRunStatus: string,
+  ): void {
     this.ctx.storage.sql.exec(
-      "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stderr_excerpt) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, exit_code, stdout_excerpt, stderr_excerpt) VALUES (?, ?, ?, ?, ?, ?)",
       jobId,
       startedAt,
       Date.now(),
       exitCode,
+      stdoutExcerpt,
       stderrExcerpt,
     )
     this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET last_run_status = ? WHERE id = ?", lastRunStatus, jobId)
@@ -896,5 +935,26 @@ export class Agent extends DurableObject<Env> {
       jobId,
       Agent.#MAX_RUNS_PER_JOB,
     )
+  }
+
+  /** The most recent run of one scheduled job, or `undefined` if it hasn't run yet — plain object across the RPC fence. */
+  async getLastRun(jobId: string): Promise<
+    | { startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string }
+    | undefined
+  > {
+    const row = this.ctx.storage.sql
+      .exec(
+        "SELECT started_at, finished_at, exit_code, stdout_excerpt, stderr_excerpt FROM scheduled_job_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 1",
+        jobId,
+      )
+      .toArray()[0]
+    if (row === undefined) return undefined
+    return {
+      startedAt: Number(row.started_at),
+      finishedAt: Number(row.finished_at),
+      exitCode: Number(row.exit_code),
+      stdoutExcerpt: row.stdout_excerpt === null ? "" : String(row.stdout_excerpt),
+      stderrExcerpt: row.stderr_excerpt === null ? "" : String(row.stderr_excerpt),
+    }
   }
 }

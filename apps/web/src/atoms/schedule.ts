@@ -28,3 +28,20 @@ export const deleteScheduledJobFn = runtime.fn(
       })
     }),
 )
+
+/**
+ * On-demand fetch fn (not an auto-fetching atom): a job's most recent run —
+ * its actual captured stdout/stderr, otherwise generated and discarded with
+ * no way to see it. Deliberately fetched lazily per row (on a "view last run"
+ * click) rather than an `Atom.family` that would fire N requests just to
+ * render an N-job list.
+ */
+export const getLastRunFn = runtime.fn(
+  (args: SessionArgs & { readonly jobId: string }) =>
+    Effect.gen(function*() {
+      const client = yield* ApiClient
+      return yield* client.schedule.getLastRun({
+        params: { name: args.name, id: args.id, jobId: args.jobId },
+      })
+    }),
+)
