@@ -160,7 +160,6 @@ const putToolRule = HttpApiEndpoint.put(
     params: Schema.Struct({ name: SafeId, id: SafeId, tool: SafeName }),
     payload: SetToolRuleRequest,
     success: ResolvedConfig,
-    error: AgentError,
   },
 )
 

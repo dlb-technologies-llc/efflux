@@ -400,13 +400,15 @@ export class Agent extends DurableObject<Env> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
   }
 
-  /** Atomically merge one tool's gate decision into the stored overrides (read-merge-write in a single DO request, so concurrent flips can't lose an update). `rule` is re-decoded at the fence — it arrives as a plain `string` across RPC. */
+  /** Atomically merge one tool's gate decision into the stored overrides (read-merge-write in a single DO request, so concurrent flips can't lose an update). `rule` is re-decoded at the fence — it arrives as a plain `string` across RPC. Dies (never silently resets to `{}`) if the stored config is undecodable, so a single rule flip can never wipe the other overrides — matching the fail-loud read path in `loadResolvedConfig`. */
   async setToolRule(tool: string, rule: string): Promise<void> {
     const validRule = Schema.decodeUnknownSync(ToolRule)(rule)
     const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
     const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
-    const overrides = Result.isSuccess(decoded) ? decoded.success : {}
-    const next = mergeToolRule(overrides, tool, validRule)
+    if (Result.isFailure(decoded)) {
+      throw new Error("Cannot set tool rule: stored session config is undecodable")
+    }
+    const next = mergeToolRule(decoded.success, tool, validRule)
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(next))
   }
 

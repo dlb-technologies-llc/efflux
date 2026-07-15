@@ -71,19 +71,21 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
   const runSetRule = useAtomSet(setToolRuleFn, { mode: "promiseExit" })
   const refreshConfig = useAtomRefresh(sessionConfigAtom(session))
 
-  const decide = async (approved: boolean) => {
+  const decide = async (approved: boolean): Promise<boolean> => {
     setBusy(true)
     setError(null)
     const exit = await run({ ...session, eventId: approval.eventId, approved })
-    Exit.match(exit, {
+    return Exit.match(exit, {
       onFailure: (cause) => {
         setError(failureMessage(cause, "Approval failed"))
         setBusy(false)
+        return false
       },
       onSuccess: () => {
         bump((v) => v + 1)
         refreshHistory()
         setBusy(false)
+        return true
       },
     })
   }
@@ -100,7 +102,10 @@ function ApprovalCard({ approval, session }: ApprovalCardProps) {
       return
     }
     refreshConfig()
-    await decide(true)
+    const approved = await decide(true)
+    if (!approved) {
+      setError(`Set ${name} to always allow this session, but approving this call failed — retry Approve.`)
+    }
   }
 
   const toolName = approval.toolName ?? "tool call"
