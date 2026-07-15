@@ -1,3 +1,4 @@
 OPENROUTER_API_KEY=sk-or-your-key-here
 API_TOKEN=dev-local-token
+VITE_API_TOKEN=dev-local-token # must equal API_TOKEN — Vite inlines it into the FE bundle at build time
 SECRETS_ENCRYPTION_KEY=some-local-placeholder

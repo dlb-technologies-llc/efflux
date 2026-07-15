@@ -42,6 +42,8 @@ Local Miniflare state is SEPARATE from the deployed worker — its R2 buckets st
 
 Then:
 
+> Shortcut: `bun run dev:local` runs this source-build-seed-then-`wrangler dev` sequence in one step (validates `.dev.vars`, inlines `VITE_API_TOKEN`, seeds default skills+roles into local R2). The manual steps below remain the canonical explanation; plain `bun run dev` is unchanged.
+
 1. `set -a; . .dev.vars; set +a` (exports `OPENROUTER_API_KEY`, `API_TOKEN`, `VITE_API_TOKEN` for the build + smokes).
 2. `bun run dev` — wait for `Ready on http://localhost:8787` (builds the Sandbox container image first; needs Docker). Restart it after any `.dev.vars` edit — env is read at boot.
 3. Run steps 2–7 below with `<URL>` = `http://localhost:8787` and the bearer `$API_TOKEN` on every authed curl (`-H "Authorization: Bearer $API_TOKEN"`). For the FE-render check (step 1b) point headless Chrome at `http://localhost:8787` — local now renders a real, authed UI.
