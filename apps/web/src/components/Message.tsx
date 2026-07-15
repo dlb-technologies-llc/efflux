@@ -1,4 +1,5 @@
 import { Markdown } from "./Markdown.tsx"
+import { Spinner } from "./Spinner.tsx"
 import { ToolCallCard, type ToolCallView } from "./ToolCallCard.tsx"
 
 /** One render path for both persisted history turns and the live streaming turn. */
@@ -28,11 +29,13 @@ export function Message({
       {streaming ? (
         <div aria-live="polite">
           {content === "" && (tools === undefined || tools.length === 0) ? (
-            <span className="text-muted-foreground text-sm">thinking…</span>
+            <Spinner className="size-4" label="Loading response" />
           ) : (
-            <Markdown content={content} />
+            <>
+              <Markdown content={content} />
+              <span className="inline-block w-1.5 h-4 align-text-bottom bg-primary animate-pulse motion-reduce:animate-none ml-0.5" />
+            </>
           )}
-          <span className="inline-block w-1.5 h-4 align-text-bottom bg-primary animate-pulse motion-reduce:animate-none ml-0.5" />
         </div>
       ) : (
         <Markdown content={content} />
