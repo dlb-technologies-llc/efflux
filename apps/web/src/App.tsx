@@ -5,6 +5,7 @@ import { ApprovalCards } from "./components/ApprovalCards.tsx"
 import { Chat } from "./components/Chat.tsx"
 import { JournalTimeline } from "./components/JournalTimeline.tsx"
 import { ScheduledFeaturesPanel } from "./components/ScheduledFeaturesPanel.tsx"
+import { SecretsPanel } from "./components/SecretsPanel.tsx"
 import { SessionSwitcher } from "./components/SessionSwitcher.tsx"
 import { SkillsPanel } from "./components/SkillsPanel.tsx"
 import { ToolsPanel } from "./components/ToolsPanel.tsx"
@@ -25,6 +26,7 @@ export function App() {
         <>
           <SkillsPanel />
           <ScheduledFeaturesPanel />
+          <SecretsPanel />
         </>
       }
       sessions={<SessionSwitcher />}
