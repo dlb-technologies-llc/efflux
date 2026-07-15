@@ -20,6 +20,8 @@ import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
+import { ScheduleHandlers } from "./ScheduleHandlers.ts"
+import { SecretsHandlers } from "./SecretsHandlers.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
 import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
@@ -29,6 +31,7 @@ import { WaitUntil } from "./WaitUntil.ts"
 /** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
 export { Agent } from "./Agent.ts"
 export { Registry } from "./Registry.ts"
+export { Runner } from "./Runner.ts"
 export { Sandbox } from "./Sandbox.ts"
 
 /** Require a non-empty OPENROUTER_API_KEY, throwing a clear error rather than letting an undefined Bearer token reach OpenRouter. */
@@ -72,6 +75,8 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
+  Layer.provide(SecretsHandlers),
+  Layer.provide(ScheduleHandlers),
   Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([

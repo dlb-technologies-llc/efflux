@@ -820,3 +820,23 @@ Renaming the checkout directory while a Claude Code session is live orphaned the
 - Re-link the moved worktrees with `git worktree repair <new-worktree-paths>` — with no args it can't find them at their old recorded locations, so pass the NEW paths; then `git worktree prune` clears any orphaned admin entries.
 - For the skills: run them from their files (`.claude/skills/<name>/SKILL.md`) for the rest of the session, or start a FRESH session at the new path, which restores the `/efflux-*` commands and the `efflux-task-executor` agent.
 - Prefer renaming the checkout folder BETWEEN sessions, never during one.
+
+## Iterative testing against the deployed worker instead of `bun run dev` produced a real Container bill
+
+### Symptoms (2026-07-15, feature-generating #98)
+
+A routine feature PR's verification pass — plus the user's own manual testing of the new feature afterward — was driven entirely against the shared deployed worker (`https://efflux.david-0e2.workers.dev`) rather than `bun run dev` locally: many `bun scripts/agent.ts` smoke sessions, dozens of `curl`s against live endpoints, two full `bun run deploy` cycles, and an extended interactive chat session in the browser, all pointed at the deployed URL. The Cloudflare billing dashboard afterward showed **`Container Memory, per GiB-Second`: 9.68M billable units → $23.97** for the billing period — the single largest line item by far. `9.68M GiB-seconds ÷ 4 GiB (the `standard-1` instance's fixed memory) ÷ 3600 ≈ 672 cumulative instance-hours` — the sum of every container instance's alive time across every session, not one container running continuously (Cloudflare's own docs confirm `sleepAfter` actually terminates the instance — `SIGTERM` then `SIGKILL` after 15 min — it does not just idle it).
+
+### Root cause
+
+`/efflux-verifying` already documented "default to LOCAL, deploy only for the final pass" (for speed and to sidesteps deploy races/edge caching), but that guidance wasn't followed here — verification went straight to the deployed worker, and follow-up debugging (an auth incident, then this cost investigation) compounded it with more live-worker round-trips instead of local reproduction. Two multiplying factors made this expensive rather than merely slow: `Sandbox`'s `sleepAfter` was `10m` (each session's container stayed billed for up to 10 minutes after every burst of activity, not just its actual working time), and `standard-1` (4 GiB memory) was used for both `Sandbox` and the new `Runner` without checking whether a smaller instance type (`lite` 0.25 GiB / `basic` 1 GiB) would have sufficed for either workload.
+
+### Fix
+
+- `Sandbox.sleepAfter` shortened `10m` → `1m` (`apps/api/src/Sandbox.ts`) — cuts idle-billed time per session ~10x while still covering back-to-back tool calls within one active turn (typically seconds apart) without cold-starting between them.
+- `/efflux-verifying`, `/efflux-executing`, and `/efflux-planning` all now state the local-first default more forcefully, including "this applies to pointing a human at the app to manually try a change too" — not just the agent's own checklist.
+- **Not done here, worth doing if the bill keeps climbing:** right-size `standard-1` down to `basic` for `Sandbox`/`Runner` (an unverified ~4x memory-cost cut — confirm `basic`'s 1 GiB is actually sufficient for real workloads before switching), and/or destroy `Sandbox` explicitly at the end of every turn instead of relying on `sleepAfter` at all (zero idle billing, but a cold start — and today, no automatic retry — on every single turn, not just after a real gap in activity).
+
+### Why this matters
+
+Cloudflare Container memory bills for the full **provisioned** duration, not actual use (confirmed via Cloudflare's pricing docs) — CPU bills for active use only, but memory and disk do not. Combined with a keep-warm idle window, a bursty, low-utilization workload (a chat agent's occasional Bash calls) can rack up idle-billed time far out of proportion to real work, and — because `wrangler dev` runs Containers entirely through the local Docker daemon with zero Cloudflare billing — none of this shows up during local iteration at all. The bill is the first signal, well after the fact, unless local-first is actually followed.

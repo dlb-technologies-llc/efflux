@@ -38,6 +38,8 @@ import {
   SkillContentResponse,
   SkillListResponse,
 } from "./Skills.ts"
+import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
+import { ScheduledJobListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -214,6 +216,55 @@ export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(putKnowledge)
   .middleware(AuthMiddleware)
 
+/** Upsert a session secret by key; the value is write-only and never echoed back. */
+const putSecret = HttpApiEndpoint.put("putSecret", "/agents/:name/:id/secrets/:key", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
+  payload: PutSecretRequest,
+  success: SecretSummary,
+  error: AgentError,
+})
+
+/** Every secret key configured for a session, without values. */
+const listSecrets = HttpApiEndpoint.get("listSecrets", "/agents/:name/:id/secrets", {
+  params: AgentParams,
+  success: SecretListResponse,
+  error: AgentError,
+})
+
+/** All secrets CRUD endpoints grouped. */
+export const SecretsGroup = HttpApiGroup.make("secrets")
+  .add(putSecret)
+  .add(listSecrets)
+  .middleware(AuthMiddleware)
+
+/** Every scheduled job for a session. */
+const listScheduledJobs = HttpApiEndpoint.get("listScheduledJobs", "/agents/:name/:id/schedule", {
+  params: AgentParams,
+  success: ScheduledJobListResponse,
+  error: AgentError,
+})
+
+/** Cancel a scheduled job by id. */
+const deleteScheduledJob = HttpApiEndpoint.delete("deleteScheduledJob", "/agents/:name/:id/schedule/:jobId", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** A scheduled job's most recent run — its actual captured stdout/stderr, otherwise generated and discarded with no way to see it. `run` is null when the job hasn't fired yet. */
+const getLastRun = HttpApiEndpoint.get("getLastRun", "/agents/:name/:id/schedule/:jobId/run", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: ScheduledJobRunResponse,
+  error: AgentError,
+})
+
+/** All scheduled-job endpoints grouped. */
+export const ScheduleGroup = HttpApiGroup.make("schedule")
+  .add(listScheduledJobs)
+  .add(deleteScheduledJob)
+  .add(getLastRun)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -256,4 +307,6 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(V1Group)
   .add(KnowledgeGroup)
   .add(MetaGroup)
+  .add(SecretsGroup)
+  .add(ScheduleGroup)
   .middleware(SchemaErrorMiddleware) {}

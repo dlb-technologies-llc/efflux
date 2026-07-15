@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell.tsx"
 import { ApprovalCards } from "./components/ApprovalCards.tsx"
 import { Chat } from "./components/Chat.tsx"
 import { JournalTimeline } from "./components/JournalTimeline.tsx"
+import { ScheduledFeaturesPanel } from "./components/ScheduledFeaturesPanel.tsx"
 import { SessionSwitcher } from "./components/SessionSwitcher.tsx"
 import { SkillsPanel } from "./components/SkillsPanel.tsx"
 import { ToolsPanel } from "./components/ToolsPanel.tsx"
@@ -13,13 +14,19 @@ import { ToolsPanel } from "./components/ToolsPanel.tsx"
  * and the responsive three-column frame; App only wires the propless panels into its
  * slots. The sessions rail holds the switcher, the main column stacks the approval
  * cards above a growing `Chat` (which owns its own transcript scroll and pinned
- * composer), the inspector rail carries a Journal/Tools tabset, and skills live in the
- * TopBar actions. Every panel self-drives off `currentSessionAtom`.
+ * composer), the inspector rail carries a Journal/Tools tabset, and skills plus
+ * scheduled features live in the TopBar actions. Every panel self-drives off
+ * `currentSessionAtom`.
  */
 export function App() {
   return (
     <AppShell
-      topBarActions={<SkillsPanel />}
+      topBarActions={
+        <>
+          <SkillsPanel />
+          <ScheduledFeaturesPanel />
+        </>
+      }
       sessions={<SessionSwitcher />}
       main={
         <>

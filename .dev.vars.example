@@ -1,2 +1,3 @@
 OPENROUTER_API_KEY=sk-or-your-key-here
 API_TOKEN=dev-local-token
+SECRETS_ENCRYPTION_KEY=some-local-placeholder

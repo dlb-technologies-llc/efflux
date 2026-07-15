@@ -4,15 +4,19 @@
  */
 import {
   DEFAULT_TOOL_RULES,
+  HourUtc,
   JournalTodoWrite,
+  MinuteUtc,
   resolveRule,
   type RulesMap,
+  SafeName,
   SkillSummary,
   SubagentTaskRequest,
 } from "@efflux/shared"
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
+import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
 import { formatTodos, TodoStore } from "./Todo.ts"
@@ -41,6 +45,19 @@ export class BashRunner extends Context.Service<
     readonly exec: (command: string) => Effect.Effect<BashResultValue>
   }
 >()("api/BashRunner") {}
+
+/** Per-request handle to the DO's createScheduledJob(input) RPC, provided per-request from the resolved Agent stub (mirrors BashRunner). */
+export class ScheduledJobs extends Context.Service<
+  ScheduledJobs,
+  {
+    readonly create: (input: {
+      readonly description: string
+      readonly entrypointCommand: string
+      readonly runAtHourUtc: number
+      readonly runAtMinuteUtc: number
+    }) => Effect.Effect<{ readonly id: string; readonly nextRunAt: number }>
+  }
+>()("api/ScheduledJobs") {}
 
 /** Request-scoped per-tool permission rules; each turn provides the resolved rules, defaulting to DEFAULT_TOOL_RULES. */
 export const ApprovalRules = Context.Reference<RulesMap>("api/ApprovalRules", {
@@ -102,7 +119,7 @@ const BashParameters = Schema.Struct({
 
 export const BashTool = Tool.make("Bash", {
   description:
-    "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. The working directory is /workspace — a writable but EPHEMERAL scratch space, wiped when the sandbox idles out (~10 minutes) or redeploys. Use this for devops-style operations the dedicated file tools do not cover.",
+    "Execute a shell command in the sandboxed Linux container bound to this agent session. Returns the exit code, stdout, and stderr. The working directory is /workspace — a writable but EPHEMERAL scratch space, wiped when the sandbox idles out (~1 minute of inactivity) or redeploys. Use this for devops-style operations the dedicated file tools do not cover.",
   parameters: BashParameters,
   success: BashResult,
   dependencies: [BashRunner],
@@ -113,7 +130,7 @@ export const BashTool = Tool.make("Bash", {
 const MAX_COMMAND_CHARS = 90_000
 
 const EPHEMERAL_NOTE =
-  "Paths resolve relative to /workspace, a writable but EPHEMERAL scratch space — contents are wiped when the sandbox idles out (~10 minutes) or redeploys."
+  "Paths resolve relative to /workspace, a writable but EPHEMERAL scratch space — contents are wiped when the sandbox idles out (~1 minute of inactivity) or redeploys."
 
 const capExecResult = (result: BashResultValue): BashResultValue => ({
   exitCode: result.exitCode,
@@ -333,6 +350,57 @@ export const TodoReadTool = Tool.make("todo_read", {
   needsApproval: needsApprovalFor("todo_read"),
 })
 
+export const HasSecretTool = Tool.make("has_secret", {
+  description:
+    "Check whether a named secret is already available in this session, without revealing its value. Call this BEFORE request_secret to avoid re-prompting for a secret the user has already provided.",
+  parameters: Schema.Struct({
+    name: Schema.String.annotate({
+      description: "Secret name to check, e.g. STRIPE_API_KEY.",
+    }),
+  }),
+  success: Schema.Boolean,
+  dependencies: [SecretsStore],
+})
+
+export const RequestSecretTool = Tool.make("request_secret", {
+  description:
+    "Ask the user to provide a secret value (e.g. an API key) needed to complete the task. Always requires human approval before the secret is collected — check has_secret first so you don't re-request a secret that is already available.",
+  parameters: Schema.Struct({
+    name: SafeName.annotate({
+      description:
+        "Secret name to request, e.g. STRIPE_API_KEY — alphanumeric/hyphen/underscore only, 1-64 chars (must be a valid shell identifier and pass the storage endpoint's name validation).",
+    }),
+    description: Schema.String.annotate({
+      description: "Human-readable explanation of why this secret is needed.",
+    }),
+  }),
+  success: Schema.String,
+  dependencies: [SecretsStore],
+  needsApproval: needsApprovalFor("request_secret"),
+})
+
+export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
+  description:
+    "Schedule a recurring daily job that runs a shell command in this session's sandbox at a fixed UTC time. Always requires human approval before the job is created.",
+  parameters: Schema.Struct({
+    description: Schema.String.annotate({
+      description: "Human-readable description of what the job does.",
+    }),
+    entrypointCommand: Schema.String.annotate({
+      description: "Shell command to run when the job fires.",
+    }),
+    runAtHourUtc: HourUtc.annotate({
+      description: "Hour of day (0-23, UTC) the job runs at.",
+    }),
+    runAtMinuteUtc: MinuteUtc.annotate({
+      description: "Minute of the hour (0-59, UTC) the job runs at.",
+    }),
+  }),
+  success: Schema.String,
+  dependencies: [ScheduledJobs],
+  needsApproval: needsApprovalFor("create_scheduled_job"),
+})
+
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,
   SpawnSubagentTool,
@@ -348,6 +416,9 @@ export const AgentToolkit = Toolkit.make(
   SearchKnowledgeTool,
   TodoWriteTool,
   TodoReadTool,
+  HasSecretTool,
+  RequestSecretTool,
+  CreateScheduledJobTool,
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
@@ -496,4 +567,29 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       const store = yield* TodoStore
       return formatTodos(yield* store.read)
     }),
+  has_secret: (params) => SecretsStore.use((store) => store.has(params.name)),
+  /** Runs after human approval resumes the parked turn — but approval only means "resume the turn," not "the secret was actually stored" (the generic /approve endpoint can resolve ANY parked call with approved:true, including one where the FE's submit-secret-then-approve two-step never ran, e.g. a direct API caller). Actually checks has() and reports the true outcome either way; never reads or returns the secret's raw value. */
+  request_secret: (params) =>
+    SecretsStore.use((store) => store.has(params.name)).pipe(
+      Effect.map((exists) =>
+        exists
+          ? `${params.name} is now available`
+          : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
+      ),
+    ),
+  create_scheduled_job: (params) =>
+    ScheduledJobs.use((jobs) =>
+      jobs.create({
+        description: params.description,
+        entrypointCommand: params.entrypointCommand,
+        runAtHourUtc: params.runAtHourUtc,
+        runAtMinuteUtc: params.runAtMinuteUtc,
+      }),
+    ).pipe(
+      Effect.as(
+        `Scheduled — runs daily at ${String(params.runAtHourUtc).padStart(2, "0")}:${
+          String(params.runAtMinuteUtc).padStart(2, "0")
+        } UTC`,
+      ),
+    ),
 })

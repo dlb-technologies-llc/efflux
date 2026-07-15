@@ -10,8 +10,12 @@ export const ToolRulesMap = Schema.Record(SafeName, ToolRule)
 /** Decoded shape of `ToolRulesMap` — `{ readonly [name: string]: "allow" | "ask" | "deny" }`. */
 export type RulesMap = typeof ToolRulesMap.Type
 
-/** Canonical default rules table — Bash parks for approval, everything else falls through to `allow` via `resolveRule`. */
-export const DEFAULT_TOOL_RULES: RulesMap = { Bash: "ask" }
+/** Canonical default rules table — Bash, request_secret, and create_scheduled_job all park for approval by default; everything else falls through to `allow` via `resolveRule`. Routing request_secret/create_scheduled_job through this same policy table (rather than a hardcoded always-park) is what lets the `/v1` facade's `autoApproveRules` (ask→allow, since that facade can never resume a parked turn) treat them the same way it already treats Bash. */
+export const DEFAULT_TOOL_RULES: RulesMap = {
+  Bash: "ask",
+  request_secret: "ask",
+  create_scheduled_job: "ask",
+}
 
 /** Resolve the gate decision for a tool; tools absent from the map default to `allow`. */
 export const resolveRule = (
