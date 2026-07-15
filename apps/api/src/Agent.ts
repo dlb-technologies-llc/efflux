@@ -1,4 +1,4 @@
-import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, ToolRule, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { nextDailyOccurrence, soonestDeadline } from "./AlarmSchedule.ts"
@@ -398,6 +398,18 @@ export class Agent extends DurableObject<Env> {
   /** Persist the session's config overrides verbatim (already validated at the HTTP edge); replaces any previously stored overrides. */
   async putConfig(config: unknown): Promise<void> {
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(config))
+  }
+
+  /** Atomically merge one tool's gate decision into the stored overrides (read-merge-write in a single DO request, so concurrent flips can't lose an update). `rule` is re-decoded at the fence — it arrives as a plain `string` across RPC. Dies (never silently resets to `{}`) if the stored config is undecodable, so a single rule flip can never wipe the other overrides — matching the fail-loud read path in `loadResolvedConfig`. */
+  async setToolRule(tool: string, rule: string): Promise<void> {
+    const validRule = Schema.decodeUnknownSync(ToolRule)(rule)
+    const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
+    const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
+    if (Result.isFailure(decoded)) {
+      throw new Error("Cannot set tool rule: stored session config is undecodable")
+    }
+    const next = mergeToolRule(decoded.success, tool, validRule)
+    await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(next))
   }
 
   /** Encrypt and upsert a named secret; a fresh IV is generated every call, including overwrites of an existing name — an IV is never reused. Returns the row's actual `created_at` (preserved across an overwrite, never reset to the call time) so callers never report a false creation timestamp. */

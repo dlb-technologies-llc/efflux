@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { DEFAULT_TOOL_RULES, resolveRule, ToolRule } from "@efflux/shared"
+import { DEFAULT_TOOL_RULES, mergeToolRule, resolveRule, SetToolRuleRequest, ToolRule } from "@efflux/shared"
 import type { RulesMap } from "@efflux/shared"
 
 const explicitRules: RulesMap = { Bash: "allow", web_fetch: "ask", Read: "deny" }
@@ -41,6 +41,51 @@ describe("resolveRule fallback semantics", () => {
 
   it("DEFAULT_TOOL_RULES lets any non-Bash tool fall through to allow", () => {
     expect(resolveRule(DEFAULT_TOOL_RULES, "Read")).toBe("allow")
+  })
+})
+
+const setToolRuleArb = Schema.toArbitrary(SetToolRuleRequest)
+
+describe("SetToolRuleRequest codec", () => {
+  it.effect.prop(
+    "encode → decode → re-encode is stable",
+    [setToolRuleArb],
+    ([request]) =>
+      Effect.gen(function* () {
+        const encoded = yield* Schema.encodeEffect(SetToolRuleRequest)(request)
+        const decoded = yield* Schema.decodeEffect(SetToolRuleRequest)(encoded)
+        const reEncoded = yield* Schema.encodeEffect(SetToolRuleRequest)(decoded)
+        expect(reEncoded).toStrictEqual(encoded)
+      }),
+    { fastCheck: { numRuns: 100 } },
+  )
+})
+
+describe("mergeToolRule", () => {
+  it("merges one tool's rule into empty overrides", () => {
+    expect(mergeToolRule({}, "Bash", "allow")).toStrictEqual({
+      rules: { Bash: "allow" },
+    })
+  })
+
+  it("overwrites an existing rule for the same tool", () => {
+    expect(mergeToolRule({ rules: { Bash: "ask" } }, "Bash", "allow")).toStrictEqual({
+      rules: { Bash: "allow" },
+    })
+  })
+
+  it("preserves sibling rules untouched", () => {
+    expect(mergeToolRule({ rules: { request_secret: "ask" } }, "Bash", "allow")).toStrictEqual({
+      rules: { request_secret: "ask", Bash: "allow" },
+    })
+  })
+
+  it("preserves other override fields", () => {
+    expect(mergeToolRule({ defaultModel: "x/y", ttlSeconds: 42 }, "Bash", "allow")).toStrictEqual({
+      defaultModel: "x/y",
+      ttlSeconds: 42,
+      rules: { Bash: "allow" },
+    })
   })
 })
 
