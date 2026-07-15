@@ -24,7 +24,7 @@ import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
 import { MessageList } from "./MessageList.tsx"
-import { SlashCommandMenu } from "./SlashCommandMenu.tsx"
+import { SLASH_MENU_LISTBOX_ID, SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx"
 import { StatusPill } from "./StatusPill.tsx"
 import type { ToolCallView } from "./ToolCallCard.tsx"
 
@@ -309,6 +309,11 @@ export function Chat() {
             rows={1}
             placeholder="Message the agent…  /skill to apply a skill · ⌘↵ to send"
             value={input}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={menuOpen}
+            aria-controls={SLASH_MENU_LISTBOX_ID}
+            aria-activedescendant={menuOpen ? slashOptionId(menuIndex) : undefined}
             onChange={(event) => {
               setInput(event.target.value)
               setDismissedToken(null)
