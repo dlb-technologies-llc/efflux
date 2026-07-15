@@ -155,6 +155,14 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         return resolveConfig(payload)
       }),
     )
+    .handle("putToolRule", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() => agent.setToolRule(params.tool, payload.rule))
+        return yield* loadResolvedConfig(agent)
+      }),
+    )
     .handle("stream", ({ params, payload }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub

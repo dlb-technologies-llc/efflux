@@ -5,7 +5,7 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
@@ -152,6 +152,18 @@ const putConfig = HttpApiEndpoint.put("putConfig", "/agents/:name/:id/config", {
   success: ResolvedConfig,
 })
 
+/** Flip a single tool's session gate decision, merged into the stored overrides; returns the new effective config. */
+const putToolRule = HttpApiEndpoint.put(
+  "putToolRule",
+  "/agents/:name/:id/config/rules/:tool",
+  {
+    params: Schema.Struct({ name: SafeId, id: SafeId, tool: SafeName }),
+    payload: SetToolRuleRequest,
+    success: ResolvedConfig,
+    error: AgentError,
+  },
+)
+
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
   success: SkillListResponse,
@@ -278,6 +290,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(sessions)
   .add(getConfig)
   .add(putConfig)
+  .add(putToolRule)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */

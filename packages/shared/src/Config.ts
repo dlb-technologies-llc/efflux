@@ -54,3 +54,26 @@ export const ResolvedConfig = Schema.Struct({
 
 /** Decoded shape of the `ResolvedConfig` schema — the fully-populated effective session config. */
 export type ResolvedConfig = typeof ResolvedConfig.Type
+
+/** Payload for `PUT /agents/:name/:id/config/rules/:tool` — the single new gate decision for that tool. */
+export const SetToolRuleRequest = Schema.Struct({
+  rule: ToolRule,
+})
+
+/** Decoded shape of `SetToolRuleRequest`. */
+export type SetToolRuleRequest = typeof SetToolRuleRequest.Type
+
+/**
+ * Merge one tool's gate decision into a session's stored config overrides,
+ * preserving every other override field and every other rule. Pure — the
+ * caller supplies an already-decoded `rule`; the merge never re-lists the
+ * `ToolRule` literals so it cannot drift from the schema.
+ */
+export const mergeToolRule = (
+  overrides: typeof AgentConfig.Type,
+  tool: string,
+  rule: typeof ToolRule.Type,
+): typeof AgentConfig.Type => ({
+  ...overrides,
+  rules: { ...(overrides.rules ?? {}), [tool]: rule },
+})
