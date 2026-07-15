@@ -1,4 +1,4 @@
-import { ToolRule } from "@efflux/shared"
+import type { ToolRule } from "@efflux/shared"
 import { Effect } from "effect"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "../runtime.ts"
