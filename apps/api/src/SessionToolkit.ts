@@ -13,7 +13,6 @@ import { resolveRule, type McpServer } from "@efflux/shared"
 import { Effect, Layer, Schema } from "effect"
 import { Tool, Toolkit } from "effect/unstable/ai"
 import { connect, type McpToolDef } from "./Mcp.ts"
-import { traceTool } from "./Telemetry.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 import { capForPrompt } from "./Truncate.ts"
 
@@ -105,20 +104,17 @@ export const buildSessionToolkit = (mcpServers: ReadonlyArray<McpServer>) =>
         seen.add(namespaced)
         const dyn = buildDynamicTool(namespaced, def)
         tools.push(dyn)
-        handlers[dyn.name] = (params) =>
-          traceTool(
-            namespaced,
-            Effect.gen(function* () {
-              const rules = yield* ApprovalRules
-              if (resolveRule(rules, namespaced) === "deny") {
-                return `Error: tool "${namespaced}" is denied by session policy`
-              }
-              const { text, isError } = yield* client.callTool(def.name, params)
-              return capForPrompt(isError ? `Error: ${text}` : text)
-            }).pipe(
-              Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
-            ),
-          )
+        handlers[dyn.name] = Effect.fn(`tool.${namespaced}`)(
+          function* (params) {
+            const rules = yield* ApprovalRules
+            if (resolveRule(rules, namespaced) === "deny") {
+              return `Error: tool "${namespaced}" is denied by session policy`
+            }
+            const { text, isError } = yield* client.callTool(def.name, params)
+            return capForPrompt(isError ? `Error: ${text}` : text)
+          },
+          Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
+        )
       }
     }
 
