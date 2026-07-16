@@ -9,6 +9,7 @@ import { Exit } from "effect"
 import { CalendarClock, ChevronRight } from "lucide-react"
 import * as React from "react"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { cn } from "@/lib/utils"
 import {
   deleteScheduledJobFn,
   listRunsFn,
@@ -72,27 +74,27 @@ function RunDetailView({ run }: { readonly run: ScheduledJobRunDetail | null }):
   )
 }
 
-/** One run in the history list: a click-to-expand summary row (started time, exit code, a pass/fail dot derived from `exitCode === 0`) that reveals the run's captured stdout/stderr on expand. */
+/** One run in the history list: a click-to-expand summary row (started time, exit code, a pass/fail dot derived from `exitCode === 0`) that reveals the run's captured stdout/stderr on expand. Built on the shared `Collapsible` primitive for its disclosure semantics (aria-expanded, keyboard). */
 function RunHistoryRow({ run }: { readonly run: ScheduledJobRunDetail }) {
   const [open, setOpen] = React.useState(false)
   const ok = run.exitCode === 0
   return (
-    <li className="rounded-md border border-border">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <ChevronRight className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-        <span className={`size-2 shrink-0 rounded-full ${ok ? "bg-accent" : "bg-destructive"}`} />
-        <span className="text-foreground">{new Date(run.startedAt).toLocaleString()}</span>
-        <span className="text-muted-foreground">exit {run.exitCode}</span>
-      </button>
-      {open ? (
-        <div className="px-2 pb-2">
-          <RunOutput run={run} />
-        </div>
-      ) : null}
+    <li>
+      <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border border-border">
+        <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <ChevronRight
+            className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open ? "rotate-90" : "")}
+          />
+          <span className={cn("size-2 shrink-0 rounded-full", ok ? "bg-accent" : "bg-destructive")} />
+          <span className="text-foreground">{new Date(run.startedAt).toLocaleString()}</span>
+          <span className="text-muted-foreground">exit {run.exitCode}</span>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="px-2 pb-2 font-mono text-xs">
+            <RunOutput run={run} />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </li>
   )
 }
@@ -136,17 +138,15 @@ function RunHistoryDetail({ session, jobId }: { readonly session: SessionArgs; r
   if (state._tag === "error") {
     return <p className="px-1 text-xs text-destructive">{state.message}</p>
   }
-  if (state._tag === "loaded") {
-    return state.response.runs.length === 0 ? (
-      <p className="px-1 text-xs text-muted-foreground">No runs to show.</p>
-    ) : (
-      <ul className="flex max-h-80 flex-col gap-1 overflow-auto px-1">
-        {state.response.runs.map((run) => (
-          <RunHistoryRow key={run.startedAt} run={run} />
-        ))}
-      </ul>
-    )
-  }
+  return state.response.runs.length === 0 ? (
+    <p className="px-1 text-xs text-muted-foreground">No runs to show.</p>
+  ) : (
+    <ul className="flex max-h-80 flex-col gap-1 overflow-auto px-1">
+      {state.response.runs.map((run, index) => (
+        <RunHistoryRow key={`${run.startedAt}-${index}`} run={run} />
+      ))}
+    </ul>
+  )
 }
 
 interface ScheduledJobRowProps {
