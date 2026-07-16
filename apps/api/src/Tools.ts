@@ -18,6 +18,7 @@ import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
+import { traceTool } from "./Telemetry.ts"
 import { formatTodos, TodoStore } from "./Todo.ts"
 import { MAX_TOOL_OUTPUT_CHARS, capForPrompt } from "./Truncate.ts"
 import {
@@ -421,67 +422,80 @@ export const AgentToolkit = Toolkit.make(
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
-  GetCurrentTime: () => Effect.sync(() => new Date().toISOString()),
+  GetCurrentTime: () =>
+    traceTool("GetCurrentTime", Effect.sync(() => new Date().toISOString())),
   SpawnSubagent: (params) =>
-    runSubagent({
-      prompt: params.prompt,
-      ...(params.skill !== undefined ? { skill: params.skill } : {}),
-      ...(params.role !== undefined ? { role: params.role } : {}),
-      ...(params.model !== undefined ? { model: params.model } : {}),
-    }).pipe(
-      Effect.map((r) => r.text),
-      Effect.tapErrorTag("SkillNotFoundError", (e) =>
-        Effect.logWarning(`SpawnSubagent: skill not found: ${e.skill}`),
-      ),
-      Effect.tapErrorTag("RoleNotFoundError", (e) =>
-        Effect.logWarning(`SpawnSubagent: role not found: ${e.role}`),
-      ),
-      Effect.tapErrorTag("AgentError", (e) =>
-        Effect.logWarning(`SpawnSubagent: agent error: ${e.message}`),
-      ),
-      Effect.catchTags({
-        SkillNotFoundError: (e) =>
-          Effect.succeed(`Error: Skill not found: ${e.skill}`),
-        RoleNotFoundError: (e) =>
-          Effect.succeed(`Error: Role not found: ${e.role}`),
-        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
-      }),
-    ),
-  list_skills: () =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "list_skills") === "deny") return []
-      return yield* listSkills().pipe(
-        Effect.map((skills) =>
-          skills.map(
-            (s) => new SkillSummary({ name: s.name, description: s.description }),
-          ),
+    traceTool(
+      "SpawnSubagent",
+      runSubagent({
+        prompt: params.prompt,
+        ...(params.skill !== undefined ? { skill: params.skill } : {}),
+        ...(params.role !== undefined ? { role: params.role } : {}),
+        ...(params.model !== undefined ? { model: params.model } : {}),
+      }).pipe(
+        Effect.map((r) => r.text),
+        Effect.tapErrorTag("SkillNotFoundError", (e) =>
+          Effect.logWarning(`SpawnSubagent: skill not found: ${e.skill}`),
+        ),
+        Effect.tapErrorTag("RoleNotFoundError", (e) =>
+          Effect.logWarning(`SpawnSubagent: role not found: ${e.role}`),
         ),
         Effect.tapErrorTag("AgentError", (e) =>
-          Effect.logWarning(`list_skills: ${e.message}`),
-        ),
-        Effect.catchTag("AgentError", () => Effect.succeed([])),
-      )
-    }),
-  load_skill: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
-      return yield* loadSkillBody(params.name).pipe(
-        Effect.map(capForPrompt),
-        Effect.tapErrorTag("SkillNotFoundError", (e) =>
-          Effect.logWarning(`load_skill: not found: ${e.skill}`),
+          Effect.logWarning(`SpawnSubagent: agent error: ${e.message}`),
         ),
         Effect.catchTags({
           SkillNotFoundError: (e) =>
             Effect.succeed(`Error: Skill not found: ${e.skill}`),
+          RoleNotFoundError: (e) =>
+            Effect.succeed(`Error: Role not found: ${e.role}`),
           AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
         }),
-      )
-    }),
-  Bash: (params) => guardExec("Bash", execCapped(params.command)),
+      ),
+    ),
+  list_skills: () =>
+    traceTool(
+      "list_skills",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        if (resolveRule(rules, "list_skills") === "deny") return []
+        return yield* listSkills().pipe(
+          Effect.map((skills) =>
+            skills.map(
+              (s) => new SkillSummary({ name: s.name, description: s.description }),
+            ),
+          ),
+          Effect.tapErrorTag("AgentError", (e) =>
+            Effect.logWarning(`list_skills: ${e.message}`),
+          ),
+          Effect.catchTag("AgentError", () => Effect.succeed([])),
+        )
+      }),
+    ),
+  load_skill: (params) =>
+    traceTool(
+      "load_skill",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
+        return yield* loadSkillBody(params.name).pipe(
+          Effect.map(capForPrompt),
+          Effect.tapErrorTag("SkillNotFoundError", (e) =>
+            Effect.logWarning(`load_skill: not found: ${e.skill}`),
+          ),
+          Effect.catchTags({
+            SkillNotFoundError: (e) =>
+              Effect.succeed(`Error: Skill not found: ${e.skill}`),
+            AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+          }),
+        )
+      }),
+    ),
+  Bash: (params) => traceTool("Bash", guardExec("Bash", execCapped(params.command))),
   read_file: (params) =>
-    guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`)),
+    traceTool(
+      "read_file",
+      guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`)),
+    ),
   write_file: (params) => {
     const command = bunEval(
       {
@@ -490,11 +504,14 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       WRITE_SCRIPT,
     )
-    return guardExec(
+    return traceTool(
       "write_file",
-      command.length > MAX_COMMAND_CHARS
-        ? Effect.succeed(commandTooLarge("content"))
-        : execCapped(command),
+      guardExec(
+        "write_file",
+        command.length > MAX_COMMAND_CHARS
+          ? Effect.succeed(commandTooLarge("content"))
+          : execCapped(command),
+      ),
     )
   },
   edit_file: (params) => {
@@ -507,87 +524,115 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       EDIT_SCRIPT,
     )
-    return guardExec(
+    return traceTool(
       "edit_file",
-      command.length > MAX_COMMAND_CHARS
-        ? Effect.succeed(commandTooLarge("old_string/new_string"))
-        : execCapped(command),
+      guardExec(
+        "edit_file",
+        command.length > MAX_COMMAND_CHARS
+          ? Effect.succeed(commandTooLarge("old_string/new_string"))
+          : execCapped(command),
+      ),
     )
   },
   glob: (params) =>
-    guardExec(
+    traceTool(
       "glob",
-      execCapped(
-        bunEval(
-          {
-            EFFLUX_PATTERN: Encoding.encodeBase64(params.pattern),
-            EFFLUX_CWD: Encoding.encodeBase64(params.path ?? "."),
-          },
-          GLOB_SCRIPT,
+      guardExec(
+        "glob",
+        execCapped(
+          bunEval(
+            {
+              EFFLUX_PATTERN: Encoding.encodeBase64(params.pattern),
+              EFFLUX_CWD: Encoding.encodeBase64(params.path ?? "."),
+            },
+            GLOB_SCRIPT,
+          ),
         ),
       ),
     ),
   grep: (params) =>
-    guardExec(
+    traceTool(
       "grep",
-      execCapped(
-        `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
+      guardExec(
+        "grep",
+        execCapped(
+          `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
+        ),
       ),
     ),
   web_fetch: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      return resolveRule(rules, "web_fetch") === "deny"
-        ? webFetchError("denied by session policy")
-        : yield* runWebFetch(params.url)
-    }),
+    traceTool(
+      "web_fetch",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        return resolveRule(rules, "web_fetch") === "deny"
+          ? webFetchError("denied by session policy")
+          : yield* runWebFetch(params.url)
+      }),
+    ),
   search_knowledge: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
-      return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
-        Effect.map(capForPrompt),
-        Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
-        Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
-      )
-    }),
+    traceTool(
+      "search_knowledge",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
+        return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
+          Effect.map(capForPrompt),
+          Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
+          Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
+        )
+      }),
+    ),
   todo_write: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
-      const store = yield* TodoStore
-      yield* store.write(params.items)
-      return `Updated task list:\n${formatTodos(params.items)}`
-    }),
+    traceTool(
+      "todo_write",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
+        const store = yield* TodoStore
+        yield* store.write(params.items)
+        return `Updated task list:\n${formatTodos(params.items)}`
+      }),
+    ),
   todo_read: () =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
-      const store = yield* TodoStore
-      return formatTodos(yield* store.read)
-    }),
-  has_secret: (params) => SecretsStore.use((store) => store.has(params.name)),
+    traceTool(
+      "todo_read",
+      Effect.gen(function* () {
+        const rules = yield* ApprovalRules
+        if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
+        const store = yield* TodoStore
+        return formatTodos(yield* store.read)
+      }),
+    ),
+  has_secret: (params) =>
+    traceTool("has_secret", SecretsStore.use((store) => store.has(params.name))),
   /** Runs after human approval resumes the parked turn — but approval only means "resume the turn," not "the secret was actually stored" (the generic /approve endpoint can resolve ANY parked call with approved:true, including one where the FE's submit-secret-then-approve two-step never ran, e.g. a direct API caller). Actually checks has() and reports the true outcome either way; never reads or returns the secret's raw value. */
   request_secret: (params) =>
-    SecretsStore.use((store) => store.has(params.name)).pipe(
-      Effect.map((exists) =>
-        exists
-          ? `${params.name} is now available`
-          : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
+    traceTool(
+      "request_secret",
+      SecretsStore.use((store) => store.has(params.name)).pipe(
+        Effect.map((exists) =>
+          exists
+            ? `${params.name} is now available`
+            : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
+        ),
       ),
     ),
   create_scheduled_job: (params) =>
-    ScheduledJobs.use((jobs) =>
-      jobs.create({
-        description: params.description,
-        entrypointCommand: params.entrypointCommand,
-        schedule: params.schedule,
-      }),
-    ).pipe(
-      Effect.map((result) =>
-        "error" in result
-          ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
-          : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
+    traceTool(
+      "create_scheduled_job",
+      ScheduledJobs.use((jobs) =>
+        jobs.create({
+          description: params.description,
+          entrypointCommand: params.entrypointCommand,
+          schedule: params.schedule,
+        }),
+      ).pipe(
+        Effect.map((result) =>
+          "error" in result
+            ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
+            : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
+        ),
       ),
     ),
 })

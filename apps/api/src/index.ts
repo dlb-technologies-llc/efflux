@@ -23,6 +23,7 @@ import { RegistryStub } from "./Registry.ts"
 import { ScheduleHandlers } from "./ScheduleHandlers.ts"
 import { SecretsHandlers } from "./SecretsHandlers.ts"
 import { SkillHandlers } from "./SkillHandlers.ts"
+import { TracingLive } from "./Telemetry.ts"
 import { AuthMiddlewareLive } from "./AuthMiddleware.ts"
 import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
@@ -102,6 +103,7 @@ const buildWebHandler = (
         Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
         Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
+        TracingLive,
       )
       const handler = yield* HttpRouter.toHttpEffect(
         routerLayer.pipe(
