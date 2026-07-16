@@ -4,6 +4,48 @@ All notable changes to Efflux are recorded here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-07-15
+
+Scheduled-jobs release: cron scheduling plus the full manual lifecycle, session
+tooling, and local-dev observability. Every headline feature in this release was
+**live-validated against a running worker** (`/efflux-verifying`) before the
+promotion — driven end-to-end through its real endpoint or tool with the actual
+output captured, not merely green in CI.
+
+### Added
+
+- **Full cron-expression scheduling for scheduled jobs** (#121) — jobs run on a
+  standard `* * * * *` cron schedule, dispatched from the `Agent` DO's alarm onto
+  a per-job `Runner` container.
+- **Manual "run now" trigger** (#126) — fire a scheduled job immediately through
+  the same path the alarm uses, on a fresh `Runner`, returning that run's captured
+  stdout/stderr and exit code; does not reschedule or change paused state.
+- **Pause / resume a scheduled job** (#124) — stop a job firing while retaining
+  all config, and resume it onto its existing schedule (missed slots are skipped,
+  no catch-up fire). Both idempotent.
+- **Full run-history view** (#129) — every retained run for a job, most recent
+  first, each with its captured output (`GET …/schedule/:jobId/runs`).
+- **`/feature-generating` skill** (#98) — author an automated feature from a
+  plain-language request, test it live, then schedule it to run unattended.
+- **Invoke uploaded skills via chat slash commands** (#108) — type `/skill`
+  anywhere in the composer to apply a skill to a turn.
+- **Per-tool session auto-approve control** (#110) — flip a tool's approval rule
+  (`ask` / `allow` / `deny`) per session via `PUT …/config`.
+- **Delete / rotate an individual stored secret** (#107) — full secrets CRUD
+  (`PUT` upsert/rotate, `GET` list without values, idempotent `DELETE`).
+- **Branded flux-mark loading spinner** (#116) — replaces the plain "Loading…"
+  text with the animated `animate-flux` mark.
+- **One-command local dev** (`bun run dev:local`, #117) — validates `.dev.vars`,
+  inlines `VITE_API_TOKEN` into the FE build, and seeds the default skills/roles
+  into local Miniflare R2 before `wrangler dev`.
+- **OpenTelemetry tracing the Effect way** (#128) — a console exporter for local
+  dev emits correlated spans across the HTTP, tool, and model-call layers.
+
+### Changed
+
+- Skill/documentation postmortem findings folded back into the `efflux-*` skills
+  across the batch (#99, #109, #111, #112, #113, #118, #120, #123, #125, #127).
+
 ## [1.0.0] - 2026-07-10
 
 First stable release. Efflux is a deployable Cloudflare agent runtime built on
