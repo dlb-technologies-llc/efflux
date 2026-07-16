@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
+import { ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Effect.gen(function* () {
@@ -159,6 +159,34 @@ describe("ScheduledJobRunResponse codec", () => {
           stdoutExcerpt: "ok",
           stderrExcerpt: "",
         }),
+      }),
+    ))
+})
+
+describe("ScheduledJobRunListResponse codec", () => {
+  it.effect("pins an empty history (no runs yet)", () =>
+    assertStable(ScheduledJobRunListResponse, new ScheduledJobRunListResponse({ runs: [] })))
+
+  it.effect("pins a history with a successful and a failed run", () =>
+    assertStable(
+      ScheduledJobRunListResponse,
+      new ScheduledJobRunListResponse({
+        runs: [
+          new ScheduledJobRunDetail({
+            startedAt: 1_700_000_100_000,
+            finishedAt: 1_700_000_101_500,
+            exitCode: 0,
+            stdoutExcerpt: '{"weather":"clear"}',
+            stderrExcerpt: "",
+          }),
+          new ScheduledJobRunDetail({
+            startedAt: 1_700_000_000_000,
+            finishedAt: 1_700_000_000_800,
+            exitCode: -1,
+            stdoutExcerpt: "",
+            stderrExcerpt: "runner restore failed 500",
+          }),
+        ],
       }),
     ))
 })

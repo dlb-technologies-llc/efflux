@@ -52,17 +52,17 @@ export const resumeScheduledJobFn = runtime.fn(
 )
 
 /**
- * On-demand fetch fn (not an auto-fetching atom): a job's most recent run —
- * its actual captured stdout/stderr, otherwise generated and discarded with
- * no way to see it. Deliberately fetched lazily per row (on a "view last run"
- * click) rather than an `Atom.family` that would fire N requests just to
- * render an N-job list.
+ * On-demand fetch fn (not an auto-fetching atom): a job's full run history from
+ * `GET /agents/:name/:id/schedule/:jobId/runs` — every run the DO still retains,
+ * most recent first, each run's captured stdout/stderr. Fetched lazily per row
+ * (on a "view run history" click), not an `Atom.family` that would fire N
+ * requests just to render the job list.
  */
-export const getLastRunFn = runtime.fn(
+export const listRunsFn = runtime.fn(
   (args: SessionArgs & { readonly jobId: string }) =>
     Effect.gen(function*() {
       const client = yield* ApiClient
-      return yield* client.schedule.getLastRun({
+      return yield* client.schedule.listRuns({
         params: { name: args.name, id: args.id, jobId: args.jobId },
       })
     }),
@@ -72,7 +72,7 @@ export const getLastRunFn = runtime.fn(
  * Mutation fn: fire a scheduled job immediately via
  * `POST /agents/:name/:id/schedule/:jobId/run-now`, independent of its schedule.
  * Resolves with the run's captured output (the same `ScheduledJobRunResponse`
- * shape as {@link getLastRunFn}) once the run completes — the request is held
+ * shape as {@link listRunsFn}) once the run completes — the request is held
  * open for the full run, so a slow Runner cold-start keeps it pending rather
  * than failing.
  */

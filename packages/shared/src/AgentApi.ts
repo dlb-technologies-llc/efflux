@@ -39,7 +39,7 @@ import {
   SkillListResponse,
 } from "./Skills.ts"
 import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
-import { ScheduledJobListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
+import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -270,10 +270,10 @@ const deleteScheduledJob = HttpApiEndpoint.delete("deleteScheduledJob", "/agents
   error: AgentError,
 })
 
-/** A scheduled job's most recent run — its actual captured stdout/stderr, otherwise generated and discarded with no way to see it. `run` is null when the job hasn't fired yet. */
-const getLastRun = HttpApiEndpoint.get("getLastRun", "/agents/:name/:id/schedule/:jobId/run", {
+/** A scheduled job's full run history — every run the DO still retains, most recent first (its captured stdout/stderr per run). `runs` is empty when the job hasn't fired yet. Subsumes the last run (it is `runs[0]`). */
+const listRuns = HttpApiEndpoint.get("listRuns", "/agents/:name/:id/schedule/:jobId/runs", {
   params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
-  success: ScheduledJobRunResponse,
+  success: ScheduledJobRunListResponse,
   error: AgentError,
 })
 
@@ -302,7 +302,7 @@ const runScheduledJobNow = HttpApiEndpoint.post("runScheduledJobNow", "/agents/:
 export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(listScheduledJobs)
   .add(deleteScheduledJob)
-  .add(getLastRun)
+  .add(listRuns)
   .add(pauseScheduledJob)
   .add(resumeScheduledJob)
   .add(runScheduledJobNow)

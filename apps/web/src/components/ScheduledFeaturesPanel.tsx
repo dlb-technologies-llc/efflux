@@ -1,9 +1,15 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { ScheduledJobRunDetail, ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
+import type {
+  ScheduledJobRunDetail,
+  ScheduledJobRunListResponse,
+  ScheduledJobRunResponse,
+  ScheduledJobSummary,
+} from "@efflux/shared"
 import { Exit } from "effect"
-import { CalendarClock } from "lucide-react"
+import { CalendarClock, ChevronRight } from "lucide-react"
 import * as React from "react"
 import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -13,9 +19,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { cn } from "@/lib/utils"
 import {
   deleteScheduledJobFn,
-  getLastRunFn,
+  listRunsFn,
   pauseScheduledJobFn,
   resumeScheduledJobFn,
   runScheduledJobNowFn,
@@ -26,17 +33,10 @@ import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Spinner } from "./Spinner.tsx"
 
-/** Presentational render of one captured run (stdout / stderr / exit code), or a "hasn't run yet" note when `run` is null. Shared by the lazy `LastRunDetail` fetch and the inline "Run now" result so both render output identically. */
-function RunDetailView({ run }: { readonly run: ScheduledJobRunDetail | null }): React.ReactNode {
-  if (run === null) {
-    return <p className="px-1 text-xs text-muted-foreground">Hasn't run yet.</p>
-  }
+/** The stdout / stderr `<pre>` blocks for one captured run (or a "(no output captured)" note when both are empty). Shared by `RunDetailView` and `RunHistoryRow`. */
+function RunOutput({ run }: { readonly run: ScheduledJobRunDetail }): React.ReactNode {
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-subtle p-2 font-mono text-xs">
-      <div className="flex flex-wrap gap-3 text-muted-foreground">
-        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
-        <span>Exit code: {run.exitCode}</span>
-      </div>
+    <>
       {run.stdoutExcerpt.length > 0 ? (
         <div>
           <div className="text-muted-foreground">stdout</div>
@@ -54,22 +54,63 @@ function RunDetailView({ run }: { readonly run: ScheduledJobRunDetail | null }):
       {run.stdoutExcerpt.length === 0 && run.stderrExcerpt.length === 0 ? (
         <p className="text-muted-foreground">(no output captured)</p>
       ) : null}
+    </>
+  )
+}
+
+/** Presentational render of one captured run (stdout / stderr / exit code), or a "hasn't run yet" note when `run` is null. Used by the inline "Run now" result so it renders output identically to the history rows. */
+function RunDetailView({ run }: { readonly run: ScheduledJobRunDetail | null }): React.ReactNode {
+  if (run === null) {
+    return <p className="px-1 text-xs text-muted-foreground">Hasn't run yet.</p>
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-subtle p-2 font-mono text-xs">
+      <div className="flex flex-wrap gap-3 text-muted-foreground">
+        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
+        <span>Exit code: {run.exitCode}</span>
+      </div>
+      <RunOutput run={run} />
     </div>
   )
 }
 
+/** One run in the history list: a click-to-expand summary row (started time, exit code, a pass/fail dot derived from `exitCode === 0`) that reveals the run's captured stdout/stderr on expand. Built on the shared `Collapsible` primitive for its disclosure semantics (aria-expanded, keyboard). */
+function RunHistoryRow({ run }: { readonly run: ScheduledJobRunDetail }) {
+  const [open, setOpen] = React.useState(false)
+  const ok = run.exitCode === 0
+  return (
+    <li>
+      <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border border-border">
+        <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <ChevronRight
+            className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open ? "rotate-90" : "")}
+          />
+          <span className={cn("size-2 shrink-0 rounded-full", ok ? "bg-accent" : "bg-destructive")} />
+          <span className="text-foreground">{new Date(run.startedAt).toLocaleString()}</span>
+          <span className="text-muted-foreground">exit {run.exitCode}</span>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="px-2 pb-2 font-mono text-xs">
+            <RunOutput run={run} />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </li>
+  )
+}
+
 /**
- * The expanded "view last run" body for one job: fetches lazily on first
- * expand via `getLastRunFn`, then renders the captured stdout/stderr — a
- * run's actual output is otherwise generated and immediately discarded,
- * visible nowhere else.
+ * The expanded "view run history" body for one job: fetches lazily on first
+ * expand via `listRunsFn`, then renders every captured run as a collapsed,
+ * click-to-expand row (newest first) — a run's actual output is otherwise
+ * generated and immediately discarded, visible nowhere else.
  */
-function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; readonly jobId: string }) {
-  const runFetch = useAtomSet(getLastRunFn, { mode: "promiseExit" })
+function RunHistoryDetail({ session, jobId }: { readonly session: SessionArgs; readonly jobId: string }) {
+  const runFetch = useAtomSet(listRunsFn, { mode: "promiseExit" })
   const [state, setState] = React.useState<
     | { readonly _tag: "loading" }
     | { readonly _tag: "error"; readonly message: string }
-    | { readonly _tag: "loaded"; readonly response: ScheduledJobRunResponse }
+    | { readonly _tag: "loaded"; readonly response: ScheduledJobRunListResponse }
   >({ _tag: "loading" })
 
   React.useEffect(() => {
@@ -78,7 +119,7 @@ function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; read
     void runFetch({ ...session, jobId }).then((exit) => {
       if (cancelled) return
       Exit.match(exit, {
-        onFailure: (cause) => setState({ _tag: "error", message: failureMessage(cause, "Failed to load last run") }),
+        onFailure: (cause) => setState({ _tag: "error", message: failureMessage(cause, "Failed to load run history") }),
         onSuccess: (response) => setState({ _tag: "loaded", response }),
       })
     })
@@ -90,14 +131,22 @@ function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; read
   if (state._tag === "loading") {
     return (
       <div className="px-1">
-        <Spinner label="Loading last run" />
+        <Spinner label="Loading run history" />
       </div>
     )
   }
   if (state._tag === "error") {
     return <p className="px-1 text-xs text-destructive">{state.message}</p>
   }
-  return <RunDetailView run={state.response.run} />
+  return state.response.runs.length === 0 ? (
+    <p className="px-1 text-xs text-muted-foreground">No runs to show.</p>
+  ) : (
+    <ul className="flex max-h-80 flex-col gap-1 overflow-auto px-1">
+      {state.response.runs.map((run, index) => (
+        <RunHistoryRow key={`${run.startedAt}-${index}`} run={run} />
+      ))}
+    </ul>
+  )
 }
 
 interface ScheduledJobRowProps {
@@ -204,11 +253,11 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
             className="text-accent underline-offset-2 hover:underline"
             onClick={() => setExpanded((v) => !v)}
           >
-            {expanded ? "Hide last run" : "View last run"}
+            {expanded ? "Hide run history" : "View run history"}
           </button>
         ) : null}
       </div>
-      {expanded ? <LastRunDetail session={session} jobId={job.id} /> : null}
+      {expanded ? <RunHistoryDetail session={session} jobId={job.id} /> : null}
       {running ? (
         <div className="px-1">
           <Spinner label="Running job" />

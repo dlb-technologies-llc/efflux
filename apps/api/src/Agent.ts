@@ -1087,6 +1087,19 @@ export class Agent extends DurableObject<Env> {
     )
   }
 
+  /** Coerce one `scheduled_job_runs` row into the plain run-detail object both `getLastRun` and `listRuns` return across the RPC fence — NULL excerpt columns become `""`. One place so a column/coercion change can't drift the two run shapes apart. */
+  static #rowToRun(
+    row: Record<string, SqlStorageValue>,
+  ): { startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string } {
+    return {
+      startedAt: Number(row.started_at),
+      finishedAt: Number(row.finished_at),
+      exitCode: Number(row.exit_code),
+      stdoutExcerpt: row.stdout_excerpt === null ? "" : String(row.stdout_excerpt),
+      stderrExcerpt: row.stderr_excerpt === null ? "" : String(row.stderr_excerpt),
+    }
+  }
+
   /** The most recent run of one scheduled job, or `undefined` if it hasn't run yet — plain object across the RPC fence. */
   async getLastRun(jobId: string): Promise<
     | { startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string }
@@ -1098,13 +1111,19 @@ export class Agent extends DurableObject<Env> {
         jobId,
       )
       .toArray()[0]
-    if (row === undefined) return undefined
-    return {
-      startedAt: Number(row.started_at),
-      finishedAt: Number(row.finished_at),
-      exitCode: Number(row.exit_code),
-      stdoutExcerpt: row.stdout_excerpt === null ? "" : String(row.stdout_excerpt),
-      stderrExcerpt: row.stderr_excerpt === null ? "" : String(row.stderr_excerpt),
-    }
+    return row === undefined ? undefined : Agent.#rowToRun(row)
+  }
+
+  /** Every stored run of one scheduled job, most recent first — capped at `#MAX_RUNS_PER_JOB` by the recorder's prune, empty when it hasn't fired yet. Plain array across the RPC fence (no Schema.Class, no union — structuredClone-safe). */
+  async listRuns(jobId: string): Promise<
+    Array<{ startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string }>
+  > {
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT started_at, finished_at, exit_code, stdout_excerpt, stderr_excerpt FROM scheduled_job_runs WHERE job_id = ? ORDER BY started_at DESC",
+        jobId,
+      )
+      .toArray()
+    return rows.map((row) => Agent.#rowToRun(row))
   }
 }
