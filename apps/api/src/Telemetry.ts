@@ -17,7 +17,12 @@ import {
 } from "@opentelemetry/sdk-trace-base"
 import { Effect, Layer } from "effect"
 
-/** Build the OpenTelemetry `TracerProvider` from the Effect `Resource`, exporting finished spans to the console synchronously. */
+/**
+ * Build the OpenTelemetry `TracerProvider` from the Effect `Resource`, exporting finished spans to
+ * the console. `SimpleSpanProcessor` flushes on every `span.end()`, so the provider needs no
+ * `shutdown`/`forceFlush` finalizer — a batching or OTLP processor WOULD, or spans buffered at
+ * isolate teardown are lost.
+ */
 const OtelTracerProviderLive = Layer.effect(
   OtelTracer.OtelTracerProvider,
   Effect.gen(function* () {
