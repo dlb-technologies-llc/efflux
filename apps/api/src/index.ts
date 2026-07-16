@@ -145,6 +145,7 @@ const buildWebHandler = (
             ),
           )
         }),
+        Effect.withSpan("http.request"),
       )
       const context = yield* Layer.build(services)
       return HttpEffect.toWebHandlerWith<
