@@ -58,5 +58,15 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
         const agent = agents.getByName(`${params.name}/${params.id}`)
         yield* Effect.promise(() => agent.resumeScheduledJob({ id: params.jobId }))
       }),
+    )
+    .handle("runScheduledJobNow", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        const run = yield* Effect.promise(() => agent.runScheduledJobNow({ id: params.jobId }))
+        return new ScheduledJobRunResponse({
+          run: run === undefined ? null : new ScheduledJobRunDetail(run),
+        })
+      }),
     ),
 )

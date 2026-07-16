@@ -1,5 +1,5 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
+import type { ScheduledJobRunDetail, ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
 import { Exit } from "effect"
 import { CalendarClock } from "lucide-react"
 import * as React from "react"
@@ -18,12 +18,45 @@ import {
   getLastRunFn,
   pauseScheduledJobFn,
   resumeScheduledJobFn,
+  runScheduledJobNowFn,
   scheduledJobsAtom,
 } from "../atoms/schedule.ts"
 import { failureMessage } from "../errors.ts"
 import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Spinner } from "./Spinner.tsx"
+
+/** Presentational render of one captured run (stdout / stderr / exit code), or a "hasn't run yet" note when `run` is null. Shared by the lazy `LastRunDetail` fetch and the inline "Run now" result so both render output identically. */
+function RunDetailView({ run }: { readonly run: ScheduledJobRunDetail | null }): React.ReactNode {
+  if (run === null) {
+    return <p className="px-1 text-xs text-muted-foreground">Hasn't run yet.</p>
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-subtle p-2 font-mono text-xs">
+      <div className="flex flex-wrap gap-3 text-muted-foreground">
+        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
+        <span>Exit code: {run.exitCode}</span>
+      </div>
+      {run.stdoutExcerpt.length > 0 ? (
+        <div>
+          <div className="text-muted-foreground">stdout</div>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words">{run.stdoutExcerpt}</pre>
+        </div>
+      ) : null}
+      {run.stderrExcerpt.length > 0 ? (
+        <div>
+          <div className="text-muted-foreground">stderr</div>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-destructive">
+            {run.stderrExcerpt}
+          </pre>
+        </div>
+      ) : null}
+      {run.stdoutExcerpt.length === 0 && run.stderrExcerpt.length === 0 ? (
+        <p className="text-muted-foreground">(no output captured)</p>
+      ) : null}
+    </div>
+  )
+}
 
 /**
  * The expanded "view last run" body for one job: fetches lazily on first
@@ -64,35 +97,7 @@ function LastRunDetail({ session, jobId }: { readonly session: SessionArgs; read
   if (state._tag === "error") {
     return <p className="px-1 text-xs text-destructive">{state.message}</p>
   }
-  const run = state.response.run
-  if (run === null) {
-    return <p className="px-1 text-xs text-muted-foreground">Hasn't run yet.</p>
-  }
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-subtle p-2 font-mono text-xs">
-      <div className="flex flex-wrap gap-3 text-muted-foreground">
-        <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
-        <span>Exit code: {run.exitCode}</span>
-      </div>
-      {run.stdoutExcerpt.length > 0 ? (
-        <div>
-          <div className="text-muted-foreground">stdout</div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words">{run.stdoutExcerpt}</pre>
-        </div>
-      ) : null}
-      {run.stderrExcerpt.length > 0 ? (
-        <div>
-          <div className="text-muted-foreground">stderr</div>
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-destructive">
-            {run.stderrExcerpt}
-          </pre>
-        </div>
-      ) : null}
-      {run.stdoutExcerpt.length === 0 && run.stderrExcerpt.length === 0 ? (
-        <p className="text-muted-foreground">(no output captured)</p>
-      ) : null}
-    </div>
-  )
+  return <RunDetailView run={state.response.run} />
 }
 
 interface ScheduledJobRowProps {
@@ -113,9 +118,35 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
   const runDelete = useAtomSet(deleteScheduledJobFn, { mode: "promiseExit" })
   const runPause = useAtomSet(pauseScheduledJobFn, { mode: "promiseExit" })
   const runResume = useAtomSet(resumeScheduledJobFn, { mode: "promiseExit" })
+  const runRunNow = useAtomSet(runScheduledJobNowFn, { mode: "promiseExit" })
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [expanded, setExpanded] = React.useState(false)
+  const [running, setRunning] = React.useState(false)
+  const [runNowResult, setRunNowResult] = React.useState<ScheduledJobRunResponse | null>(null)
+
+  const handleRunNow = async () => {
+    setRunning(true)
+    setError(null)
+    setRunNowResult(null)
+    const exit = await runRunNow({ ...session, jobId: job.id })
+    setRunning(false)
+    Exit.match(exit, {
+      onFailure: (cause) => {
+        setError(failureMessage(cause, "Run request failed — the job may still have run; check its Last run status."))
+        onChanged()
+      },
+      onSuccess: (response) => {
+        if (response.run === null) {
+          setError("Job could not be run (it is already running, or was removed).")
+        } else {
+          setExpanded(false)
+          setRunNowResult(response)
+        }
+        onChanged()
+      },
+    })
+  }
 
   const handleDelete = async () => {
     setBusy(true)
@@ -146,10 +177,13 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium text-foreground">{job.description}</span>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={handleTogglePause} disabled={busy}>
+          <Button type="button" variant="secondary" size="sm" onClick={handleRunNow} disabled={busy || running}>
+            {running ? "Running..." : "Run now"}
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={handleTogglePause} disabled={busy || running}>
             {busy ? "Working..." : job.paused ? "Resume" : "Pause"}
           </Button>
-          <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>
+          <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy || running}>
             {busy ? "Working..." : "Delete"}
           </Button>
         </div>
@@ -175,6 +209,16 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
         ) : null}
       </div>
       {expanded ? <LastRunDetail session={session} jobId={job.id} /> : null}
+      {running ? (
+        <div className="px-1">
+          <Spinner label="Running job" />
+        </div>
+      ) : !expanded && runNowResult !== null && runNowResult.run !== null ? (
+        <div className="flex flex-col gap-1">
+          <span className="px-1 text-xs text-muted-foreground">Run now output</span>
+          <RunDetailView run={runNowResult.run} />
+        </div>
+      ) : null}
       {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
     </li>
   )

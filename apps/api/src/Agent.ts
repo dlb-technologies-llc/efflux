@@ -611,6 +611,33 @@ export class Agent extends DurableObject<Env> {
     await this.#rearmAlarm()
   }
 
+  /**
+   * Manually fire one scheduled job immediately, independent of its schedule: look the job up, run it
+   * through the SAME `#runScheduledJob` Runner path the alarm uses, then return the run just recorded
+   * (via {@link getLastRun}). Deliberately touches NEITHER `next_run_at`/the alarm NOR the `paused`
+   * flag — a manual "run now" neither reschedules the job nor un-pauses it, so a paused job can be
+   * test-fired without resuming it. Returns `undefined` when the id no longer exists (deleted between
+   * listing and the click) OR when a run for this job is already in flight (`#runScheduledJob`'s guard
+   * short-circuits) — the handler maps either to a null run. Because the guard forbids overlapping
+   * runs of the same job, `getLastRun` here is unambiguously the run we just triggered, not a racing
+   * one. Return is a plain object identical to `getLastRun`'s, so it crosses the DO RPC fence unchanged.
+   */
+  async runScheduledJobNow(input: { id: string }): Promise<
+    { startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string } | undefined
+  > {
+    const row = this.ctx.storage.sql
+      .exec("SELECT id, entrypoint_command, workspace_snapshot_key FROM scheduled_jobs WHERE id = ?", input.id)
+      .toArray()[0]
+    if (row === undefined) return undefined
+    const ran = await this.#runScheduledJob({
+      id: String(row.id),
+      entrypointCommand: String(row.entrypoint_command),
+      workspaceSnapshotKey: String(row.workspace_snapshot_key),
+    })
+    if (!ran) return undefined
+    return this.getLastRun(input.id)
+  }
+
   /** Wipe all local session state — journal, dirty flag, config overrides, reaper alarm, registry entry, and the R2 workspace snapshot. The R2 delete is best-effort (logged, never thrown) so a transient bucket failure can't reject an alarm-driven `close()` and trigger an alarm-retry storm that writes duplicate archives. */
   async #wipeStorage(): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM journal")
@@ -963,6 +990,9 @@ export class Agent extends DurableObject<Env> {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   }
 
+  /** Job ids with a run currently in flight on this DO instance. `#runScheduledJob` refuses to start a second run for a job already running (whether the first is a manual "run now" or an alarm fire), so at most one run per job is ever live: it prevents two invocations from sharing — and tearing down — the same per-job `Runner` container, and caps billed container cold-starts per job to one. In-memory (not SQL) is correct — it only needs to hold across one awaited run within this DO instance, and an eviction that clears it also cancels the in-flight run. */
+  readonly #runningJobs = new Set<string>()
+
   /**
    * Dispatch one scheduled job on a fresh `Runner`: restore its dedicated workspace snapshot,
    * export any referenced secrets, run the entrypoint command, and record the run. `Runner`
@@ -974,11 +1004,13 @@ export class Agent extends DurableObject<Env> {
     id: string
     entrypointCommand: string
     workspaceSnapshotKey: string
-  }): Promise<void> {
+  }): Promise<boolean> {
     const name = this.ctx.id.name
-    if (name === undefined) return
+    if (name === undefined) return false
+    if (this.#runningJobs.has(job.id)) return false
     const startedAt = Date.now()
     const runner = this.env.RUNNER.get(this.env.RUNNER.idFromName(`${name}:${job.id}`))
+    this.#runningJobs.add(job.id)
     try {
       const snapshot = await this.env.SESSIONS.get(job.workspaceSnapshotKey)
       const body = snapshot === null ? undefined : await snapshot.arrayBuffer()
@@ -1012,12 +1044,14 @@ export class Agent extends DurableObject<Env> {
       const message = error instanceof Error ? error.message : String(error)
       this.#recordJobRun(job.id, startedAt, -1, "", message, `error: ${message.slice(0, 200)}`)
     } finally {
+      this.#runningJobs.delete(job.id)
       try {
         await runner.destroyContainer()
       } catch (error) {
         console.error("runner destroy failed", error)
       }
     }
+    return true
   }
 
   /** Most recent runs to retain per job in `scheduled_job_runs` — bounds otherwise-unbounded growth for a long-lived recurring schedule. */

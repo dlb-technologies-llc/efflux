@@ -291,6 +291,13 @@ const resumeScheduledJob = HttpApiEndpoint.post("resumeScheduledJob", "/agents/:
   error: AgentError,
 })
 
+/** Fire a scheduled job immediately, independent of its schedule — it runs on a fresh Runner through the same path the alarm uses, records a run, and returns that run's captured output. Does NOT reschedule the job or change its paused state. `run` is null when the job id no longer exists OR a run is already in flight for it (a manual "run now" or an alarm fire holds the per-job guard). */
+const runScheduledJobNow = HttpApiEndpoint.post("runScheduledJobNow", "/agents/:name/:id/schedule/:jobId/run-now", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: ScheduledJobRunResponse,
+  error: AgentError,
+})
+
 /** All scheduled-job endpoints grouped. */
 export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(listScheduledJobs)
@@ -298,6 +305,7 @@ export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(getLastRun)
   .add(pauseScheduledJob)
   .add(resumeScheduledJob)
+  .add(runScheduledJobNow)
   .middleware(AuthMiddleware)
 
 /** All agent endpoints grouped. */

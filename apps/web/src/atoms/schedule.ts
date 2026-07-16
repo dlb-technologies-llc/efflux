@@ -67,3 +67,21 @@ export const getLastRunFn = runtime.fn(
       })
     }),
 )
+
+/**
+ * Mutation fn: fire a scheduled job immediately via
+ * `POST /agents/:name/:id/schedule/:jobId/run-now`, independent of its schedule.
+ * Resolves with the run's captured output (the same `ScheduledJobRunResponse`
+ * shape as {@link getLastRunFn}) once the run completes — the request is held
+ * open for the full run, so a slow Runner cold-start keeps it pending rather
+ * than failing.
+ */
+export const runScheduledJobNowFn = runtime.fn(
+  (args: SessionArgs & { readonly jobId: string }) =>
+    Effect.gen(function*() {
+      const client = yield* ApiClient
+      return yield* client.schedule.runScheduledJobNow({
+        params: { name: args.name, id: args.id, jobId: args.jobId },
+      })
+    }),
+)
