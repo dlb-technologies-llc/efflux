@@ -1107,4 +1107,23 @@ export class Agent extends DurableObject<Env> {
       stderrExcerpt: row.stderr_excerpt === null ? "" : String(row.stderr_excerpt),
     }
   }
+
+  /** Every stored run of one scheduled job, most recent first — capped at `#MAX_RUNS_PER_JOB` by the recorder's prune, empty when it hasn't fired yet. Plain array across the RPC fence (no Schema.Class, no union — structuredClone-safe). */
+  async listRuns(jobId: string): Promise<
+    Array<{ startedAt: number; finishedAt: number; exitCode: number; stdoutExcerpt: string; stderrExcerpt: string }>
+  > {
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT started_at, finished_at, exit_code, stdout_excerpt, stderr_excerpt FROM scheduled_job_runs WHERE job_id = ? ORDER BY started_at DESC",
+        jobId,
+      )
+      .toArray()
+    return rows.map((row) => ({
+      startedAt: Number(row.started_at),
+      finishedAt: Number(row.finished_at),
+      exitCode: Number(row.exit_code),
+      stdoutExcerpt: row.stdout_excerpt === null ? "" : String(row.stdout_excerpt),
+      stderrExcerpt: row.stderr_excerpt === null ? "" : String(row.stderr_excerpt),
+    }))
+  }
 }

@@ -49,3 +49,8 @@ export class ScheduledJobRunDetail extends Schema.Class<ScheduledJobRunDetail>("
 export class ScheduledJobRunResponse extends Schema.Class<ScheduledJobRunResponse>("ScheduledJobRunResponse")({
   run: Schema.NullOr(ScheduledJobRunDetail),
 }) {}
+
+/** Envelope for the run-history endpoint; `runs` holds the job's stored runs, most recent first, capped at the DO's per-job retention limit — empty when the job hasn't fired yet. */
+export class ScheduledJobRunListResponse extends Schema.Class<ScheduledJobRunListResponse>("ScheduledJobRunListResponse")({
+  runs: Schema.Array(ScheduledJobRunDetail),
+}) {}

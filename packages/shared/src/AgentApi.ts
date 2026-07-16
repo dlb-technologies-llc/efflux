@@ -39,7 +39,7 @@ import {
   SkillListResponse,
 } from "./Skills.ts"
 import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
-import { ScheduledJobListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
+import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -277,6 +277,13 @@ const getLastRun = HttpApiEndpoint.get("getLastRun", "/agents/:name/:id/schedule
   error: AgentError,
 })
 
+/** A scheduled job's full run history — every run the DO still retains, most recent first (its captured stdout/stderr per run). `runs` is empty when the job hasn't fired yet. */
+const listRuns = HttpApiEndpoint.get("listRuns", "/agents/:name/:id/schedule/:jobId/runs", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: ScheduledJobRunListResponse,
+  error: AgentError,
+})
+
 /** Pause a scheduled job — it stops firing while retaining all config. Idempotent. */
 const pauseScheduledJob = HttpApiEndpoint.post("pauseScheduledJob", "/agents/:name/:id/schedule/:jobId/pause", {
   params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
@@ -303,6 +310,7 @@ export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(listScheduledJobs)
   .add(deleteScheduledJob)
   .add(getLastRun)
+  .add(listRuns)
   .add(pauseScheduledJob)
   .add(resumeScheduledJob)
   .add(runScheduledJobNow)

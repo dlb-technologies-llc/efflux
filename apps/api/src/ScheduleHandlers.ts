@@ -1,4 +1,4 @@
-import { AgentApi, ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
+import { AgentApi, ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "@efflux/shared"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentStub } from "./AgentStub.ts"
@@ -42,6 +42,16 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
         const run = yield* Effect.promise(() => agent.getLastRun(params.jobId))
         return new ScheduledJobRunResponse({
           run: run === undefined ? null : new ScheduledJobRunDetail(run),
+        })
+      }),
+    )
+    .handle("listRuns", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        const runs = yield* Effect.promise(() => agent.listRuns(params.jobId))
+        return new ScheduledJobRunListResponse({
+          runs: runs.map((run) => new ScheduledJobRunDetail(run)),
         })
       }),
     )
