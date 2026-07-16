@@ -104,17 +104,17 @@ export const buildSessionToolkit = (mcpServers: ReadonlyArray<McpServer>) =>
         seen.add(namespaced)
         const dyn = buildDynamicTool(namespaced, def)
         tools.push(dyn)
-        handlers[dyn.name] = (params) =>
-          Effect.gen(function* () {
+        handlers[dyn.name] = Effect.fn(`tool.${namespaced}`)(
+          function* (params) {
             const rules = yield* ApprovalRules
             if (resolveRule(rules, namespaced) === "deny") {
               return `Error: tool "${namespaced}" is denied by session policy`
             }
             const { text, isError } = yield* client.callTool(def.name, params)
             return capForPrompt(isError ? `Error: ${text}` : text)
-          }).pipe(
-            Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
-          )
+          },
+          Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
+        )
       }
     }
 

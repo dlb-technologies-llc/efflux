@@ -421,9 +421,11 @@ export const AgentToolkit = Toolkit.make(
 )
 
 export const AgentToolkitLayer = AgentToolkit.toLayer({
-  GetCurrentTime: () => Effect.sync(() => new Date().toISOString()),
-  SpawnSubagent: (params) =>
-    runSubagent({
+  GetCurrentTime: Effect.fn("tool.GetCurrentTime")(function* () {
+    return yield* Effect.sync(() => new Date().toISOString())
+  }),
+  SpawnSubagent: Effect.fn("tool.SpawnSubagent")(function* (params) {
+    return yield* runSubagent({
       prompt: params.prompt,
       ...(params.skill !== undefined ? { skill: params.skill } : {}),
       ...(params.role !== undefined ? { role: params.role } : {}),
@@ -446,43 +448,45 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
           Effect.succeed(`Error: Role not found: ${e.role}`),
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
-    ),
-  list_skills: () =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "list_skills") === "deny") return []
-      return yield* listSkills().pipe(
-        Effect.map((skills) =>
-          skills.map(
-            (s) => new SkillSummary({ name: s.name, description: s.description }),
-          ),
+    )
+  }),
+  list_skills: Effect.fn("tool.list_skills")(function* () {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "list_skills") === "deny") return []
+    return yield* listSkills().pipe(
+      Effect.map((skills) =>
+        skills.map(
+          (s) => new SkillSummary({ name: s.name, description: s.description }),
         ),
-        Effect.tapErrorTag("AgentError", (e) =>
-          Effect.logWarning(`list_skills: ${e.message}`),
-        ),
-        Effect.catchTag("AgentError", () => Effect.succeed([])),
-      )
-    }),
-  load_skill: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
-      return yield* loadSkillBody(params.name).pipe(
-        Effect.map(capForPrompt),
-        Effect.tapErrorTag("SkillNotFoundError", (e) =>
-          Effect.logWarning(`load_skill: not found: ${e.skill}`),
-        ),
-        Effect.catchTags({
-          SkillNotFoundError: (e) =>
-            Effect.succeed(`Error: Skill not found: ${e.skill}`),
-          AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
-        }),
-      )
-    }),
-  Bash: (params) => guardExec("Bash", execCapped(params.command)),
-  read_file: (params) =>
-    guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`)),
-  write_file: (params) => {
+      ),
+      Effect.tapErrorTag("AgentError", (e) =>
+        Effect.logWarning(`list_skills: ${e.message}`),
+      ),
+      Effect.catchTag("AgentError", () => Effect.succeed([])),
+    )
+  }),
+  load_skill: Effect.fn("tool.load_skill")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
+    return yield* loadSkillBody(params.name).pipe(
+      Effect.map(capForPrompt),
+      Effect.tapErrorTag("SkillNotFoundError", (e) =>
+        Effect.logWarning(`load_skill: not found: ${e.skill}`),
+      ),
+      Effect.catchTags({
+        SkillNotFoundError: (e) =>
+          Effect.succeed(`Error: Skill not found: ${e.skill}`),
+        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+      }),
+    )
+  }),
+  Bash: Effect.fn("tool.Bash")(function* (params) {
+    return yield* guardExec("Bash", execCapped(params.command))
+  }),
+  read_file: Effect.fn("tool.read_file")(function* (params) {
+    return yield* guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`))
+  }),
+  write_file: Effect.fn("tool.write_file")(function* (params) {
     const command = bunEval(
       {
         EFFLUX_PATH: Encoding.encodeBase64(params.path),
@@ -490,14 +494,14 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       WRITE_SCRIPT,
     )
-    return guardExec(
+    return yield* guardExec(
       "write_file",
       command.length > MAX_COMMAND_CHARS
         ? Effect.succeed(commandTooLarge("content"))
         : execCapped(command),
     )
-  },
-  edit_file: (params) => {
+  }),
+  edit_file: Effect.fn("tool.edit_file")(function* (params) {
     const command = bunEval(
       {
         EFFLUX_PATH: Encoding.encodeBase64(params.path),
@@ -507,15 +511,15 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       EDIT_SCRIPT,
     )
-    return guardExec(
+    return yield* guardExec(
       "edit_file",
       command.length > MAX_COMMAND_CHARS
         ? Effect.succeed(commandTooLarge("old_string/new_string"))
         : execCapped(command),
     )
-  },
-  glob: (params) =>
-    guardExec(
+  }),
+  glob: Effect.fn("tool.glob")(function* (params) {
+    return yield* guardExec(
       "glob",
       execCapped(
         bunEval(
@@ -526,58 +530,59 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
           GLOB_SCRIPT,
         ),
       ),
-    ),
-  grep: (params) =>
-    guardExec(
+    )
+  }),
+  grep: Effect.fn("tool.grep")(function* (params) {
+    return yield* guardExec(
       "grep",
       execCapped(
         `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
       ),
-    ),
-  web_fetch: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      return resolveRule(rules, "web_fetch") === "deny"
-        ? webFetchError("denied by session policy")
-        : yield* runWebFetch(params.url)
-    }),
-  search_knowledge: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
-      return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
-        Effect.map(capForPrompt),
-        Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
-        Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
-      )
-    }),
-  todo_write: (params) =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
-      const store = yield* TodoStore
-      yield* store.write(params.items)
-      return `Updated task list:\n${formatTodos(params.items)}`
-    }),
-  todo_read: () =>
-    Effect.gen(function* () {
-      const rules = yield* ApprovalRules
-      if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
-      const store = yield* TodoStore
-      return formatTodos(yield* store.read)
-    }),
-  has_secret: (params) => SecretsStore.use((store) => store.has(params.name)),
+    )
+  }),
+  web_fetch: Effect.fn("tool.web_fetch")(function* (params) {
+    const rules = yield* ApprovalRules
+    return resolveRule(rules, "web_fetch") === "deny"
+      ? webFetchError("denied by session policy")
+      : yield* runWebFetch(params.url)
+  }),
+  search_knowledge: Effect.fn("tool.search_knowledge")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
+    return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
+      Effect.map(capForPrompt),
+      Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
+      Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
+    )
+  }),
+  todo_write: Effect.fn("tool.todo_write")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
+    const store = yield* TodoStore
+    yield* store.write(params.items)
+    return `Updated task list:\n${formatTodos(params.items)}`
+  }),
+  todo_read: Effect.fn("tool.todo_read")(function* () {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
+    const store = yield* TodoStore
+    return formatTodos(yield* store.read)
+  }),
+  has_secret: Effect.fn("tool.has_secret")(function* (params) {
+    return yield* SecretsStore.use((store) => store.has(params.name))
+  }),
   /** Runs after human approval resumes the parked turn — but approval only means "resume the turn," not "the secret was actually stored" (the generic /approve endpoint can resolve ANY parked call with approved:true, including one where the FE's submit-secret-then-approve two-step never ran, e.g. a direct API caller). Actually checks has() and reports the true outcome either way; never reads or returns the secret's raw value. */
-  request_secret: (params) =>
-    SecretsStore.use((store) => store.has(params.name)).pipe(
+  request_secret: Effect.fn("tool.request_secret")(function* (params) {
+    return yield* SecretsStore.use((store) => store.has(params.name)).pipe(
       Effect.map((exists) =>
         exists
           ? `${params.name} is now available`
           : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
       ),
-    ),
-  create_scheduled_job: (params) =>
-    ScheduledJobs.use((jobs) =>
+    )
+  }),
+  create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
+    return yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
@@ -589,5 +594,6 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
           ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
           : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
       ),
-    ),
+    )
+  }),
 })
