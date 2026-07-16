@@ -1,5 +1,6 @@
-import { useAtomValue } from "@effect/atom-react"
-import { type RulesMap, resolveRule, type ToolInfo, type ToolRule } from "@efflux/shared"
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
+import { type RulesMap, resolveRule, type ToolInfo, ToolRule } from "@efflux/shared"
+import { Exit, Schema } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
 import { ChevronRightIcon } from "lucide-react"
 import * as React from "react"
@@ -8,10 +9,18 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { sessionConfigAtom, toolsAtom } from "../atoms/tools.ts"
+import { sessionConfigAtom, setToolRuleFn, toolsAtom } from "../atoms/tools.ts"
+import { failureMessage } from "../errors.ts"
 import { prettyParams } from "../format.ts"
-import { currentSessionAtom } from "../session.ts"
+import { currentSessionAtom, type SessionArgs } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { StatusPill } from "./StatusPill.tsx"
 
@@ -31,9 +40,38 @@ function GateBadge({ name, rules }: { readonly name: string; readonly rules: Rul
   return <StatusPill state={state} label={label} />
 }
 
-/** One toolkit entry: a collapsible whose header carries the tool name and gate badge, expanding to the description and parameters schema well. */
-function ToolRow({ tool, rules }: { readonly tool: ToolInfo; readonly rules: RulesMap | undefined }) {
+/** Decode a Select value string into a `ToolRule`; the selector only offers schema-valid options, so this never throws and stays cast-free. */
+const decodeToolRule = Schema.decodeUnknownSync(ToolRule)
+
+/** One toolkit entry: a collapsible whose header carries the tool name and gate badge, expanding to the description, parameters schema well, and a per-tool session-approval selector that writes through `setToolRuleFn`. */
+function ToolRow({
+  tool,
+  rules,
+  session,
+}: {
+  readonly tool: ToolInfo
+  readonly rules: RulesMap | undefined
+  readonly session: SessionArgs
+}) {
   const [open, setOpen] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const run = useAtomSet(setToolRuleFn, { mode: "promiseExit" })
+  const refresh = useAtomRefresh(sessionConfigAtom(session))
+
+  const applyRule = async (rule: typeof ToolRule.Type) => {
+    setBusy(true)
+    setError(null)
+    const exit = await run({ ...session, tool: tool.name, rule })
+    if (Exit.isFailure(exit)) {
+      setError(failureMessage(exit.cause, "Could not update rule"))
+      setBusy(false)
+      return
+    }
+    refresh()
+    setBusy(false)
+  }
+
   return (
     <Collapsible
       open={open}
@@ -55,6 +93,30 @@ function ToolRow({ tool, rules }: { readonly tool: ToolInfo; readonly rules: Rul
         <pre className="font-mono text-xs bg-bg-subtle border border-border rounded overflow-x-auto p-3">
           {prettyParams(tool.parameters)}
         </pre>
+        {rules !== undefined ? (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-[0.72rem] uppercase tracking-wider text-muted-foreground">
+              Session approval
+            </span>
+            <Select
+              value={resolveRule(rules, tool.name)}
+              onValueChange={(next) => applyRule(decodeToolRule(next))}
+              disabled={busy}
+            >
+              <SelectTrigger className="ml-auto w-28 font-mono text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(gate).map(([value, { label }]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
+        {error !== null ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
       </CollapsibleContent>
     </Collapsible>
   )
@@ -80,7 +142,7 @@ export function ToolsPanel() {
         {(response) => (
           <div className="flex flex-col gap-2">
             {response.tools.map((tool) => (
-              <ToolRow key={tool.name} tool={tool} rules={rules} />
+              <ToolRow key={tool.name} tool={tool} rules={rules} session={session} />
             ))}
           </div>
         )}

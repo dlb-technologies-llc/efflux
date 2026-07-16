@@ -117,6 +117,17 @@
   --radius-lg: var(--radius-lg);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  --animate-flux: efflux-flux 1.4s ease-in-out infinite backwards;
+}
+
+@keyframes efflux-flux {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @layer base {

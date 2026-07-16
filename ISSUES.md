@@ -400,6 +400,22 @@ reddened the wave typecheck on `TodoStore.read`/`latestTodos`;
 because its consumer `composeMessages` takes a plain union, which masked the same hazard —
 so a passing sibling is NOT evidence the encoded alias is fence-safe.)
 
+**A DISCRIMINATED-UNION DO-method return trips the type transform a second, distinct
+way — the provider layer needs an explicit `Effect.promise<T>` type arg.** A DO method
+returning `Promise<{a}|{b}>` (e.g. a `{ id; nextRunAt } | { error }` result) is proxied as
+a UNION of Promise-intersections — `(Promise<{a}&Disposable>&Pick<…>) | (Promise<{b}&Disposable>&Pick<…>)`.
+TypeScript will NOT collapse that union into a single `PromiseLike<{a}|{b}>` when inferring
+the type parameter of `Effect.promise(() => stub.method())` at the layer that wraps the RPC:
+it infers the FIRST arm and reds on the second (`Type '{b}&Disposable' is not assignable to
+type '{a}&Disposable'`). Fix: give `Effect.promise` an explicit type argument —
+`Effect.promise<{a}|{b}>(() => stub.method())` — matching the union the DO method declares.
+This is unrelated to the `structuredClone` runtime rule and the `typeof X.Encoded` widening
+above; all three are separate DO-fence traps. (full-cron-scheduling #121: `createScheduledJob`'s
+`{ id; nextRunAt } | { error }` return reddened the wave typecheck at `AgentLoop.ts`'s
+`makeScheduledJobsLayer`; an explicit `Effect.promise<CreateScheduledJobResult>(…)` fixed it,
+and the union was extracted to one shared `type` referenced by the DO method, the `ScheduledJobs`
+service, and the layer.)
+
 ### What the symptoms hide
 
 The early surface is **maximally unhelpful**:
@@ -820,3 +836,61 @@ Renaming the checkout directory while a Claude Code session is live orphaned the
 - Re-link the moved worktrees with `git worktree repair <new-worktree-paths>` — with no args it can't find them at their old recorded locations, so pass the NEW paths; then `git worktree prune` clears any orphaned admin entries.
 - For the skills: run them from their files (`.claude/skills/<name>/SKILL.md`) for the rest of the session, or start a FRESH session at the new path, which restores the `/efflux-*` commands and the `efflux-task-executor` agent.
 - Prefer renaming the checkout folder BETWEEN sessions, never during one.
+
+## Iterative testing against the deployed worker instead of `bun run dev` produced a real Container bill
+
+### Symptoms (2026-07-15, feature-generating #98)
+
+A routine feature PR's verification pass — plus the user's own manual testing of the new feature afterward — was driven entirely against the shared deployed worker (`https://efflux.david-0e2.workers.dev`) rather than `bun run dev` locally: many `bun scripts/agent.ts` smoke sessions, dozens of `curl`s against live endpoints, two full `bun run deploy` cycles, and an extended interactive chat session in the browser, all pointed at the deployed URL. The Cloudflare billing dashboard afterward showed **`Container Memory, per GiB-Second`: 9.68M billable units → $23.97** for the billing period — the single largest line item by far. `9.68M GiB-seconds ÷ 4 GiB (the `standard-1` instance's fixed memory) ÷ 3600 ≈ 672 cumulative instance-hours` — the sum of every container instance's alive time across every session, not one container running continuously (Cloudflare's own docs confirm `sleepAfter` actually terminates the instance — `SIGTERM` then `SIGKILL` after 15 min — it does not just idle it).
+
+### Root cause
+
+`/efflux-verifying` already documented "default to LOCAL, deploy only for the final pass" (for speed and to sidesteps deploy races/edge caching), but that guidance wasn't followed here — verification went straight to the deployed worker, and follow-up debugging (an auth incident, then this cost investigation) compounded it with more live-worker round-trips instead of local reproduction. Two multiplying factors made this expensive rather than merely slow: `Sandbox`'s `sleepAfter` was `10m` (each session's container stayed billed for up to 10 minutes after every burst of activity, not just its actual working time), and `standard-1` (4 GiB memory) was used for both `Sandbox` and the new `Runner` without checking whether a smaller instance type (`lite` 0.25 GiB / `basic` 1 GiB) would have sufficed for either workload.
+
+### Fix
+
+- `Sandbox.sleepAfter` shortened `10m` → `1m` (`apps/api/src/Sandbox.ts`) — cuts idle-billed time per session ~10x while still covering back-to-back tool calls within one active turn (typically seconds apart) without cold-starting between them.
+- `/efflux-verifying`, `/efflux-executing`, and `/efflux-planning` all now state the local-first default more forcefully, including "this applies to pointing a human at the app to manually try a change too" — not just the agent's own checklist.
+- **Not done here, worth doing if the bill keeps climbing:** right-size `standard-1` down to `basic` for `Sandbox`/`Runner` (an unverified ~4x memory-cost cut — confirm `basic`'s 1 GiB is actually sufficient for real workloads before switching), and/or destroy `Sandbox` explicitly at the end of every turn instead of relying on `sleepAfter` at all (zero idle billing, but a cold start — and today, no automatic retry — on every single turn, not just after a real gap in activity).
+
+### Why this matters
+
+Cloudflare Container memory bills for the full **provisioned** duration, not actual use (confirmed via Cloudflare's pricing docs) — CPU bills for active use only, but memory and disk do not. Combined with a keep-warm idle window, a bursty, low-utilization workload (a chat agent's occasional Bash calls) can rack up idle-billed time far out of proportion to real work, and — because `wrangler dev` runs Containers entirely through the local Docker daemon with zero Cloudflare billing — none of this shows up during local iteration at all. The bill is the first signal, well after the fact, unless local-first is actually followed.
+
+## `CREATE TABLE IF NOT EXISTS` never migrates an existing table — a new column on an existing table needs its own `ALTER TABLE`
+
+### Symptoms (2026-07-15, feature-generating #98)
+
+Added a `stdout_excerpt` column to an `Agent` DO's `scheduled_job_runs` table (a `CREATE TABLE IF NOT EXISTS ... stdout_excerpt TEXT ...` edit to the constructor). Every DO instance whose table had already been created by an EARLIER version of the constructor — i.e. any session that had already run a scheduled job once before this column was added — immediately started throwing on every subsequent write/read referencing the column:
+
+```
+Uncaught Error: table scheduled_job_runs has no column named stdout_excerpt: SQLITE_ERROR
+```
+
+Thrown from inside the DO's own `alarm()` handler (via `#recordJobRun`), on every alarm firing for that job, repeatedly (Cloudflare retries a throwing alarm handler with backoff, so the same error logs over and over rather than failing once).
+
+### Root cause
+
+`CREATE TABLE IF NOT EXISTS` only handles the case where the table doesn't exist yet — it is a no-op against a table that already exists, columns and all. It does NOT reconcile an existing table's schema with a newer `CREATE TABLE` statement. A DO's SQLite storage is durable across the constructor running again on every future wake-up, so any table created by an OLDER version of the constructor keeps its OLDER shape forever, even after the source code (and therefore the `CREATE TABLE` statement) changes.
+
+### Fix
+
+Pair any new column added to an EXISTING table with an idempotent `ALTER TABLE ... ADD COLUMN`, tolerating both possible states: a brand-new table already has the column (from the `CREATE TABLE` statement itself), so the `ALTER TABLE` fails with `"duplicate column name"` — expected, swallow it. An existing table predating the column genuinely lacks it, so the same statement adds it for real.
+
+```ts
+static #addColumnIfMissing(ctx: DurableObjectState, table: string, column: string, sqlType: string): void {
+  try {
+    ctx.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${sqlType}`)
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("duplicate column name")) {
+      throw error
+    }
+  }
+}
+```
+
+Call it right after the `CREATE TABLE IF NOT EXISTS` for that table, once per new column, in the constructor.
+
+### Why this matters
+
+`CREATE TABLE IF NOT EXISTS` reads as "this makes sure the table has this shape" — it doesn't; it only makes sure the table EXISTS, in whatever shape it already had. Every future column added to an existing DO SQLite table needs this same treatment, not just this one. The bug was caught live, before merge, by actually re-running an already-exercised feature after adding a column to it — a fresh `wrangler dev`/deploy with no prior state would never have hit this, since the table would be created fresh with the new column already present. Worth remembering when a fix "works" on a clean environment: a DO's persistent storage means "clean" and "already has real state from before" are genuinely different test conditions.

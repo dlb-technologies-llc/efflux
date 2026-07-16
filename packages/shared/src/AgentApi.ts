@@ -5,7 +5,7 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
@@ -38,6 +38,8 @@ import {
   SkillContentResponse,
   SkillListResponse,
 } from "./Skills.ts"
+import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
+import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -150,6 +152,17 @@ const putConfig = HttpApiEndpoint.put("putConfig", "/agents/:name/:id/config", {
   success: ResolvedConfig,
 })
 
+/** Flip a single tool's session gate decision, merged into the stored overrides; returns the new effective config. */
+const putToolRule = HttpApiEndpoint.put(
+  "putToolRule",
+  "/agents/:name/:id/config/rules/:tool",
+  {
+    params: Schema.Struct({ name: SafeId, id: SafeId, tool: SafeName }),
+    payload: SetToolRuleRequest,
+    success: ResolvedConfig,
+  },
+)
+
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
   success: SkillListResponse,
@@ -214,6 +227,87 @@ export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(putKnowledge)
   .middleware(AuthMiddleware)
 
+/** Upsert a session secret by key; the value is write-only and never echoed back. */
+const putSecret = HttpApiEndpoint.put("putSecret", "/agents/:name/:id/secrets/:key", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
+  payload: PutSecretRequest,
+  success: SecretSummary,
+  error: AgentError,
+})
+
+/** Every secret key configured for a session, without values. */
+const listSecrets = HttpApiEndpoint.get("listSecrets", "/agents/:name/:id/secrets", {
+  params: AgentParams,
+  success: SecretListResponse,
+  error: AgentError,
+})
+
+/** Delete a single stored secret by key. Idempotent — deleting an absent key still succeeds with no error, mirroring `deleteScheduledJob`. */
+const deleteSecret = HttpApiEndpoint.delete("deleteSecret", "/agents/:name/:id/secrets/:key", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** All secrets CRUD endpoints grouped. */
+export const SecretsGroup = HttpApiGroup.make("secrets")
+  .add(putSecret)
+  .add(listSecrets)
+  .add(deleteSecret)
+  .middleware(AuthMiddleware)
+
+/** Every scheduled job for a session. */
+const listScheduledJobs = HttpApiEndpoint.get("listScheduledJobs", "/agents/:name/:id/schedule", {
+  params: AgentParams,
+  success: ScheduledJobListResponse,
+  error: AgentError,
+})
+
+/** Cancel a scheduled job by id. */
+const deleteScheduledJob = HttpApiEndpoint.delete("deleteScheduledJob", "/agents/:name/:id/schedule/:jobId", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** A scheduled job's full run history — every run the DO still retains, most recent first (its captured stdout/stderr per run). `runs` is empty when the job hasn't fired yet. Subsumes the last run (it is `runs[0]`). */
+const listRuns = HttpApiEndpoint.get("listRuns", "/agents/:name/:id/schedule/:jobId/runs", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: ScheduledJobRunListResponse,
+  error: AgentError,
+})
+
+/** Pause a scheduled job — it stops firing while retaining all config. Idempotent. */
+const pauseScheduledJob = HttpApiEndpoint.post("pauseScheduledJob", "/agents/:name/:id/schedule/:jobId/pause", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** Resume a paused scheduled job — it fires again on its existing schedule (next upcoming slot; missed occurrences are skipped, no immediate catch-up fire). Idempotent. */
+const resumeScheduledJob = HttpApiEndpoint.post("resumeScheduledJob", "/agents/:name/:id/schedule/:jobId/resume", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: Schema.Void,
+  error: AgentError,
+})
+
+/** Fire a scheduled job immediately, independent of its schedule — it runs on a fresh Runner through the same path the alarm uses, records a run, and returns that run's captured output. Does NOT reschedule the job or change its paused state. `run` is null when the job id no longer exists OR a run is already in flight for it (a manual "run now" or an alarm fire holds the per-job guard). */
+const runScheduledJobNow = HttpApiEndpoint.post("runScheduledJobNow", "/agents/:name/:id/schedule/:jobId/run-now", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
+  success: ScheduledJobRunResponse,
+  error: AgentError,
+})
+
+/** All scheduled-job endpoints grouped. */
+export const ScheduleGroup = HttpApiGroup.make("schedule")
+  .add(listScheduledJobs)
+  .add(deleteScheduledJob)
+  .add(listRuns)
+  .add(pauseScheduledJob)
+  .add(resumeScheduledJob)
+  .add(runScheduledJobNow)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -227,6 +321,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(sessions)
   .add(getConfig)
   .add(putConfig)
+  .add(putToolRule)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
@@ -256,4 +351,6 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(V1Group)
   .add(KnowledgeGroup)
   .add(MetaGroup)
+  .add(SecretsGroup)
+  .add(ScheduleGroup)
   .middleware(SchemaErrorMiddleware) {}

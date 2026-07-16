@@ -189,12 +189,12 @@ Changes flow through a plan → execute → verify → postmortem loop, driven b
 - `/efflux-verifying` — deploy + live-worker smoke checklist; typecheck alone never counts as verified.
 - `/efflux-postmortem` — orchestration retrospective that feeds improvements back into the skills.
 - `/efflux-cleaning-up` — post-merge worktree removal, branch deletion, and plan archival.
-- `/efflux-releasing` — promotes `staging`→`main` via a merge PR, then tags and publishes a GitHub Release.
+- `/efflux-releasing` — live-validates the promoted batch against a running worker, then promotes `staging`→`main` via a merge PR (whose body records the per-feature validation), and tags and publishes a GitHub Release.
 - `/efflux-branding` — the design-system / brand-guidelines source of truth; invoke before any frontend work.
 
 `CLAUDE.md` at the repo root holds the current commands, conventions, and a skill index; `ISSUES.md` records known landmines — read it before touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop.
 
-Feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes `staging`→`main` and tags the release. CI gates `typecheck` + `test` (vitest) + `lint` (biome) on every PR.
+Feature PRs target `staging` with `Refs #N`; `/efflux-releasing` promotes `staging`→`main` and tags the release. CI gates `typecheck` + `test` (vitest) + `lint` (biome) on every PR — but a release is cut only after the promoted batch is **live-validated against a running worker** (CI-green alone never certifies a release, since it never exercises the running worker).
 
 ## Testing
 
