@@ -416,9 +416,9 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
     entrypointCommand: Schema.String.annotate({
       description: "Shell command to run when the job fires.",
     }),
-    schedule: Schema.optionalKey(CronExpression).annotate({
+    schedule: Schema.optionalKey(Schema.Union([CronExpression, Schema.Literal("")])).annotate({
       description:
-        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names. Omit entirely to create a chain-only job: it never fires on its own schedule and runs ONLY when another job triggers it via onSuccessJobId/onFailureJobId.",
+        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names. Omit entirely (an empty string is treated as omitted) to create a chain-only job: it never fires on its own schedule and runs ONLY when another job triggers it via onSuccessJobId/onFailureJobId.",
     }),
     notify: Schema.optionalKey(JobNotifyConfig).annotate({
       description:
@@ -428,13 +428,13 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
       description:
         "Optional retry policy. maxAttempts (2-5) is the TOTAL number of tries per firing — the initial run plus up to maxAttempts-1 retries; backoffSeconds (10-3600) is the fixed delay between tries. Retries apply to scheduled and chain-triggered runs; manual 'run now' runs never retry. Failure notifications and onFailure chaining fire only after the final try.",
     }),
-    onSuccessJobId: Schema.optionalKey(SafeId).annotate({
+    onSuccessJobId: Schema.optionalKey(Schema.Union([SafeId, Schema.Literal("")])).annotate({
       description:
-        "Id of another scheduled job in THIS session to trigger when a run succeeds. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id.",
+        "Id of another scheduled job in THIS session to trigger when a run succeeds. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id. Omit when unused (an empty string is treated as omitted).",
     }),
-    onFailureJobId: Schema.optionalKey(SafeId).annotate({
+    onFailureJobId: Schema.optionalKey(Schema.Union([SafeId, Schema.Literal("")])).annotate({
       description:
-        "Id of another scheduled job in THIS session to trigger when a run fails for good — after retries, if any, are exhausted. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id.",
+        "Id of another scheduled job in THIS session to trigger when a run fails for good — after retries, if any, are exhausted. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id. Omit when unused (an empty string is treated as omitted).",
     }),
   }),
   success: Schema.String,
@@ -630,23 +630,27 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       ),
     )
   }),
+  /** Models routinely pad UNUSED optional params with "" instead of omitting them (observed live with gpt-4o-mini); the param schemas admit the empty string and it is normalized to absent here, so a padded call behaves exactly like an omitted one. */
   create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
+    const schedule = params.schedule === "" ? undefined : params.schedule
+    const onSuccessJobId = params.onSuccessJobId === "" ? undefined : params.onSuccessJobId
+    const onFailureJobId = params.onFailureJobId === "" ? undefined : params.onFailureJobId
     return yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
-        ...(params.schedule !== undefined ? { schedule: params.schedule } : {}),
+        ...(schedule !== undefined ? { schedule } : {}),
         ...(params.notify !== undefined ? { notify: params.notify } : {}),
         ...(params.retry !== undefined ? { retry: params.retry } : {}),
-        ...(params.onSuccessJobId !== undefined ? { onSuccessJobId: params.onSuccessJobId } : {}),
-        ...(params.onFailureJobId !== undefined ? { onFailureJobId: params.onFailureJobId } : {}),
+        ...(onSuccessJobId !== undefined ? { onSuccessJobId } : {}),
+        ...(onFailureJobId !== undefined ? { onFailureJobId } : {}),
       }),
     ).pipe(
       Effect.map((result) =>
         "error" in result
           ? `Could not create scheduled job: ${result.error}`
-          : params.schedule !== undefined
-            ? `Scheduled '${params.schedule}' (job ${result.id}) — next run ${new Date(result.nextRunAt).toISOString()} UTC`
+          : schedule !== undefined
+            ? `Scheduled '${schedule}' (job ${result.id}) — next run ${new Date(result.nextRunAt).toISOString()} UTC`
             : `Created chain-only job ${result.id} — it never fires on its own; trigger it from another job's onSuccessJobId/onFailureJobId.`,
       ),
     )
