@@ -41,6 +41,7 @@ import {
 } from "./Skills.ts"
 import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
 import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
+import { MAX_UPLOAD_BYTES, UploadResponse, WorkspaceFilename } from "./Files.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -333,6 +334,26 @@ export const ArchivesGroup = HttpApiGroup.make("archives")
   .add(getArchive)
   .middleware(AuthMiddleware)
 
+/** Raw binary upload body, capped at MAX_UPLOAD_BYTES; the size check runs on decode server-side, so an over-cap upload fails before touching the DO. Encoded side is `Uint8Array` (required by `asUint8Array`). */
+const UploadBody = Schema.Uint8Array.pipe(
+  Schema.check(Schema.isMaxLength(MAX_UPLOAD_BYTES)),
+  HttpApiSchema.asUint8Array(),
+)
+
+/** Upload a file into the session's container `/workspace`; raw request body is the file bytes, `?filename=` names the destination (bare filename, lands at `/workspace/<filename>`). */
+const uploadFile = HttpApiEndpoint.post("uploadFile", "/agents/:name/:id/files", {
+  params: AgentParams,
+  query: { filename: WorkspaceFilename },
+  payload: UploadBody,
+  success: UploadResponse,
+  error: AgentError,
+})
+
+/** Session workspace file endpoints grouped. */
+export const FilesGroup = HttpApiGroup.make("files")
+  .add(uploadFile)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -379,4 +400,5 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(SecretsGroup)
   .add(ScheduleGroup)
   .add(ArchivesGroup)
+  .add(FilesGroup)
   .middleware(SchemaErrorMiddleware) {}

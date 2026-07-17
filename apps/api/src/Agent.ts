@@ -928,29 +928,59 @@ export class Agent extends DurableObject<Env> {
     return this.#hydrating
   }
 
+  /** Tar the live workspace and PUT it to R2 unconditionally — does NOT read/clear the `#DIRTY_KEY` flag. Throws on a bad `/snapshot`. Shared by `snapshotIfDirty` (which owns the dirty-flag gate) and `writeWorkspaceFile` (which must persist without consuming the turn path's flag). */
+  async #snapshotWorkspaceToR2(): Promise<void> {
+    const { sandbox, name } = this.#sandbox()
+    const response = await sandbox.fetch("http://sandbox/snapshot")
+    if (!response.ok) {
+      throw new Error(`workspace snapshot failed ${response.status}: ${await response.text()}`)
+    }
+    const bytes = await response.arrayBuffer()
+    await this.env.SESSIONS.put(Agent.#workspaceKey(name), bytes)
+  }
+
   /**
    * Snapshot the workspace to R2 if any command ran since the last snapshot; the dirty flag clears
-   * before the fetch and re-sets on failure so a concurrent exec's dirty mark isn't wiped.
+   * before the fetch and re-sets on failure so a concurrent exec's dirty mark isn't wiped. Delegates
+   * the tar+PUT to `#snapshotWorkspaceToR2` so there is one snapshot implementation.
    */
   async snapshotIfDirty(): Promise<{ snapshotted: boolean }> {
     const dirty = await this.ctx.storage.get(Agent.#DIRTY_KEY)
     if (dirty !== true) return { snapshotted: false }
     await this.ctx.storage.delete(Agent.#DIRTY_KEY)
     try {
-      const { sandbox, name } = this.#sandbox()
-      const response = await sandbox.fetch("http://sandbox/snapshot")
-      if (!response.ok) {
-        throw new Error(
-          `workspace snapshot failed ${response.status}: ${await response.text()}`,
-        )
-      }
-      const bytes = await response.arrayBuffer()
-      await this.env.SESSIONS.put(Agent.#workspaceKey(name), bytes)
+      await this.#snapshotWorkspaceToR2()
       return { snapshotted: true }
     } catch (e) {
       await this.ctx.storage.put(Agent.#DIRTY_KEY, true)
       throw e
     }
+  }
+
+  /**
+   * Persist a user-uploaded file into the session workspace, durably. Hydrates first (so a prior R2
+   * snapshot is never clobbered), writes the bytes to the live container at `/workspace/<filename>`
+   * via `POST /upload`, then force-snapshots to R2 IMMEDIATELY so the file survives container idle-out
+   * even if no turn runs before the next one (the turn-end snapshot only covers files written during a
+   * turn). Deliberately does NOT read/set/clear `#DIRTY_KEY`: `snapshotIfDirty` clears that flag before
+   * it tars, so consuming it here would suppress a concurrently-running turn's end-of-turn snapshot and
+   * silently drop that turn's completed writes. Throws on any container/R2 failure so the handler
+   * surfaces it as a typed `AgentError`; `filename` is already bounded to a bare, slash-free name by the
+   * `WorkspaceFilename` contract schema.
+   */
+  async writeWorkspaceFile(input: { filename: string; bytes: Uint8Array }): Promise<{ bytes: number }> {
+    const { sandbox, name } = this.#sandbox()
+    await this.#ensureHydrated(sandbox, name)
+    const response = await sandbox.fetch("http://sandbox/upload", {
+      method: "POST",
+      headers: { "x-efflux-filename": input.filename },
+      body: input.bytes,
+    })
+    if (!response.ok) {
+      throw new Error(`workspace upload failed ${response.status}: ${await response.text()}`)
+    }
+    await this.#snapshotWorkspaceToR2()
+    return { bytes: input.bytes.byteLength }
   }
 
   /** Run one command in the session's sandbox; spawn-level failures never throw — they map to `{exitCode: -1, ...}` so Bash reports them in-band. */
