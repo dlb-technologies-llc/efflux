@@ -40,15 +40,19 @@ export const AgentConfig = Schema.Struct({
   compactionThreshold: Schema.optionalKey(
     Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   ),
+  maxTotalTokens: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThanOrEqualTo(1))),
+  maxCostUsd: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThan(0))),
   mcpServers: Schema.optionalKey(Schema.Array(McpServerConfig)),
 })
 
-/** Effective session config after Defaults fallback — the GET/PUT `/config` response. */
+/** Effective session config after Defaults fallback — the GET/PUT `/config` response. `maxTotalTokens`/`maxCostUsd` are always present; `null` = unlimited (no cap). */
 export const ResolvedConfig = Schema.Struct({
   defaultModel: Schema.String,
   rules: ToolRulesMap,
   ttlSeconds: Schema.Number,
   compactionThreshold: Schema.Number,
+  maxTotalTokens: Schema.NullOr(Schema.Number.check(Schema.isGreaterThanOrEqualTo(1))),
+  maxCostUsd: Schema.NullOr(Schema.Number.check(Schema.isGreaterThan(0))),
   mcpServers: Schema.Array(McpServerConfig),
 })
 
