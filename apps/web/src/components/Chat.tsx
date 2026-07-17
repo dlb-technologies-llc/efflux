@@ -380,7 +380,7 @@ export function Chat() {
             <SlashCommandMenu items={filtered} activeIndex={menuIndex} onSelect={acceptSkill} />
           ) : null}
           <Textarea
-            className="w-full max-h-40 resize-none"
+            className="w-full min-h-9 max-h-40 resize-none"
             rows={1}
             placeholder="Message the agent…  type /skill anywhere to apply a skill · ⌘↵ to send"
             value={input}
