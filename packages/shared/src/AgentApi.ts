@@ -13,7 +13,8 @@ import {
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
-import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { JournalResponse, SessionArchive, SessionsResponse } from "./Journal.ts"
+import { ArchiveListResponse } from "./Archives.ts"
 import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
@@ -43,6 +44,11 @@ import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunR
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+)
+
+/** Archive close-timestamp decoded from the path — a non-negative integer epoch-ms, the third segment of the `archives/<name>/<id>/<closedAt>/journal.json` key. */
+const ClosedAtFromString = Schema.NumberFromString.pipe(
   Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 )
 
@@ -308,6 +314,25 @@ export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(runScheduledJobNow)
   .middleware(AuthMiddleware)
 
+/** The archived-session corpus index — every `journal.json` under `archives/`, newest close first. */
+const listArchives = HttpApiEndpoint.get("listArchives", "/archives", {
+  success: ArchiveListResponse,
+  error: AgentError,
+})
+
+/** One archived session's full journal by `name` + `id` + `closedAt` (the three key segments). */
+const getArchive = HttpApiEndpoint.get("getArchive", "/archives/:name/:id/:closedAt", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, closedAt: ClosedAtFromString }),
+  success: SessionArchive,
+  error: AgentError,
+})
+
+/** Read-only archived-corpus endpoints grouped. */
+export const ArchivesGroup = HttpApiGroup.make("archives")
+  .add(listArchives)
+  .add(getArchive)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -353,4 +378,5 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(MetaGroup)
   .add(SecretsGroup)
   .add(ScheduleGroup)
+  .add(ArchivesGroup)
   .middleware(SchemaErrorMiddleware) {}
