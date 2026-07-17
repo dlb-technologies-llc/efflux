@@ -533,7 +533,7 @@ export class Agent extends DurableObject<Env> {
           return { error: "Email notifications need an emailTo recipient address." }
         }
         const from: string = this.env.NOTIFY_EMAIL_FROM
-        if (from === "" || from.includes("<")) {
+        if (from === "") {
           return { error: "Email notifications are not configured on this deployment (NOTIFY_EMAIL_FROM is unset)." }
         }
       }
@@ -1119,10 +1119,17 @@ export class Agent extends DurableObject<Env> {
     if (config.channel === "slack") {
       if (config.slackUrlSecret === undefined) return
       const url = await this.#getSecretValue(config.slackUrlSecret)
-      if (url === undefined) return
+      if (url === undefined) {
+        console.error(`scheduled-job notify skipped: slack secret '${config.slackUrlSecret}' not found`)
+        return
+      }
       await sendSlack(url, outcome)
     } else {
       if (config.emailTo === undefined) return
+      if (this.env.NOTIFY_EMAIL_FROM === "") {
+        console.error("scheduled-job notify skipped: NOTIFY_EMAIL_FROM is unset")
+        return
+      }
       await this.env.EMAIL.send({
         to: config.emailTo,
         from: this.env.NOTIFY_EMAIL_FROM,

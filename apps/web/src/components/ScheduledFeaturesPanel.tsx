@@ -249,7 +249,7 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
         )}
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
         {job.notify !== undefined ? (
-          <Badge variant="outline" className={cn("font-mono font-normal text-muted-foreground")}>
+          <Badge variant="outline" className="font-mono font-normal text-muted-foreground">
             <Bell />
             {job.notify}
           </Badge>

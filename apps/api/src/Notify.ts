@@ -90,18 +90,26 @@ export const formatEmailText = (outcome: NotifyOutcome): string => {
 
 /**
  * Best-effort Slack (or generic `{text}` webhook) delivery: POST the formatted
- * text with a bounded timeout; log a truncated error on a non-2xx, never throw.
- * The Slack URL is user-supplied and this is awaited inside the DO alarm loop,
- * so the timeout keeps a hung endpoint from stalling the alarm.
+ * text with a bounded timeout. NEVER throws — a non-2xx logs the status, and a
+ * fetch rejection (network error, DNS failure, malformed URL, or the timeout
+ * abort) logs only the error's NAME. The raw rejection is deliberately not
+ * logged: a `fetch` `TypeError` on a bad URL embeds the URL in its message, and
+ * the webhook URL is a bearer secret stored encrypted precisely to stay out of
+ * plaintext/logs. This is awaited inside the DO alarm loop, so the timeout also
+ * keeps a hung endpoint from stalling the alarm.
  */
 export const sendSlack = async (webhookUrl: string, outcome: NotifyOutcome): Promise<void> => {
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: formatSlackText(outcome) }),
-    signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
-  })
-  if (!response.ok) {
-    console.error(`slack notify failed ${response.status}: ${(await response.text()).slice(0, 200)}`)
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: formatSlackText(outcome) }),
+      signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      console.error(`slack notify failed: HTTP ${response.status}`)
+    }
+  } catch (error) {
+    console.error(`slack notify errored: ${error instanceof Error ? error.name : "unknown error"}`)
   }
 }
