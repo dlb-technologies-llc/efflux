@@ -49,6 +49,19 @@ export class ApprovalConflictError extends Schema.TaggedErrorClass<ApprovalConfl
   { httpApiStatus: 409 },
 ) {}
 
+/** Raised when a session has reached its token/cost budget and the turn is refused; surfaces as HTTP 402. Carries the totals and caps so the client can show what to raise. */
+export class BudgetExceededError extends Schema.TaggedErrorClass<BudgetExceededError>()(
+  "BudgetExceededError",
+  {
+    message: Schema.String,
+    totalTokens: Schema.Number,
+    totalCost: Schema.Number,
+    maxTotalTokens: Schema.NullOr(Schema.Number),
+    maxCostUsd: Schema.NullOr(Schema.Number),
+  },
+  { httpApiStatus: 402 },
+) {}
+
 /** Best-effort string message from an unknown error-channel value — many endpoint error members carry no `message` field, so direct `.message` access is unsafe. */
 export const messageOf = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "message" in error) {

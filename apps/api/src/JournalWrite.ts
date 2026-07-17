@@ -12,6 +12,7 @@ import {
 import { Effect, Result, Schema } from "effect"
 import { Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
+import { usageEventDelta, type SpendTotals } from "./Budget.ts"
 
 /**
  * Journal-writing helpers shared by the streaming and non-streaming turn
@@ -150,6 +151,10 @@ export const openTurn = (
  * One batched hop-end journal write shared by every turn driver: granular tool
  * events + authoritative `hop-messages` + display text + usage, and `done` only
  * when supplied (a terminal, non-parked finish).
+ *
+ * Returns the hop's `SpendTotals` delta, derived from its `usage` event via
+ * `usageEventDelta` (the `ZERO_SPEND`-equivalent `{ tokens: 0, cost: 0 }` when
+ * the hop recorded no usage), so non-stream drivers can accumulate per-hop spend.
  */
 export const journalHopBatch = (input: {
   agent: ReturnType<AgentNamespace["getByName"]>
@@ -166,6 +171,7 @@ export const journalHopBatch = (input: {
       events.push(new JournalAssistantText({ turn: input.turn, hop: input.hop, text: input.text }))
     }
     const usage = buildUsageEvent({ turn: input.turn, hop: input.hop, model: input.model, parts: input.parts })
+    const delta: SpendTotals = usageEventDelta(usage)
     if (usage !== undefined) events.push(usage)
     if (input.done !== undefined) {
       events.push(
@@ -179,4 +185,5 @@ export const journalHopBatch = (input: {
     if (events.length > 0) {
       yield* Effect.promise(() => input.agent.appendEvents(events.map(eventJson)))
     }
+    return delta
   })

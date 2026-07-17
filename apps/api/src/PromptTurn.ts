@@ -17,6 +17,7 @@ import {
   toAgentError,
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
+import { type SpendCaps, type SpendTotals, addSpend, budgetExceeded } from "./Budget.ts"
 import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
@@ -46,6 +47,10 @@ interface RunPromptTurnInput {
   toolkit: SessionToolkit["toolkit"]
   /** The matching handler layer for `toolkit`, provided into each hop's model call. */
   toolLayer: SessionToolkit["toolLayer"]
+  /** Resolved spend ceilings for this session; the loop stops before a hop that would run over. */
+  readonly caps: SpendCaps
+  /** Cumulative spend BEFORE this turn (summed from the journal); the running total seeds from it. */
+  readonly priorSpend: SpendTotals
 }
 
 /**
@@ -57,7 +62,7 @@ interface RunPromptTurnInput {
 export const runPromptTurn = (
   input: RunPromptTurnInput,
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, caps, initialPrompt, model, priorSpend, rules, toolkit, toolLayer, turn } = input
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
@@ -68,8 +73,10 @@ export const runPromptTurn = (
     let toolCallCount = 0
     let anyHopText = false
     let approval: PromptApproval | undefined
+    let running: SpendTotals = priorSpend
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+      if (budgetExceeded(running, caps)) break
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
@@ -111,7 +118,7 @@ export const runPromptTurn = (
       }
 
       const terminal = !shouldContinueToolLoop(response.finishReason)
-      yield* journalHopBatch({
+      const delta = yield* journalHopBatch({
         agent,
         turn,
         hop,
@@ -120,6 +127,7 @@ export const runPromptTurn = (
         text: response.text,
         ...(terminal ? { done: { finishReason: response.finishReason, toolCallCount } } : {}),
       })
+      running = addSpend(running, delta)
 
       if (terminal) break
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))

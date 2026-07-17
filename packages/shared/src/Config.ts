@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, Struct } from "effect"
 import { MODEL_ID_MAX_LENGTH, SafeName } from "./Schemas.ts"
 
 /** Per-tool gate decision: `allow` runs the tool, `ask` parks the turn for approval, `deny` refuses outright. */
@@ -32,6 +32,12 @@ export const McpServerConfig = Schema.Struct({
 /** Decoded shape of `McpServerConfig`. */
 export type McpServer = typeof McpServerConfig.Type
 
+/** A cumulative token ceiling: a whole number of at least 1. Single source of the token-budget validation rule — shared by `AgentConfig`, `ResolvedConfig`, `SetBudgetRequest`, and the web Budget panel's field validation, so the "impossible value" definition can never drift between server and client. */
+export const MaxTotalTokens = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
+
+/** A cumulative USD-cost ceiling: strictly greater than 0. Single source of the cost-budget validation rule (see `MaxTotalTokens`). */
+export const MaxCostUsd = Schema.Number.check(Schema.isGreaterThan(0))
+
 /** Partial session config overrides; PUT replaces the stored overrides wholesale, unset fields fall back to Defaults. */
 export const AgentConfig = Schema.Struct({
   defaultModel: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MODEL_ID_MAX_LENGTH))),
@@ -40,15 +46,19 @@ export const AgentConfig = Schema.Struct({
   compactionThreshold: Schema.optionalKey(
     Schema.Number.check(Schema.isGreaterThanOrEqualTo(1)),
   ),
+  maxTotalTokens: Schema.optionalKey(MaxTotalTokens),
+  maxCostUsd: Schema.optionalKey(MaxCostUsd),
   mcpServers: Schema.optionalKey(Schema.Array(McpServerConfig)),
 })
 
-/** Effective session config after Defaults fallback — the GET/PUT `/config` response. */
+/** Effective session config after Defaults fallback — the GET/PUT `/config` response. `maxTotalTokens`/`maxCostUsd` are always present; `null` = unlimited (no cap). */
 export const ResolvedConfig = Schema.Struct({
   defaultModel: Schema.String,
   rules: ToolRulesMap,
   ttlSeconds: Schema.Number,
   compactionThreshold: Schema.Number,
+  maxTotalTokens: Schema.NullOr(MaxTotalTokens),
+  maxCostUsd: Schema.NullOr(MaxCostUsd),
   mcpServers: Schema.Array(McpServerConfig),
 })
 
@@ -76,4 +86,30 @@ export const mergeToolRule = (
 ): typeof AgentConfig.Type => ({
   ...overrides,
   rules: { ...(overrides.rules ?? {}), [tool]: rule },
+})
+
+/** Payload for `PUT /agents/:name/:id/config/budget` — the session's token and cost ceilings. Each field is `null` to CLEAR that cap (inherit the default) or a value that must pass `MaxTotalTokens`/`MaxCostUsd`, so an impossible ceiling (zero, negative, fractional tokens) is rejected at decode on both the wire and the client. */
+export const SetBudgetRequest = Schema.Struct({
+  maxTotalTokens: Schema.NullOr(MaxTotalTokens),
+  maxCostUsd: Schema.NullOr(MaxCostUsd),
+})
+
+/** Decoded shape of `SetBudgetRequest`. */
+export type SetBudgetRequest = typeof SetBudgetRequest.Type
+
+/**
+ * Merge a budget change into a session's stored config overrides, preserving
+ * every other override field. A `null` cap CLEARS that override key (the field
+ * is inherit-to-default, never stored as `null`); a value replaces it. Pure —
+ * the caller supplies an already-decoded budget, and `Struct.omit` drops the two
+ * budget keys before re-adding only the set ones, so a clear never leaves a
+ * stale value behind.
+ */
+export const mergeBudget = (
+  overrides: typeof AgentConfig.Type,
+  budget: SetBudgetRequest,
+): typeof AgentConfig.Type => ({
+  ...Struct.omit(overrides, ["maxTotalTokens", "maxCostUsd"]),
+  ...(budget.maxTotalTokens !== null ? { maxTotalTokens: budget.maxTotalTokens } : {}),
+  ...(budget.maxCostUsd !== null ? { maxCostUsd: budget.maxCostUsd } : {}),
 })

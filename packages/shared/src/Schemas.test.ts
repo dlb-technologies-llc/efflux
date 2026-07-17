@@ -73,6 +73,8 @@ const resolvedConfigPins: ReadonlyArray<ResolvedConfig> = [
     rules: {},
     ttlSeconds: 1,
     compactionThreshold: 1,
+    maxTotalTokens: null,
+    maxCostUsd: null,
     mcpServers: [],
   },
   {
@@ -80,6 +82,8 @@ const resolvedConfigPins: ReadonlyArray<ResolvedConfig> = [
     rules: { Bash: "ask", Read: "allow", Write: "deny" },
     ttlSeconds: 3600,
     compactionThreshold: 50,
+    maxTotalTokens: 500000,
+    maxCostUsd: 2.5,
     mcpServers: [{ name: "context7", url: "https://mcp.example.com/sse" }],
   },
 ]
@@ -100,6 +104,7 @@ describe("ResolvedConfig codec", () => {
 const agentConfigPins: ReadonlyArray<typeof AgentConfig.Type> = [
   {},
   { rules: { Bash: "ask" } },
+  { maxTotalTokens: 500000, maxCostUsd: 2.5 },
   {
     defaultModel: "openai/gpt-4o-mini",
     rules: { Bash: "ask", Read: "allow", Write: "deny" },

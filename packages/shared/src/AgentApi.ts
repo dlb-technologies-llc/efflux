@@ -5,16 +5,18 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetBudgetRequest, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
   ApprovalNotFoundError,
+  BudgetExceededError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionArchive, SessionsResponse } from "./Journal.ts"
 import { ArchiveListResponse } from "./Archives.ts"
+import { SessionUsage } from "./Usage.ts"
 import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
@@ -61,7 +63,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError, BudgetExceededError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -145,6 +147,13 @@ const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
 })
 
+/** Cumulative session spend + resolved caps + whether either ceiling is tripped. */
+const usage = HttpApiEndpoint.get("usage", "/agents/:name/:id/usage", {
+  params: AgentParams,
+  success: SessionUsage,
+  error: AgentError,
+})
+
 /** Read the session's effective (resolved) config — stored overrides merged over Defaults. */
 const getConfig = HttpApiEndpoint.get("getConfig", "/agents/:name/:id/config", {
   params: AgentParams,
@@ -168,6 +177,13 @@ const putToolRule = HttpApiEndpoint.put(
     success: ResolvedConfig,
   },
 )
+
+/** Set or clear the session's token/cost budget, merged into the stored overrides; returns the new effective config. Impossible ceilings are rejected by the `SetBudgetRequest` decode. */
+const putBudget = HttpApiEndpoint.put("putBudget", "/agents/:name/:id/config/budget", {
+  params: AgentParams,
+  payload: SetBudgetRequest,
+  success: ResolvedConfig,
+})
 
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
@@ -344,9 +360,11 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(journal)
   .add(attach)
   .add(sessions)
+  .add(usage)
   .add(getConfig)
   .add(putConfig)
   .add(putToolRule)
+  .add(putBudget)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
