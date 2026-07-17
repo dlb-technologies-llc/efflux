@@ -26,7 +26,7 @@ export interface SpendTotals {
 /** The zero point for accumulating a turn's hops. */
 export const ZERO_SPEND: SpendTotals = { tokens: 0, cost: 0 }
 
-/** One hop's spend delta from its `usage` event (or `undefined` when the hop recorded none). Prefer `totalTokens`, else `inputTokens + outputTokens`; cost defaults to 0. */
+/** One hop's spend delta from its `usage` event (or `undefined` when the hop recorded none). Prefer `totalTokens`, else `inputTokens + outputTokens`; cost defaults to 0. This in-turn running total agrees with `Agent.usageTotals()`'s cross-turn `SUM(inputTokens)+SUM(outputTokens)` ONLY because `buildUsageEvent` sets `totalTokens` exactly to `inputTokens + outputTokens` (never a provider-native total) — keep that invariant if either side changes, or the pre-turn seed and the running total silently diverge. */
 export const usageEventDelta = (
   usage:
     | {
