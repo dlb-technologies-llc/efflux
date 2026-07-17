@@ -1,7 +1,8 @@
 import { useAtomRefresh, useAtomSet, useAtomSubscribe, useAtomValue } from "@effect/atom-react"
-import type { StreamPart } from "@efflux/shared"
+import { MAX_UPLOAD_BYTES, type StreamPart } from "@efflux/shared"
 import { Exit } from "effect"
 import { AsyncResult } from "effect/unstable/reactivity"
+import { Paperclip } from "lucide-react"
 import * as React from "react"
 
 import { Button } from "@/components/ui/button"
@@ -9,6 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 
 import { historyAtom, noParts, resumeAtom, streamAtom } from "../atoms.ts"
+import { uploadFileFn } from "../atoms/files.ts"
 import { latestTurnInFlight } from "../atoms/journal.ts"
 import { skillsListAtom } from "../atoms/skills.ts"
 import { failureMessage } from "../errors.ts"
@@ -20,6 +22,7 @@ import {
   selectedSkillAtom,
 } from "../session.ts"
 import { activeSlashToken, skillFromMessage } from "../slashCommand.ts"
+import { toWorkspaceFilename } from "../upload.ts"
 import { useJournal } from "../useJournal.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 import { Message } from "./Message.tsx"
@@ -39,6 +42,11 @@ export function Chat() {
   const [parts, setParts] = React.useState<ReadonlyArray<StreamPart>>(noParts)
   const [pendingUserMessage, setPendingUserMessage] = React.useState<string | null>(null)
   const [atBottom, setAtBottom] = React.useState(true)
+
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = React.useState(false)
+  const [uploadStatus, setUploadStatus] = React.useState<string | null>(null)
+  const runUpload = useAtomSet(uploadFileFn, { mode: "promiseExit" })
 
   const session = useAtomValue(currentSessionAtom)
   const model = useAtomValue(selectedModelAtom)
@@ -151,6 +159,28 @@ export function Chat() {
     }
     return [view]
   })
+
+  /** Upload the picked file's raw bytes to the session workspace: pre-check the 10 MB cap, sanitize the browser name to the contract's `WorkspaceFilename`, then surface an "uploaded ✓" (or error) status pill. Clears the input value each time so re-picking the same file re-fires `onChange`. */
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file === undefined) return
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadStatus("File exceeds the 10 MB limit")
+      event.target.value = ""
+      return
+    }
+    const filename = toWorkspaceFilename(file.name)
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    setUploading(true)
+    setUploadStatus(null)
+    const exit = await runUpload({ ...session, filename, bytes })
+    setUploading(false)
+    Exit.match(exit, {
+      onFailure: (cause) => setUploadStatus(failureMessage(cause, "Upload failed")),
+      onSuccess: () => setUploadStatus(`${filename} uploaded ✓ — reference it as ${filename}`),
+    })
+    event.target.value = ""
+  }
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -316,6 +346,7 @@ export function Chat() {
             {awaitingApproval ? (
               <StatusPill state="warning" dot label="awaiting approval — act in Approvals" />
             ) : null}
+            {uploadStatus !== null ? <StatusPill state="accent" dot label={uploadStatus} /> : null}
             {streamError !== null ? (
               <p className="text-destructive text-sm">{streamError}</p>
             ) : null}
@@ -333,6 +364,17 @@ export function Chat() {
         )}
       </div>
       <form className="flex items-end gap-2 border-t border-border p-3" onSubmit={handleSubmit}>
+        <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChange} />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          disabled={pending || resuming || uploading}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach a file to the workspace"
+        >
+          <Paperclip />
+        </Button>
         <div ref={composerRef} className="relative flex-1">
           {menuOpen ? (
             <SlashCommandMenu items={filtered} activeIndex={menuIndex} onSelect={acceptSkill} />
