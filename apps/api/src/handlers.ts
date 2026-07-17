@@ -195,6 +195,16 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         return yield* loadResolvedConfig(agent)
       }),
     )
+    .handle("putBudget", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() =>
+          agent.setBudget({ maxTotalTokens: payload.maxTotalTokens, maxCostUsd: payload.maxCostUsd }),
+        )
+        return yield* loadResolvedConfig(agent)
+      }),
+    )
     .handle("stream", ({ params, payload }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub

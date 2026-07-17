@@ -5,7 +5,7 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetBudgetRequest, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
@@ -172,6 +172,13 @@ const putToolRule = HttpApiEndpoint.put(
   },
 )
 
+/** Set or clear the session's token/cost budget, merged into the stored overrides; returns the new effective config. Impossible ceilings are rejected by the `SetBudgetRequest` decode. */
+const putBudget = HttpApiEndpoint.put("putBudget", "/agents/:name/:id/config/budget", {
+  params: AgentParams,
+  payload: SetBudgetRequest,
+  success: ResolvedConfig,
+})
+
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
   success: SkillListResponse,
@@ -332,6 +339,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(getConfig)
   .add(putConfig)
   .add(putToolRule)
+  .add(putBudget)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */

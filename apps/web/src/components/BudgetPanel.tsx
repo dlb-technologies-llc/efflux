@@ -1,6 +1,6 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
-import type { SessionUsage } from "@efflux/shared"
-import { Exit } from "effect"
+import { MaxCostUsd, MaxTotalTokens, type SessionUsage } from "@efflux/shared"
+import { Exit, Result, Schema } from "effect"
 import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,10 +17,18 @@ const fmtTokens = (n: number): string => n.toLocaleString("en-US")
 /** Render a USD cost to 4dp — OpenRouter reports fractional cents. */
 const fmtCost = (n: number): string => `$${n.toFixed(4)}`
 
-/** Parse a trimmed cap input: empty string means "no cap" (null); anything else parses to a number for the caller to validate. */
-const parseCap = (raw: string): number | null => {
+const decodeTokenCap = Schema.decodeUnknownResult(MaxTotalTokens)
+const decodeCostCap = Schema.decodeUnknownResult(MaxCostUsd)
+
+/** Validate a cap field's raw text against its shared schema: blank is valid (means unlimited); otherwise the parsed number must decode through the same rule the server enforces. Returns an actionable message, or null when valid. */
+const capError = (
+  raw: string,
+  decode: (value: unknown) => Result.Result<number, unknown>,
+  message: string,
+): string | null => {
   const trimmed = raw.trim()
-  return trimmed.length === 0 ? null : Number(trimmed)
+  if (trimmed.length === 0) return null
+  return Result.isSuccess(decode(Number(trimmed))) ? null : message
 }
 
 /** The spend + editor body, seeded from the loaded `usage`. Remounted (via `key`) whenever the stored caps change, so the inputs re-seed after a save. */
@@ -40,6 +48,10 @@ function BudgetEditor({
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const run = useAtomSet(setBudgetFn, { mode: "promiseExit" })
+
+  const tokenError = capError(tokenInput, decodeTokenCap, "Whole number, at least 1 — or blank for unlimited.")
+  const costError = capError(costInput, decodeCostCap, "Amount greater than 0 — or blank for unlimited.")
+  const formValid = tokenError === null && costError === null
 
   const hasCap = usage.maxTotalTokens !== null || usage.maxCostUsd !== null
   const status: { readonly state: "neutral" | "danger" | "success"; readonly label: string } = !hasCap
@@ -61,17 +73,10 @@ function BudgetEditor({
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const tokens = parseCap(tokenInput)
-    const cost = parseCap(costInput)
-    if (tokens !== null && (!Number.isFinite(tokens) || tokens < 1)) {
-      setError("Token limit must be a whole number of at least 1.")
-      return
-    }
-    if (cost !== null && (!Number.isFinite(cost) || cost <= 0)) {
-      setError("Cost limit must be greater than 0.")
-      return
-    }
-    save(tokens === null ? null : Math.floor(tokens), cost)
+    if (!formValid) return
+    const token = tokenInput.trim()
+    const cost = costInput.trim()
+    save(token.length === 0 ? null : Number(token), cost.length === 0 ? null : Number(cost))
   }
 
   const handleClear = () => {
@@ -111,9 +116,11 @@ function BudgetEditor({
           placeholder="whole tokens — blank for unlimited"
           value={tokenInput}
           onChange={(event) => setTokenInput(event.target.value)}
+          aria-invalid={tokenError !== null}
           className="h-8 font-mono text-xs tabular-nums"
           disabled={busy}
         />
+        {tokenError !== null ? <p className="text-xs text-destructive">{tokenError}</p> : null}
         <label className="text-[0.72rem] uppercase tracking-wider text-muted-foreground" htmlFor="budget-cost-cap">
           Cost limit (USD)
         </label>
@@ -123,11 +130,13 @@ function BudgetEditor({
           placeholder="e.g. 5.00 — blank for unlimited"
           value={costInput}
           onChange={(event) => setCostInput(event.target.value)}
+          aria-invalid={costError !== null}
           className="h-8 font-mono text-xs tabular-nums"
           disabled={busy}
         />
+        {costError !== null ? <p className="text-xs text-destructive">{costError}</p> : null}
         <div className="flex items-center gap-2">
-          <Button type="submit" size="sm" disabled={busy}>
+          <Button type="submit" size="sm" disabled={busy || !formValid}>
             {busy ? "Saving..." : "Save limit"}
           </Button>
           <Button
@@ -148,11 +157,14 @@ function BudgetEditor({
 
 /**
  * Budget panel: the current session's cumulative token/cost spend, whether it
- * has tripped its ceiling, and a form to set or clear the caps. Self-driven off
- * `sessionUsageAtom` for the current session; a save refetches both the usage
- * and the session config so the displayed limit and Tools gate badges stay in
- * sync. Enforcement lives in the Worker loop — an over-budget turn is refused
- * (a 402 on `prompt`/`/v1`, an in-band error frame on the chat stream).
+ * has tripped its ceiling, and a form to set or clear the caps. Field validation
+ * decodes through the shared `MaxTotalTokens`/`MaxCostUsd` schemas — the same
+ * rules the server enforces — so an impossible value can never be submitted.
+ * Self-driven off `sessionUsageAtom`; a save (via the `PUT /config/budget` atom)
+ * refetches both the usage and the session config so the displayed limit and the
+ * Tools gate badges stay in sync. Enforcement lives in the Worker loop — an
+ * over-budget turn is refused (a 402 on `prompt`/`/v1`, an in-band error frame on
+ * the chat stream).
  */
 export function BudgetPanel() {
   const session = useAtomValue(currentSessionAtom)
