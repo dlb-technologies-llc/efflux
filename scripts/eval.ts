@@ -17,7 +17,7 @@
  */
 
 import type { JudgeVerdict } from "./eval-core.ts"
-import { makePromptRequest } from "../packages/shared/src/index.ts"
+import { makePromptRequest, SubagentTaskRequest } from "../packages/shared/src/index.ts"
 import { Console, Effect } from "effect"
 import {
   buildJudgePrompt,
@@ -120,7 +120,9 @@ if (import.meta.main) {
           baselineAnswer,
           candidateAnswer,
         })
-        const judge = yield* api.agents.task({ payload: { prompt: judgePrompt, model: judgeModel } })
+        const judge = yield* api.agents.task({
+          payload: new SubagentTaskRequest({ prompt: judgePrompt, model: judgeModel }),
+        })
         const verdict = parseJudgeVerdict(judge.text)
 
         yield* api.agents.reset({ params: { name: evalName, id: evalId }, query: { mode: "purge" } }).pipe(
