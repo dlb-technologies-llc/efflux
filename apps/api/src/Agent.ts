@@ -1,4 +1,4 @@
-import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JobNotifyConfig, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, nextCronOccurrence, ToolRule, type JobNotify, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JobNotifyConfig, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeBudget, mergeToolRule, nextCronOccurrence, SetBudgetRequest, ToolRule, type JobNotify, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { soonestDeadline } from "./AlarmSchedule.ts"
@@ -350,6 +350,21 @@ export class Agent extends DurableObject<Env> {
     return decoded.inputTokens ?? decoded.totalTokens ?? null
   }
 
+  /** Cumulative token + USD-cost spend across every `usage` event in the journal — the budget total the loop guard and the `/usage` endpoint read. Sums `inputTokens`+`outputTokens` (robust to rows missing `totalTokens`) and `cost`. Plain object across the RPC fence (no Schema.Class, no union). */
+  async usageTotals(): Promise<{ tokens: number; cost: number }> {
+    const row = this.ctx.storage.sql
+      .exec(
+        `SELECT
+           COALESCE(SUM(json_extract(payload, '$.inputTokens')), 0) AS input,
+           COALESCE(SUM(json_extract(payload, '$.outputTokens')), 0) AS output,
+           COALESCE(SUM(json_extract(payload, '$.cost')), 0) AS cost
+         FROM journal WHERE type = 'usage'`,
+      )
+      .toArray()[0]
+    if (row === undefined) return { tokens: 0, cost: 0 }
+    return { tokens: Number(row.input) + Number(row.output), cost: Number(row.cost) }
+  }
+
   /** Items of the latest `todo-write` event (empty when none), as PLAIN objects across the RPC fence (Schema.Class instances cannot cross it — see ISSUES.md). */
   async latestTodos(): Promise<Array<PlainTodo>> {
     const row = this.ctx.storage.sql
@@ -443,6 +458,18 @@ export class Agent extends DurableObject<Env> {
       throw new Error("Cannot set tool rule: stored session config is undecodable")
     }
     const next = mergeToolRule(decoded.success, tool, validRule)
+    await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(next))
+  }
+
+  /** Atomically set or clear the session's token/cost budget in the stored overrides (read-merge-write in a single DO request, so concurrent writes can't lose an update). `budget` is re-decoded through `SetBudgetRequest` at the fence — it crosses RPC as a plain object, and an impossible ceiling is rejected here as well as at the HTTP edge. Dies (never silently resets to `{}`) if the stored config is undecodable, so a budget change can never wipe the other overrides — mirrors `setToolRule`. */
+  async setBudget(budget: { maxTotalTokens: number | null; maxCostUsd: number | null }): Promise<void> {
+    const validBudget = Schema.decodeUnknownSync(SetBudgetRequest)(budget)
+    const raw = await this.ctx.storage.get(Agent.#CONFIG_KEY)
+    const decoded = decodeConfig(raw === undefined ? {} : JSON.parse(String(raw)))
+    if (Result.isFailure(decoded)) {
+      throw new Error("Cannot set budget: stored session config is undecodable")
+    }
+    const next = mergeBudget(decoded.success, validBudget)
     await this.ctx.storage.put(Agent.#CONFIG_KEY, JSON.stringify(next))
   }
 

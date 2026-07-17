@@ -2,6 +2,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { AppShell } from "./components/AppShell.tsx"
 import { ApprovalCards } from "./components/ApprovalCards.tsx"
+import { BudgetPanel } from "./components/BudgetPanel.tsx"
 import { Chat } from "./components/Chat.tsx"
 import { JournalTimeline } from "./components/JournalTimeline.tsx"
 import { ScheduledFeaturesPanel } from "./components/ScheduledFeaturesPanel.tsx"
@@ -41,12 +42,16 @@ export function App() {
           <TabsList className="w-full">
             <TabsTrigger value="journal">Journal</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
+            <TabsTrigger value="budget">Budget</TabsTrigger>
           </TabsList>
           <TabsContent value="journal">
             <JournalTimeline />
           </TabsContent>
           <TabsContent value="tools">
             <ToolsPanel />
+          </TabsContent>
+          <TabsContent value="budget">
+            <BudgetPanel />
           </TabsContent>
         </Tabs>
       }

@@ -20,6 +20,7 @@ import {
   toAgentError,
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
+import { type SpendCaps, type SpendTotals, addSpend, budgetExceeded } from "./Budget.ts"
 import { eventJson, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
@@ -51,6 +52,10 @@ interface FacadeTurnInput {
   /** The matching handler layer for `toolkit`, provided into each hop's model call. */
   readonly toolLayer: SessionToolkit["toolLayer"]
   readonly meta: TurnMeta
+  /** Resolved spend ceilings for this session; the loop stops before a hop that would run over. */
+  readonly caps: SpendCaps
+  /** Cumulative spend BEFORE this turn (summed from the journal); the running total seeds from it. */
+  readonly priorSpend: SpendTotals
 }
 
 /** Streaming driver inputs: the root context is forwarded so the forked stream can reach the model + skills bucket. */
@@ -71,7 +76,7 @@ const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are di
 export const collectOpenAiTurn = (
   input: FacadeTurnInput,
 ): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, caps, initialPrompt, model, priorSpend, rules, toolkit, toolLayer, turn } = input
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
@@ -81,8 +86,10 @@ export const collectOpenAiTurn = (
     let lastInputTokens = 0
     let totalOutputTokens = 0
     let toolCallCount = 0
+    let running: SpendTotals = priorSpend
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+      if (budgetExceeded(running, caps)) break
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
@@ -111,7 +118,7 @@ export const collectOpenAiTurn = (
       }
 
       const terminal = !shouldContinueToolLoop(response.finishReason)
-      yield* journalHopBatch({
+      const delta = yield* journalHopBatch({
         agent,
         turn,
         hop,
@@ -120,6 +127,7 @@ export const collectOpenAiTurn = (
         text: response.text,
         ...(terminal ? { done: { finishReason: response.finishReason, toolCallCount } } : {}),
       })
+      running = addSpend(running, delta)
 
       if (terminal) break
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
@@ -156,7 +164,7 @@ const makeChunk = (
  * as an error and terminates the turn.
  */
 export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, meta, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, ambient, caps, initialPrompt, meta, model, priorSpend, rules, toolkit, toolLayer, turn } = input
 
   const encodeChunk = Schema.encodeSync(ChatCompletionChunk)
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
@@ -174,10 +182,12 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
       const driver = Effect.gen(function* () {
         let promptValue: Prompt.Prompt = initialPrompt
         let totalToolCalls = 0
+        let running: SpendTotals = priorSpend
 
         yield* Queue.offer(queue, makeChunk(meta, { role: "assistant" }, null))
 
         for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+          if (budgetExceeded(running, caps)) break
           const baseCall = LanguageModel.streamText({ prompt: promptValue, toolkit })
           const withModel = baseCall.pipe(
             Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
@@ -228,7 +238,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
               agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: APPROVAL_DISABLED }))]),
             )
           }
-          yield* journalHopBatch({
+          const delta = yield* journalHopBatch({
             agent,
             turn,
             hop,
@@ -239,6 +249,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
               ? { done: { finishReason: lastFinishReason, toolCallCount: totalToolCalls } }
               : {}),
           })
+          running = addSpend(running, delta)
 
           if (terminal) break
           promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
