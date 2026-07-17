@@ -17,6 +17,7 @@ import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
 import { ArchiveHandlers } from "./ArchiveHandlers.ts"
 import { SessionsBucket } from "./ArchiveStore.ts"
+import { FilesHandlers } from "./FilesHandlers.ts"
 import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
@@ -79,6 +80,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
+  Layer.provide(FilesHandlers),
   Layer.provide(SecretsHandlers),
   Layer.provide(ScheduleHandlers),
   Layer.provide(AuthMiddlewareLive),
