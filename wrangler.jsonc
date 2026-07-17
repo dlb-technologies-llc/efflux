@@ -44,6 +44,12 @@
   "ai_search": [
     { "binding": "KNOWLEDGE_SEARCH", "instance_name": "efflux-knowledge", "remote": true }
   ],
+  "send_email": [
+    { "name": "EMAIL" }
+  ],
+  "vars": {
+    "NOTIFY_EMAIL_FROM": ""
+  },
   "triggers": { "crons": ["0 12 * * *"] },
   "observability": { "enabled": true }
 }

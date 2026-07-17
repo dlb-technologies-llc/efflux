@@ -5,6 +5,8 @@
 import {
   CronExpression,
   DEFAULT_TOOL_RULES,
+  type JobNotify,
+  JobNotifyConfig,
   JournalTodoWrite,
   resolveRule,
   type RulesMap,
@@ -56,6 +58,7 @@ export class ScheduledJobs extends Context.Service<
       readonly description: string
       readonly entrypointCommand: string
       readonly schedule: string
+      readonly notify?: JobNotify
     }) => Effect.Effect<CreateScheduledJobResult>
   }
 >()("api/ScheduledJobs") {}
@@ -394,6 +397,10 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
       description:
         "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names.",
     }),
+    notify: Schema.optionalKey(JobNotifyConfig).annotate({
+      description:
+        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. on='failure' alerts only on a non-zero/errored run; on='always' alerts on every run.",
+    }),
   }),
   success: Schema.String,
   dependencies: [ScheduledJobs],
@@ -587,6 +594,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
         schedule: params.schedule,
+        ...(params.notify !== undefined ? { notify: params.notify } : {}),
       }),
     ).pipe(
       Effect.map((result) =>

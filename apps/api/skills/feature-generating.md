@@ -59,5 +59,24 @@ Follow this sequence:
    expression (e.g. `*/10 * * * *`) or an `@daily`/`@hourly` macro. This
    requires the user's explicit approval — they will see the exact command
    and schedule in the approval prompt.
-6. Confirm once approved: tell the user the feature is live and when it
+6. **Offer outcome alerts (optional).** If the user wants to be told how
+   a run went — especially when it fails — pass an optional `notify`
+   object to the same `create_scheduled_job` call. This is a
+   scheduler-level safety net: it fires from the scheduler itself, so it
+   still alerts the user even if the job's own script crashes before it
+   could report anything.
+   - **Slack** (and any other `{text}`-accepting webhook — Discord,
+     PagerDuty): first `request_secret` a secret holding the user's Slack
+     Incoming Webhook URL (uppercase snake_case, e.g. `SLACK_ALERT_URL`),
+     then pass `notify: { channel: "slack", on: "failure",
+     slackUrlSecret: "SLACK_ALERT_URL" }`. Never put the raw webhook URL
+     in the config — it must be a secret referenced by name, exactly like
+     the credentials in step 3.
+   - **Email:** pass `notify: { channel: "email", on: "failure",
+     emailTo: "you@domain" }`. The `emailTo` address must be a verified
+     destination on the account's Email Routing.
+   - `on: "failure"` alerts only when the run fails; `on: "always"`
+     alerts on every run. Use `"failure"` unless the user asks to hear
+     about every run.
+7. Confirm once approved: tell the user the feature is live and when it
    will first run.

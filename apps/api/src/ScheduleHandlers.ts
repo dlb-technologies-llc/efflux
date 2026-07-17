@@ -23,6 +23,7 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
                 approvedAt: job.approvedAt,
                 paused: job.paused,
                 ...(job.lastRunStatus !== undefined ? { lastRunStatus: job.lastRunStatus } : {}),
+                ...(job.notify !== undefined ? { notify: job.notify } : {}),
               }),
           ),
         })
