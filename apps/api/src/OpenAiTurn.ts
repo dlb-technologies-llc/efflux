@@ -78,14 +78,16 @@ export const collectOpenAiTurn = (
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
+  let startMs = 0
+  let toolCallCount = 0
+  let costTotal = 0
+
   const loop = Effect.gen(function* () {
-    const startMs = yield* Clock.currentTimeMillis
+    startMs = yield* Clock.currentTimeMillis
     let promptValue: Prompt.Prompt = initialPrompt
     let text = ""
     let lastInputTokens = 0
     let totalOutputTokens = 0
-    let toolCallCount = 0
-    let costTotal = 0
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
@@ -131,12 +133,21 @@ export const collectOpenAiTurn = (
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
     }
 
-    const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
-    yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: toolCallCount })
     return { text, lastInputTokens, totalOutputTokens }
   })
 
   return loop.pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        startMs === 0
+          ? Effect.void
+          : Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: toolCallCount }),
+              ),
+            ),
+      ),
+    ),
     Effect.ensuring(snapshotWorkspace(agent)),
     Effect.tapCause(journalTurnError(agent, turn)),
   )
@@ -179,11 +190,13 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
         AiError.AiError | Cause.TimeoutError | Cause.Done
       >(64)
 
+      let startMs = 0
+      let totalToolCalls = 0
+      let costTotal = 0
+
       const driver = Effect.gen(function* () {
-        const startMs = yield* Clock.currentTimeMillis
+        startMs = yield* Clock.currentTimeMillis
         let promptValue: Prompt.Prompt = initialPrompt
-        let totalToolCalls = 0
-        let costTotal = 0
 
         yield* Queue.offer(queue, makeChunk(meta, { role: "assistant" }, null))
 
@@ -256,10 +269,19 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
           promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
         }
 
-        const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
-        yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: totalToolCalls })
         yield* Queue.offer(queue, makeChunk(meta, {}, "stop"))
       }).pipe(
+        Effect.ensuring(
+          Effect.suspend(() =>
+            startMs === 0
+              ? Effect.void
+              : Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((now) =>
+                    logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: totalToolCalls }),
+                  ),
+                ),
+          ),
+        ),
         Effect.tapCause((cause) =>
           Effect.promise(() =>
             agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),

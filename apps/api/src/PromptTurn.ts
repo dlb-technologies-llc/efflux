@@ -64,15 +64,18 @@ export const runPromptTurn = (
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
+  let startMs = 0
+  let toolCallCount = 0
+  let costTotal = 0
+  let parked = false
+
   const loop = Effect.gen(function* () {
-    const startMs = yield* Clock.currentTimeMillis
+    startMs = yield* Clock.currentTimeMillis
     let promptValue: Prompt.Prompt = initialPrompt
     let finalText = ""
     let finalFinishReason: AiResponse.FinishReason = "unknown"
-    let toolCallCount = 0
     let anyHopText = false
     let approval: PromptApproval | undefined
-    let costTotal = 0
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
@@ -113,6 +116,7 @@ export const runPromptTurn = (
             toolCallId: approvalPart.toolCallId,
           }
         }
+        parked = true
         break
       }
 
@@ -131,12 +135,21 @@ export const runPromptTurn = (
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
     }
 
-    const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
-    yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: toolCallCount })
     return { finalText, finalFinishReason, toolCallCount, anyHopText, approval }
   })
 
   return loop.pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        parked || startMs === 0
+          ? Effect.void
+          : Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: toolCallCount }),
+              ),
+            ),
+      ),
+    ),
     Effect.ensuring(snapshotWorkspace(agent)),
     Effect.tapCause(journalTurnError(agent, turn)),
   )

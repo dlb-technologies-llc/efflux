@@ -17,7 +17,7 @@ import {
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
-import { logToolMetric } from "./Metrics.ts"
+import { logToolMetric, tapErrorStringMetric } from "./Metrics.ts"
 import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
@@ -430,9 +430,13 @@ export const AgentToolkit = Toolkit.make(
   CreateScheduledJobTool,
 )
 
-/** Record a BashResult-returning tool's metric (exit 0 = ok, anything else = error) and return the result unchanged. */
+/** Record a purpose-built file-op tool's metric (exit 0 = ok, any non-zero = the op failed, e.g. missing file / denied `-1`) and return the result unchanged. */
 const tapBashMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
   logToolMetric(name, result.exitCode === 0 ? "ok" : "error").pipe(Effect.as(result))
+
+/** Record the raw Bash executor's metric: a non-zero COMMAND exit is a normal outcome (e.g. `test`, `diff`, a failing build), not a tool failure — only a denied/failed exec (`exitCode -1`) is an error. */
+const tapBashExecMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
+  logToolMetric(name, result.exitCode === -1 ? "error" : "ok").pipe(Effect.as(result))
 
 /** Record grep's metric (exit 0 or 1 = ok — 1 is "no matches"; exit 2 = real error, -1 = denied) and return the result unchanged. */
 const tapGrepMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
@@ -446,10 +450,6 @@ const tapWebFetchMetric = (
   result: WebFetchResultValue,
 ): Effect.Effect<WebFetchResultValue> =>
   logToolMetric(name, result.status === 0 ? "error" : "ok").pipe(Effect.as(result))
-
-/** Record a string-returning tool's metric (result begins "Error:" = error, else ok) and return the result unchanged. */
-const tapStringMetric = (name: string, result: string): Effect.Effect<string> =>
-  logToolMetric(name, result.startsWith("Error:") ? "error" : "ok").pipe(Effect.as(result))
 
 /** Record a failure-less tool's metric (has_secret/GetCurrentTime, or list_skills' array — always ok) and return the result unchanged. */
 const tapOkMetric = <A>(name: string, result: A): Effect.Effect<A> =>
@@ -485,7 +485,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     )
-    return yield* tapStringMetric("SpawnSubagent", result)
+    return yield* tapErrorStringMetric("SpawnSubagent", result)
   }),
   list_skills: Effect.fn("tool.list_skills")(function* () {
     const rules = yield* ApprovalRules
@@ -521,11 +521,11 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
               AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
             }),
           )
-    return yield* tapStringMetric("load_skill", result)
+    return yield* tapErrorStringMetric("load_skill", result)
   }),
   Bash: Effect.fn("tool.Bash")(function* (params) {
     const result = yield* guardExec("Bash", execCapped(params.command))
-    return yield* tapBashMetric("Bash", result)
+    return yield* tapBashExecMetric("Bash", result)
   }),
   read_file: Effect.fn("tool.read_file")(function* (params) {
     const result = yield* guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`))
@@ -609,24 +609,24 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
             ),
             Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
           )
-    return yield* tapStringMetric("search_knowledge", result)
+    return yield* tapErrorStringMetric("search_knowledge", result)
   }),
   todo_write: Effect.fn("tool.todo_write")(function* (params) {
     const rules = yield* ApprovalRules
     if (resolveRule(rules, "todo_write") === "deny") {
-      return yield* tapStringMetric("todo_write", "Error: denied by session policy")
+      return yield* tapErrorStringMetric("todo_write", "Error: denied by session policy")
     }
     const store = yield* TodoStore
     yield* store.write(params.items)
-    return yield* tapStringMetric("todo_write", `Updated task list:\n${formatTodos(params.items)}`)
+    return yield* tapErrorStringMetric("todo_write", `Updated task list:\n${formatTodos(params.items)}`)
   }),
   todo_read: Effect.fn("tool.todo_read")(function* () {
     const rules = yield* ApprovalRules
     if (resolveRule(rules, "todo_read") === "deny") {
-      return yield* tapStringMetric("todo_read", "Error: denied by session policy")
+      return yield* tapErrorStringMetric("todo_read", "Error: denied by session policy")
     }
     const store = yield* TodoStore
-    return yield* tapStringMetric("todo_read", formatTodos(yield* store.read))
+    return yield* tapErrorStringMetric("todo_read", formatTodos(yield* store.read))
   }),
   has_secret: Effect.fn("tool.has_secret")(function* (params) {
     const result = yield* SecretsStore.use((store) => store.has(params.name))
@@ -641,23 +641,21 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
           : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
       ),
     )
-    return yield* tapStringMetric("request_secret", result)
+    return yield* tapErrorStringMetric("request_secret", result)
   }),
   create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
-    const result = yield* ScheduledJobs.use((jobs) =>
+    const outcome = yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
         schedule: params.schedule,
         ...(params.notify !== undefined ? { notify: params.notify } : {}),
       }),
-    ).pipe(
-      Effect.map((result) =>
-        "error" in result
-          ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
-          : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
-      ),
     )
-    return yield* tapStringMetric("create_scheduled_job", result)
+    const failed = "error" in outcome
+    yield* logToolMetric("create_scheduled_job", failed ? "error" : "ok")
+    return failed
+      ? `Could not schedule '${params.schedule}': ${outcome.error}. Provide a cron expression that has a future occurrence.`
+      : `Scheduled '${params.schedule}' — next run ${new Date(outcome.nextRunAt).toISOString()} UTC`
   }),
 })

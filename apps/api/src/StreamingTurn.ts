@@ -108,12 +108,14 @@ export const runStreamingTurn = (
       AiError.AiError | Cause.TimeoutError | Cause.Done
     >(256)
 
+    let startMs = 0
+    let totalToolCalls = 0
+    let costTotal = 0
+    let parked = false
+
     const hopLoop = Effect.gen(function* () {
-      const startMs = yield* Clock.currentTimeMillis
+      startMs = yield* Clock.currentTimeMillis
       let promptValue: Prompt.Prompt = initialPrompt
-      let totalToolCalls = 0
-      let costTotal = 0
-      let parked = false
       let reachedTerminal = false
       let lastFinishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
       let lastReason: AiResponse.FinishReason | undefined
@@ -271,11 +273,20 @@ export const runStreamingTurn = (
           yield* Queue.offer(queue, { part: lastFinishPart, seq: doneSeqs[0] })
         }
       }
-      const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
-      yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: totalToolCalls })
     })
 
     const driverEffect = hopLoop.pipe(
+      Effect.ensuring(
+        Effect.suspend(() =>
+          parked || startMs === 0
+            ? Effect.void
+            : Clock.currentTimeMillis.pipe(
+                Effect.flatMap((now) =>
+                  logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: totalToolCalls }),
+                ),
+              ),
+        ),
+      ),
       Effect.tap(() =>
         flushPartialHopText.pipe(
           Effect.andThen(snapshotWorkspace(agent)),

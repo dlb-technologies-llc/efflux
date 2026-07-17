@@ -13,16 +13,12 @@ import { resolveRule, type McpServer } from "@efflux/shared"
 import { Effect, Layer, Schema } from "effect"
 import { Tool, Toolkit } from "effect/unstable/ai"
 import { connect, type McpToolDef } from "./Mcp.ts"
-import { logToolMetric } from "./Metrics.ts"
+import { tapErrorStringMetric } from "./Metrics.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 import { capForPrompt } from "./Truncate.ts"
 
 /** Compose the reserved namespaced tool name for a server tool (`mcp__<server>__<tool>`). */
 const mcpToolName = (server: string, tool: string): string => `mcp__${server}__${tool}`
-
-/** Record an MCP dynamic tool's metric from its FINAL returned string (begins "Error:" = error, else ok) and return it unchanged; covers the deny, `isError`, and `McpError`-catch paths, which all normalize to an "Error:"-prefixed string. */
-const tapMcpMetric = (name: string, result: string): Effect.Effect<string> =>
-  logToolMetric(name, result.startsWith("Error:") ? "error" : "ok").pipe(Effect.as(result))
 
 /** Coerce a namespaced name to the provider's `^[A-Za-z0-9_-]{1,64}$` tool-name grammar (disallowed chars → `_`, truncated to 64). */
 const sanitizeToolName = (name: string): string =>
@@ -119,7 +115,7 @@ export const buildSessionToolkit = (mcpServers: ReadonlyArray<McpServer>) =>
             return capForPrompt(isError ? `Error: ${text}` : text)
           },
           Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
-          Effect.flatMap((result) => tapMcpMetric(namespaced, result)),
+          Effect.flatMap((result) => tapErrorStringMetric(namespaced, result)),
         )
       }
     }
