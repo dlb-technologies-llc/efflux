@@ -10,10 +10,12 @@ import {
   AgentError,
   ApprovalConflictError,
   ApprovalNotFoundError,
+  BudgetExceededError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
 import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { SessionUsage } from "./Usage.ts"
 import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
@@ -55,7 +57,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError, BudgetExceededError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -137,6 +139,13 @@ const attach = HttpApiEndpoint.get("attach", "/agents/:name/:id/attach", {
 /** Session registry — every session that has ever received a user message, most recently active first. */
 const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
+})
+
+/** Cumulative session spend + resolved caps + whether either ceiling is tripped. */
+const usage = HttpApiEndpoint.get("usage", "/agents/:name/:id/usage", {
+  params: AgentParams,
+  success: SessionUsage,
+  error: AgentError,
 })
 
 /** Read the session's effective (resolved) config — stored overrides merged over Defaults. */
@@ -319,6 +328,7 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(journal)
   .add(attach)
   .add(sessions)
+  .add(usage)
   .add(getConfig)
   .add(putConfig)
   .add(putToolRule)
