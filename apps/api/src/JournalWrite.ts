@@ -76,6 +76,16 @@ const OpenRouterCostSchema = Schema.Struct({
 })
 const decodeOpenRouterCost = Schema.decodeUnknownResult(OpenRouterCostSchema)
 
+/** The finish part's OpenRouter cost (USD) for one hop, or undefined when absent/malformed. Reuses the existing schema-first decode. */
+export const hopCostUsd = (parts: ReadonlyArray<AiResponse.AnyPart>): number | undefined => {
+  const finish = parts.find((part) => part.type === "finish")
+  if (finish === undefined) return undefined
+  const rawUsage = finish.metadata.openrouter?.usage
+  const costResult =
+    rawUsage !== null && rawUsage !== undefined ? decodeOpenRouterCost(rawUsage) : undefined
+  return costResult !== undefined && Result.isSuccess(costResult) ? costResult.success.cost : undefined
+}
+
 /**
  * Build a hop's `usage` event from its `finish` part: typed token counts plus
  * OpenRouter's cost when reported. Returns undefined when the hop had no finish
@@ -91,15 +101,7 @@ export const buildUsageEvent = (input: {
   if (finish === undefined) return undefined
   const inputTokens = finish.usage.inputTokens.total
   const outputTokens = finish.usage.outputTokens.total
-  const rawUsage = finish.metadata.openrouter?.usage
-  const costResult =
-    rawUsage !== null && rawUsage !== undefined
-      ? decodeOpenRouterCost(rawUsage)
-      : undefined
-  const cost =
-    costResult !== undefined && Result.isSuccess(costResult)
-      ? costResult.success.cost
-      : undefined
+  const cost = hopCostUsd(input.parts)
   return new JournalUsage({
     turn: input.turn,
     hop: input.hop,
