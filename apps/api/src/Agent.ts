@@ -1,9 +1,10 @@
-import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, nextCronOccurrence, ToolRule, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JobNotifyConfig, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeToolRule, nextCronOccurrence, ToolRule, type JobNotify, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { soonestDeadline } from "./AlarmSchedule.ts"
 import { buildArchive } from "./Archive.ts"
 import { DEFAULT_TTL_SECONDS } from "./Defaults.ts"
+import { formatEmailSubject, formatEmailText, sendSlack, type NotifyOutcome } from "./Notify.ts"
 import { decryptSecret, encryptSecret } from "./SecretsCrypto.ts"
 import type { PlainTodo } from "./Todo.ts"
 import type { CreateScheduledJobResult } from "./Tools.ts"
@@ -33,6 +34,9 @@ const decodeStatus = Schema.decodeUnknownResult(StatusSchema)
 
 /** Safe decode of the session's stored config overrides through the canonical `AgentConfig` schema; a failed decode means no usable overrides. */
 const decodeConfig = Schema.decodeUnknownResult(AgentConfig)
+
+/** Safe decode of a scheduled job's stored `notify_config` JSON through the canonical `JobNotifyConfig` schema; a failed decode means no usable notify config (delivery is skipped, no label surfaced). */
+const decodeNotifyConfig = Schema.decodeUnknownResult(JobNotifyConfig)
 
 /** Matches `{{NAME}}` secret references inside a scheduled job's entrypoint command template. */
 const SECRET_REF_PATTERN = /\{\{(\w+)\}\}/g
@@ -93,6 +97,7 @@ export class Agent extends DurableObject<Env> {
     )
     Agent.#addColumnIfMissing(ctx, "scheduled_job_runs", "stdout_excerpt", "TEXT")
     Agent.#addColumnIfMissing(ctx, "scheduled_jobs", "paused", "INTEGER")
+    Agent.#addColumnIfMissing(ctx, "scheduled_jobs", "notify_config", "TEXT")
     Agent.#backfillCronExpression(ctx)
     ctx.blockConcurrencyWhile(async () => {
       const count = ctx.storage.sql
@@ -510,18 +515,35 @@ export class Agent extends DurableObject<Env> {
     description: string
     entrypointCommand: string
     schedule: string
+    notify?: JobNotify
   }): Promise<CreateScheduledJobResult> {
     const now = Date.now()
     const nextRunAt = nextCronOccurrence(input.schedule, now)
     if (nextRunAt === undefined) {
       return { error: "cron expression has no future occurrence: " + input.schedule }
     }
+    if (input.notify !== undefined) {
+      const n = input.notify
+      if (n.channel === "slack") {
+        if (n.slackUrlSecret === undefined || !(await this.hasSecret(n.slackUrlSecret))) {
+          return { error: "Slack notifications need a stored secret holding the webhook URL; request it first." }
+        }
+      } else {
+        if (n.emailTo === undefined) {
+          return { error: "Email notifications need an emailTo recipient address." }
+        }
+        const from: string = this.env.NOTIFY_EMAIL_FROM
+        if (from === "" || from.includes("<")) {
+          return { error: "Email notifications are not configured on this deployment (NOTIFY_EMAIL_FROM is unset)." }
+        }
+      }
+    }
     const id = crypto.randomUUID()
     const { hash, snapshotKey } = await this.#promoteToScheduled(id)
     this.ctx.storage.sql.exec(
       `INSERT INTO scheduled_jobs
-        (id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, cron_expression, workspace_snapshot_key, script_hash, next_run_at, approved_at, last_run_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        (id, description, entrypoint_command, run_at_hour_utc, run_at_minute_utc, cron_expression, workspace_snapshot_key, script_hash, next_run_at, approved_at, last_run_status, notify_config)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       id,
       input.description,
       input.entrypointCommand,
@@ -532,6 +554,7 @@ export class Agent extends DurableObject<Env> {
       hash,
       nextRunAt,
       now,
+      input.notify === undefined ? null : JSON.stringify(input.notify),
     )
     await this.#touchActivity()
     return { id, nextRunAt }
@@ -547,24 +570,33 @@ export class Agent extends DurableObject<Env> {
       nextRunAt: number
       approvedAt: number
       lastRunStatus: string | undefined
+      notify: string | undefined
       paused: boolean
     }>
   > {
     const rows = this.ctx.storage.sql
       .exec(
-        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status, paused FROM scheduled_jobs ORDER BY next_run_at",
+        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status, notify_config, paused FROM scheduled_jobs ORDER BY next_run_at",
       )
       .toArray()
-    return rows.map((row) => ({
-      id: String(row.id),
-      description: String(row.description),
-      entrypointCommand: String(row.entrypoint_command),
-      schedule: String(row.cron_expression),
-      nextRunAt: Number(row.next_run_at),
-      approvedAt: Number(row.approved_at),
-      lastRunStatus: row.last_run_status === null ? undefined : String(row.last_run_status),
-      paused: row.paused !== null && Number(row.paused) === 1,
-    }))
+    return rows.map((row) => {
+      let notify: string | undefined
+      if (row.notify_config !== null) {
+        const decoded = decodeNotifyConfig(JSON.parse(String(row.notify_config)))
+        if (Result.isSuccess(decoded)) notify = `${decoded.success.channel} · on ${decoded.success.on}`
+      }
+      return {
+        id: String(row.id),
+        description: String(row.description),
+        entrypointCommand: String(row.entrypoint_command),
+        schedule: String(row.cron_expression),
+        nextRunAt: Number(row.next_run_at),
+        approvedAt: Number(row.approved_at),
+        lastRunStatus: row.last_run_status === null ? undefined : String(row.last_run_status),
+        notify,
+        paused: row.paused !== null && Number(row.paused) === 1,
+      }
+    })
   }
 
   /**
@@ -1011,6 +1043,7 @@ export class Agent extends DurableObject<Env> {
     const startedAt = Date.now()
     const runner = this.env.RUNNER.get(this.env.RUNNER.idFromName(`${name}:${job.id}`))
     this.#runningJobs.add(job.id)
+    let capturedRun: { exitCode: number; startedAt: number; finishedAt: number; stdoutExcerpt: string; stderrExcerpt: string } | undefined
     try {
       const snapshot = await this.env.SESSIONS.get(job.workspaceSnapshotKey)
       const body = snapshot === null ? undefined : await snapshot.arrayBuffer()
@@ -1040,18 +1073,63 @@ export class Agent extends DurableObject<Env> {
         ? decoded.success.stderr.slice(0, 2000)
         : `malformed exec result: ${text.slice(0, 500)}`
       this.#recordJobRun(job.id, startedAt, exitCode, stdoutExcerpt, stderrExcerpt, exitCode === 0 ? "ok" : `failed (exit ${exitCode})`)
+      capturedRun = { exitCode, startedAt, finishedAt: Date.now(), stdoutExcerpt, stderrExcerpt }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.#recordJobRun(job.id, startedAt, -1, "", message, `error: ${message.slice(0, 200)}`)
+      capturedRun = { exitCode: -1, startedAt, finishedAt: Date.now(), stdoutExcerpt: "", stderrExcerpt: message }
     } finally {
-      this.#runningJobs.delete(job.id)
       try {
         await runner.destroyContainer()
       } catch (error) {
         console.error("runner destroy failed", error)
       }
+      if (capturedRun !== undefined) {
+        try {
+          await this.#deliverNotification(job.id, capturedRun)
+        } catch (error) {
+          console.error("scheduled-job notify failed", error)
+        }
+      }
+      this.#runningJobs.delete(job.id)
     }
     return true
+  }
+
+  /** Best-effort outcome notification for the run just captured by #runScheduledJob. Reads the job's description + stored notify config, applies its filter, resolves the target, and delivers via Slack or the Email Service. Takes the captured run outcome directly (never getLastRun) so a concurrent run can't swap it. Never throws internally on a delivery decision; the caller wraps it best-effort. */
+  async #deliverNotification(
+    jobId: string,
+    run: { exitCode: number; startedAt: number; finishedAt: number; stdoutExcerpt: string; stderrExcerpt: string },
+  ): Promise<void> {
+    const row = this.ctx.storage.sql.exec("SELECT description, notify_config FROM scheduled_jobs WHERE id = ?", jobId).toArray()[0]
+    if (row === undefined || row.notify_config === null) return
+    const decoded = decodeNotifyConfig(JSON.parse(String(row.notify_config)))
+    if (Result.isFailure(decoded)) return
+    const config = decoded.success
+    if (config.on === "failure" && run.exitCode === 0) return
+    const outcome: NotifyOutcome = {
+      description: String(row.description),
+      status: run.exitCode === 0 ? "ok" : `failed (exit ${run.exitCode})`,
+      exitCode: run.exitCode,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      stdoutExcerpt: run.stdoutExcerpt,
+      stderrExcerpt: run.stderrExcerpt,
+    }
+    if (config.channel === "slack") {
+      if (config.slackUrlSecret === undefined) return
+      const url = await this.#getSecretValue(config.slackUrlSecret)
+      if (url === undefined) return
+      await sendSlack(url, outcome)
+    } else {
+      if (config.emailTo === undefined) return
+      await this.env.EMAIL.send({
+        to: config.emailTo,
+        from: this.env.NOTIFY_EMAIL_FROM,
+        subject: formatEmailSubject(outcome),
+        text: formatEmailText(outcome),
+      })
+    }
   }
 
   /** Most recent runs to retain per job in `scheduled_job_runs` — bounds otherwise-unbounded growth for a long-lived recurring schedule. */
