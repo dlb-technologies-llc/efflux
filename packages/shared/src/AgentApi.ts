@@ -5,15 +5,18 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetBudgetRequest, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
   ApprovalNotFoundError,
+  BudgetExceededError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
-import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { JournalResponse, SessionArchive, SessionsResponse } from "./Journal.ts"
+import { ArchiveListResponse } from "./Archives.ts"
+import { SessionUsage } from "./Usage.ts"
 import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
@@ -46,6 +49,11 @@ const SeqFromString = Schema.NumberFromString.pipe(
   Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 )
 
+/** Archive close-timestamp decoded from the path — a non-negative integer epoch-ms, the third segment of the `archives/<name>/<id>/<closedAt>/journal.json` key. */
+const ClosedAtFromString = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+)
+
 const AgentParams = Schema.Struct({
   name: SafeId,
   id: SafeId,
@@ -55,7 +63,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError, BudgetExceededError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -139,6 +147,13 @@ const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
 })
 
+/** Cumulative session spend + resolved caps + whether either ceiling is tripped. */
+const usage = HttpApiEndpoint.get("usage", "/agents/:name/:id/usage", {
+  params: AgentParams,
+  success: SessionUsage,
+  error: AgentError,
+})
+
 /** Read the session's effective (resolved) config — stored overrides merged over Defaults. */
 const getConfig = HttpApiEndpoint.get("getConfig", "/agents/:name/:id/config", {
   params: AgentParams,
@@ -162,6 +177,13 @@ const putToolRule = HttpApiEndpoint.put(
     success: ResolvedConfig,
   },
 )
+
+/** Set or clear the session's token/cost budget, merged into the stored overrides; returns the new effective config. Impossible ceilings are rejected by the `SetBudgetRequest` decode. */
+const putBudget = HttpApiEndpoint.put("putBudget", "/agents/:name/:id/config/budget", {
+  params: AgentParams,
+  payload: SetBudgetRequest,
+  success: ResolvedConfig,
+})
 
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
@@ -308,6 +330,25 @@ export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(runScheduledJobNow)
   .middleware(AuthMiddleware)
 
+/** The archived-session corpus index — every `journal.json` under `archives/`, newest close first. */
+const listArchives = HttpApiEndpoint.get("listArchives", "/archives", {
+  success: ArchiveListResponse,
+  error: AgentError,
+})
+
+/** One archived session's full journal by `name` + `id` + `closedAt` (the three key segments). */
+const getArchive = HttpApiEndpoint.get("getArchive", "/archives/:name/:id/:closedAt", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, closedAt: ClosedAtFromString }),
+  success: SessionArchive,
+  error: AgentError,
+})
+
+/** Read-only archived-corpus endpoints grouped. */
+export const ArchivesGroup = HttpApiGroup.make("archives")
+  .add(listArchives)
+  .add(getArchive)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -319,9 +360,11 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(journal)
   .add(attach)
   .add(sessions)
+  .add(usage)
   .add(getConfig)
   .add(putConfig)
   .add(putToolRule)
+  .add(putBudget)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
@@ -353,4 +396,5 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(MetaGroup)
   .add(SecretsGroup)
   .add(ScheduleGroup)
+  .add(ArchivesGroup)
   .middleware(SchemaErrorMiddleware) {}

@@ -15,6 +15,8 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
+import { ArchiveHandlers } from "./ArchiveHandlers.ts"
+import { SessionsBucket } from "./ArchiveStore.ts"
 import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
@@ -73,6 +75,7 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
+  Layer.provide(ArchiveHandlers),
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
@@ -102,6 +105,7 @@ const buildWebHandler = (
         Layer.succeed(AgentStub, env.AGENTS),
         Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
+        Layer.succeed(SessionsBucket, env.SESSIONS),
         Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
         TracingLive,
       )
@@ -149,12 +153,18 @@ const buildWebHandler = (
       )
       const context = yield* Layer.build(services)
       return HttpEffect.toWebHandlerWith<
-        AgentStub | RegistryStub | SkillsBucket | KnowledgeSearch | LanguageModel.LanguageModel,
+        | AgentStub
+        | RegistryStub
+        | SkillsBucket
+        | SessionsBucket
+        | KnowledgeSearch
+        | LanguageModel.LanguageModel,
         | HttpServerRequest.HttpServerRequest
         | Scope.Scope
         | AgentStub
         | RegistryStub
         | SkillsBucket
+        | SessionsBucket
         | KnowledgeSearch
         | LanguageModel.LanguageModel
         | WaitUntil
@@ -179,7 +189,9 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/v1/") ||
   pathname === "/knowledge" ||
   pathname.startsWith("/knowledge/") ||
-  pathname.startsWith("/meta/")
+  pathname.startsWith("/meta/") ||
+  pathname === "/archives" ||
+  pathname.startsWith("/archives/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(

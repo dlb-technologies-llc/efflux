@@ -17,6 +17,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { loadOverlay } from "./AgentLoop.ts"
 import { AgentStub } from "./AgentStub.ts"
+import { budgetExceeded, capsFromConfig, type SpendTotals } from "./Budget.ts"
 import { loadResolvedConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
@@ -38,6 +39,13 @@ const invalidRequest = (message: string, code: string): HttpServerResponse.HttpS
   HttpServerResponse.jsonUnsafe(
     { error: { message, type: "invalid_request_error", code } },
     { status: 400 },
+  )
+
+/** OpenAI-shaped 402 when the session has reached its budget. */
+const budgetExceededResponse = (message: string): HttpServerResponse.HttpServerResponse =>
+  HttpServerResponse.jsonUnsafe(
+    { error: { message, type: "insufficient_quota", code: "budget_exceeded" } },
+    { status: 402 },
   )
 
 /** Map an OpenAI message list to a facade prompt: default `support` skill as the system message, then the client's user/assistant turns verbatim; system/tool/`content:null` messages are dropped. */
@@ -66,6 +74,11 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const agents = yield* AgentStub
         const agent = agents.getByName(`${parsed.name}/${parsed.id}`)
         const resolved = yield* loadResolvedConfig(agent)
+        const caps = capsFromConfig(resolved)
+        const priorSpend: SpendTotals = yield* Effect.promise(() => agent.usageTotals())
+        if (budgetExceeded(priorSpend, caps)) {
+          return budgetExceededResponse("Session token/cost budget reached; raise the cap via PUT /config to continue.")
+        }
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const { skillBody } = yield* loadOverlay(undefined, undefined)
@@ -101,6 +114,8 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
             meta,
             toolkit,
             toolLayer,
+            caps,
+            priorSpend,
           })
         }
 
@@ -114,6 +129,8 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           meta,
           toolkit,
           toolLayer,
+          caps,
+          priorSpend,
         })
         return HttpServerResponse.jsonUnsafe(
           Schema.encodeSync(ChatCompletionResponse)(

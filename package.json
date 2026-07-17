@@ -18,6 +18,7 @@
     "dev:local": "bun scripts/dev-preflight.ts && bun scripts/upload-skills.ts --local && wrangler dev",
     "cf-typegen": "wrangler types",
     "agent": "bun scripts/agent.ts",
+    "eval": "bun scripts/eval.ts",
     "openai-smoke": "bun scripts/openai-smoke.ts",
     "tui": "bun apps/tui/src/main.tsx",
     "test": "vitest run --passWithNoTests",

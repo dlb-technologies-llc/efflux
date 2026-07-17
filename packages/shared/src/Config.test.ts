@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { DEFAULT_TOOL_RULES, mergeToolRule, resolveRule, SetToolRuleRequest, ToolRule } from "@efflux/shared"
+import { DEFAULT_TOOL_RULES, mergeBudget, mergeToolRule, resolveRule, SetBudgetRequest, SetToolRuleRequest, ToolRule } from "@efflux/shared"
 import type { RulesMap } from "@efflux/shared"
 
 const explicitRules: RulesMap = { Bash: "allow", web_fetch: "ask", Read: "deny" }
@@ -85,6 +85,59 @@ describe("mergeToolRule", () => {
       defaultModel: "x/y",
       ttlSeconds: 42,
       rules: { Bash: "allow" },
+    })
+  })
+})
+
+const decodeBudget = Schema.decodeUnknownSync(SetBudgetRequest)
+
+describe("SetBudgetRequest validation", () => {
+  it("accepts a positive integer token cap and a positive cost cap", () => {
+    expect(decodeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5 })).toStrictEqual({
+      maxTotalTokens: 500,
+      maxCostUsd: 2.5,
+    })
+  })
+
+  it("accepts null (cleared) caps", () => {
+    expect(decodeBudget({ maxTotalTokens: null, maxCostUsd: null })).toStrictEqual({
+      maxTotalTokens: null,
+      maxCostUsd: null,
+    })
+  })
+
+  it("rejects a zero, negative, or fractional token cap", () => {
+    for (const bad of [0, -5, 1.5]) {
+      expect(() => decodeBudget({ maxTotalTokens: bad, maxCostUsd: null })).toThrow()
+    }
+  })
+
+  it("rejects a zero or negative cost cap", () => {
+    for (const bad of [0, -1]) {
+      expect(() => decodeBudget({ maxTotalTokens: null, maxCostUsd: bad })).toThrow()
+    }
+  })
+})
+
+describe("mergeBudget", () => {
+  it("sets both caps, preserving every other override", () => {
+    expect(mergeBudget({ defaultModel: "x/y", ttlSeconds: 42 }, { maxTotalTokens: 500, maxCostUsd: 2.5 })).toStrictEqual({
+      defaultModel: "x/y",
+      ttlSeconds: 42,
+      maxTotalTokens: 500,
+      maxCostUsd: 2.5,
+    })
+  })
+
+  it("clears both caps when null, dropping the keys and keeping other overrides", () => {
+    expect(
+      mergeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5, defaultModel: "x/y" }, { maxTotalTokens: null, maxCostUsd: null }),
+    ).toStrictEqual({ defaultModel: "x/y" })
+  })
+
+  it("sets one cap while clearing the other", () => {
+    expect(mergeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5 }, { maxTotalTokens: 1000, maxCostUsd: null })).toStrictEqual({
+      maxTotalTokens: 1000,
     })
   })
 })

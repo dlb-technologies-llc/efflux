@@ -1,4 +1,5 @@
 import {
+  AgentError,
   JournalApprovalRequested,
   JournalAssistantText,
   JournalDone,
@@ -30,6 +31,7 @@ import {
   snapshotWorkspace,
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
+import { addSpend, budgetExceeded, type SpendCaps, type SpendTotals, usageEventDelta } from "./Budget.ts"
 import { buildUsageEvent, eventJson, hopCostUsd } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import { logTurnMetric } from "./Metrics.ts"
@@ -59,6 +61,10 @@ interface RunStreamingTurnInput {
   toolLayer: SessionToolkit["toolLayer"]
   /** Per-request `ExecutionContext.waitUntil`: registering the detached driver's completion keeps the isolate alive so the turn runs to a terminal even after the client disconnects. */
   readonly waitUntil: (promise: Promise<unknown>) => void
+  /** Resolved spend ceilings for this session; over-budget fails the driver so an in-band error frame is emitted. */
+  readonly caps: SpendCaps
+  /** Cumulative spend BEFORE this turn (summed from the journal); the running total seeds from it. */
+  readonly priorSpend: SpendTotals
 }
 
 /**
@@ -75,7 +81,8 @@ interface RunStreamingTurnInput {
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse> => {
-  const { agent, ambient, initialPrompt, model, rules, sessionId, startHop, toolkit, toolLayer, turn, waitUntil } = input
+  const { agent, ambient, caps, initialPrompt, model, priorSpend, rules, sessionId, startHop, toolkit, toolLayer, turn, waitUntil } =
+    input
 
   let pendingHopText = ""
   let currentHop = startHop
@@ -105,7 +112,7 @@ export const runStreamingTurn = (
         part: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>>
         seq: number | undefined
       },
-      AiError.AiError | Cause.TimeoutError | Cause.Done
+      AiError.AiError | Cause.TimeoutError | Cause.Done | AgentError
     >(256)
 
     let startMs = 0
@@ -119,9 +126,15 @@ export const runStreamingTurn = (
       let reachedTerminal = false
       let lastFinishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
       let lastReason: AiResponse.FinishReason | undefined
+      let running: SpendTotals = priorSpend
       for (let hop = startHop; hop < startHop + MAX_TOOL_HOPS; hop++) {
         currentHop = hop
         pendingHopText = ""
+        if (budgetExceeded(running, caps)) {
+          return yield* Effect.fail(
+            new AgentError({ message: "Session token/cost budget reached; raise the cap via PUT /config to continue." }),
+          )
+        }
         const baseCall = LanguageModel.streamText({
           prompt: promptValue,
           toolkit,
@@ -234,6 +247,7 @@ export const runStreamingTurn = (
           hopEvents.push(new JournalAssistantText({ turn, hop, text: pendingHopText }))
         }
         const usageEvent = buildUsageEvent({ turn, hop, model, parts: collected })
+        running = addSpend(running, usageEventDelta(usageEvent))
         if (usageEvent !== undefined) hopEvents.push(usageEvent)
         if (terminal && lastFinishReason !== undefined && !parked) {
           hopEvents.push(

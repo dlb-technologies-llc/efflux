@@ -30,6 +30,12 @@ import {
   WebFetchResult,
   webFetchError,
 } from "./WebFetch.ts"
+import {
+  MAX_WEB_SEARCH_RESULTS,
+  runWebSearch,
+  WebSearchResult,
+  webSearchError,
+} from "./WebSearch.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
 const BashResult = Schema.Struct({
@@ -326,6 +332,17 @@ export const WebFetchTool = Tool.make("web_fetch", {
   needsApproval: needsApprovalFor("web_fetch"),
 })
 
+export const WebSearchTool = Tool.make("web_search", {
+  description: `Search the open web via DuckDuckGo and return up to ${MAX_WEB_SEARCH_RESULTS} results, each with a title, URL, and snippet. Use this to DISCOVER pages, then call web_fetch on a result's URL to read it. Returns { results, error }: a non-empty "error" means the search could not complete (network/timeout, or DuckDuckGo rate-limited/blocked the query — retry later) and you should NOT treat it as "nothing exists"; an empty "results" list with an empty "error" means the search ran but genuinely matched nothing. DuckDuckGo may rate-limit automated queries, so results can be sparse.`,
+  parameters: Schema.Struct({
+    query: Schema.String.annotate({
+      description: "Natural-language or keyword web search query.",
+    }),
+  }),
+  success: WebSearchResult,
+  needsApproval: needsApprovalFor("web_search"),
+})
+
 /** Default passage count for search_knowledge; bounds tool output fed back into the prompt. */
 const DEFAULT_KNOWLEDGE_RESULTS = 5
 
@@ -422,6 +439,7 @@ export const AgentToolkit = Toolkit.make(
   GlobTool,
   GrepTool,
   WebFetchTool,
+  WebSearchTool,
   SearchKnowledgeTool,
   TodoWriteTool,
   TodoReadTool,
@@ -596,6 +614,12 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         ? webFetchError("denied by session policy")
         : yield* runWebFetch(params.url)
     return yield* tapWebFetchMetric("web_fetch", result)
+  }),
+  web_search: Effect.fn("tool.web_search")(function* (params) {
+    const rules = yield* ApprovalRules
+    return resolveRule(rules, "web_search") === "deny"
+      ? webSearchError("denied by session policy")
+      : yield* runWebSearch(params.query)
   }),
   search_knowledge: Effect.fn("tool.search_knowledge")(function* (params) {
     const rules = yield* ApprovalRules
