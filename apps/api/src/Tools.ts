@@ -327,7 +327,7 @@ export const WebFetchTool = Tool.make("web_fetch", {
 })
 
 export const WebSearchTool = Tool.make("web_search", {
-  description: `Search the open web via DuckDuckGo and return up to ${MAX_WEB_SEARCH_RESULTS} results, each with a title, URL, and snippet. Use this to DISCOVER pages, then call web_fetch on a result's URL to read it. Returns { results, error }: a non-empty "error" (e.g. rate-limited, blocked, network/timeout) means the search failed; an empty "results" list with an empty "error" means no matches were found. Results can be sparse or empty because DuckDuckGo may rate-limit automated queries.`,
+  description: `Search the open web via DuckDuckGo and return up to ${MAX_WEB_SEARCH_RESULTS} results, each with a title, URL, and snippet. Use this to DISCOVER pages, then call web_fetch on a result's URL to read it. Returns { results, error }: a non-empty "error" means the search could not complete (network/timeout, or DuckDuckGo rate-limited/blocked the query — retry later) and you should NOT treat it as "nothing exists"; an empty "results" list with an empty "error" means the search ran but genuinely matched nothing. DuckDuckGo may rate-limit automated queries, so results can be sparse.`,
   parameters: Schema.Struct({
     query: Schema.String.annotate({
       description: "Natural-language or keyword web search query.",

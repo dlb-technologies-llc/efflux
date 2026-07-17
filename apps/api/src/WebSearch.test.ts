@@ -79,6 +79,39 @@ const REAL_SNIPPET_INNER =
 /** One real result whose snippet body is tripled, so parseResults must truncate it to the cap. */
 const OVERLONG_SNIPPET_HTML = `<div class="result results_links results_links_deep web-result "><h2 class="result__title"><a rel="nofollow" class="result__a" href="https://www.sciencefocus.com/nature/cats-v-dogs-heres-whos-smarter-according-to-science">Overlong snippet</a></h2><a class="result__snippet">${REAL_SNIPPET_INNER}${REAL_SNIPPET_INNER}${REAL_SNIPPET_INNER}</a></div>`
 
+/**
+ * Two blocks where the FIRST result has no `result__snippet` anchor. Guards the
+ * mispair/drop regression: the snippet-less first result must keep an empty
+ * snippet and the second result must survive with its own snippet.
+ */
+const MISSING_SNIPPET_HTML = `<div class="result"><h2 class="result__title"><a class="result__a" href="https://a.example.com/">Alpha</a></h2></div><div class="result"><h2 class="result__title"><a class="result__a" href="https://b.example.com/">Beta</a></h2><a class="result__snippet" href="https://b.example.com/">Beta snippet.</a></div>`
+
+/** The two hits {@link MISSING_SNIPPET_HTML} parses to: Alpha with an empty snippet, Beta intact. */
+const MISSING_SNIPPET_ITEMS = [
+  { title: "Alpha", url: "https://a.example.com/", snippet: "" },
+  { title: "Beta", url: "https://b.example.com/", snippet: "Beta snippet." },
+]
+
+/** A result whose `result__a`/`result__snippet` carry extra modifier classes — must still parse (word-bounded class match). */
+const MODIFIER_CLASS_HTML = `<div class="result"><h2><a class="result__a result__a--ad" href="https://mod.example.com/">Modified</a></h2><a class="result__snippet result__snippet--x" href="https://mod.example.com/">Mod snippet.</a></div>`
+
+/** The single hit {@link MODIFIER_CLASS_HTML} parses to. */
+const MODIFIER_CLASS_ITEM = {
+  title: "Modified",
+  url: "https://mod.example.com/",
+  snippet: "Mod snippet.",
+}
+
+/** A direct href whose query string is HTML-escaped (`&amp;`) — the returned URL must be entity-decoded so web_fetch parses it correctly. */
+const ENTITY_HREF_HTML = `<div class="result"><h2><a class="result__a" href="https://site.example.com/?a=1&amp;b=2">Amp Href</a></h2><a class="result__snippet" href="x">Snip.</a></div>`
+
+/** The single hit {@link ENTITY_HREF_HTML} parses to, with `&amp;` decoded in the URL. */
+const ENTITY_HREF_ITEM = {
+  title: "Amp Href",
+  url: "https://site.example.com/?a=1&b=2",
+  snippet: "Snip.",
+}
+
 /** The per-snippet character cap declared privately in WebSearch.ts. */
 const MAX_SNIPPET_CHARS = 500
 
@@ -123,6 +156,11 @@ const unwrapCases: ReadonlyArray<UnwrapCase> = [
     href: "//duckduckgo.com/l/?rut=xyz",
     expected: "//duckduckgo.com/l/?rut=xyz",
   },
+  {
+    label: "uddg wrapper with malformed percent-encoding → unchanged (no throw)",
+    href: "//duckduckgo.com/l/?uddg=%E0%A4%A&rut=z",
+    expected: "//duckduckgo.com/l/?uddg=%E0%A4%A&rut=z",
+  },
 ]
 
 describe("unwrapDdgUrl", () => {
@@ -148,6 +186,16 @@ const decodeCases: ReadonlyArray<DecodeCase> = [
     label: "angle, quote, decimal-apostrophe, nbsp entities",
     text: "&lt;tag&gt; &quot;q&quot; &#39;a&#39; x&nbsp;y",
     expected: "<tag> \"q\" 'a' x y",
+  },
+  {
+    label: "numeric decimal reference + named typographic entity",
+    text: "it&#8217;s a cat&mdash;dog debate",
+    expected: "it’s a cat—dog debate",
+  },
+  {
+    label: "unknown named entity and out-of-range numeric entity → left verbatim",
+    text: "a &bogus; b &#1114112;",
+    expected: "a &bogus; b &#1114112;",
   },
 ]
 
@@ -184,6 +232,22 @@ describe("parseResults", () => {
       expect(parseResults(UDDG_RESULTS_HTML)).toStrictEqual([
         UDDG_RESULTS_ITEM,
       ])))
+
+  it.effect("a snippet-less result keeps an empty snippet and does not drop the next", () =>
+    Effect.sync(() =>
+      expect(parseResults(MISSING_SNIPPET_HTML)).toStrictEqual(
+        MISSING_SNIPPET_ITEMS,
+      )))
+
+  it.effect("parses result anchors carrying extra modifier classes", () =>
+    Effect.sync(() =>
+      expect(parseResults(MODIFIER_CLASS_HTML)).toStrictEqual([
+        MODIFIER_CLASS_ITEM,
+      ])))
+
+  it.effect("entity-decodes the result URL so an escaped href is usable", () =>
+    Effect.sync(() =>
+      expect(parseResults(ENTITY_HREF_HTML)).toStrictEqual([ENTITY_HREF_ITEM])))
 
   it.effect("truncates an overlong snippet at MAX_SNIPPET_CHARS", () =>
     Effect.sync(() => {
