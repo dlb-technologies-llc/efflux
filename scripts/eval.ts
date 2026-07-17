@@ -18,7 +18,7 @@
 
 import type { JudgeVerdict } from "./eval-core.ts"
 import { makePromptRequest, SubagentTaskRequest } from "../packages/shared/src/index.ts"
-import { Console, Effect } from "effect"
+import { Cause, Console, Effect } from "effect"
 import {
   buildJudgePrompt,
   diffTrajectory,
@@ -36,13 +36,14 @@ const USAGE = [
 
 const DEFAULT_MODEL = "openai/gpt-4o-mini"
 
-/** One evaluated archive: the original case identity, its deterministic trajectory diff, the judge verdict, and whether the pair regressed (`!diff.matches || verdict === "different"`). */
+/** One evaluated archive: the case identity, the deterministic trajectory verdict, the judge verdict, and whether the case FAILED the eval. A case fails (`regressed`) when the trajectory diverges, the judge is not `equivalent` (an `inconclusive` or absent judge signal counts as a failure, never a silent pass), or the replay itself errored (`trajectory === "ERROR"`, `verdict === "error"`). */
 interface CaseResult {
   readonly name: string
   readonly id: string
   readonly closedAt: number
-  readonly diff: ReturnType<typeof diffTrajectory>
-  readonly verdict: JudgeVerdict
+  readonly trajectory: "OK" | "DIFF" | "ERROR"
+  readonly differences: ReadonlyArray<string>
+  readonly verdict: JudgeVerdict | "error"
   readonly regressed: boolean
 }
 
@@ -67,10 +68,11 @@ if (import.meta.main) {
       ? archives.filter((archive) => archive.name.includes(nameFilter))
       : archives
     const limitFlag = parsed.flags["limit"]
-    const parsedLimit = limitFlag !== undefined ? Number.parseInt(limitFlag, 10) : undefined
-    const corpus = parsedLimit !== undefined && Number.isFinite(parsedLimit)
-      ? filtered.slice(0, parsedLimit)
-      : filtered
+    if (limitFlag !== undefined && !/^[1-9][0-9]*$/.test(limitFlag)) {
+      return yield* Effect.fail(new Error(`--limit must be a positive integer, got "${limitFlag}"`))
+    }
+    const limit = limitFlag !== undefined ? Number.parseInt(limitFlag, 10) : undefined
+    const corpus = limit !== undefined ? filtered.slice(0, limit) : filtered
 
     if (corpus.length === 0) {
       yield* Console.log("(corpus empty — close a session with ?mode=archive first)")
@@ -83,56 +85,82 @@ if (import.meta.main) {
       return true
     }
 
-    const evaluated = yield* Effect.forEach(corpus, (summary) =>
-      Effect.gen(function*() {
-        const { name, id, closedAt } = summary
+    const evaluated = yield* Effect.forEach(corpus, (summary) => {
+      const { name, id, closedAt } = summary
+      const where = `${name}/${id}/${closedAt}`
+      return Effect.gen(function*() {
         const archive = yield* api.archives.getArchive({ params: { name, id, closedAt } })
         const baseline = extractTrajectory(archive.events)
         const baselineAnswer = finalAnswer(archive.events)
         const userTurns = extractUserTurns(archive)
         if (userTurns.length === 0) {
-          yield* Console.log(`skip ${name}/${id}/${closedAt} — no user turns to replay`)
+          yield* Console.log(`skip ${where} — no user turns to replay`)
           return undefined
         }
 
         const evalName = `eval-${name}`
         const evalId = `${id}-${closedAt}-${Date.now()}`
-        yield* api.agents.putConfig({
-          params: { name: evalName, id: evalId },
-          payload: {
-            defaultModel: candidateModel,
-            rules: { Bash: "allow", request_secret: "allow", create_scheduled_job: "allow" },
-          },
-        })
-        yield* Effect.forEach(userTurns, (turn) =>
-          api.agents.prompt({
+        const purge = api.agents
+          .reset({ params: { name: evalName, id: evalId }, query: { mode: "purge" } })
+          .pipe(Effect.ignore)
+
+        return yield* Effect.gen(function*() {
+          yield* api.agents.putConfig({
             params: { name: evalName, id: evalId },
-            payload: makePromptRequest(turn.content, overrides),
-          }))
+            payload: {
+              defaultModel: candidateModel,
+              rules: { Bash: "allow", request_secret: "deny", create_scheduled_job: "deny" },
+            },
+          })
+          yield* Effect.forEach(userTurns, (turn) =>
+            api.agents.prompt({
+              params: { name: evalName, id: evalId },
+              payload: makePromptRequest(turn.content, overrides),
+            }))
 
-        const events = yield* fetchAllEvents(api, evalName, evalId)
-        const candidate = extractTrajectory(events)
-        const candidateAnswer = finalAnswer(events)
-        const diff = diffTrajectory(baseline, candidate)
+          const events = yield* fetchAllEvents(api, evalName, evalId)
+          const candidate = extractTrajectory(events)
+          const candidateAnswer = finalAnswer(events)
+          const diff = diffTrajectory(baseline, candidate)
 
-        const judgePrompt = buildJudgePrompt({
-          userTurns: userTurns.map((turn) => turn.content),
-          baselineAnswer,
-          candidateAnswer,
-        })
-        const judge = yield* api.agents.task({
-          payload: new SubagentTaskRequest({ prompt: judgePrompt, model: judgeModel }),
-        })
-        const verdict = parseJudgeVerdict(judge.text)
+          const judgePrompt = buildJudgePrompt({
+            userTurns: userTurns.map((turn) => turn.content),
+            baselineAnswer,
+            candidateAnswer,
+          })
+          const judge = yield* api.agents.task({
+            payload: new SubagentTaskRequest({ prompt: judgePrompt, model: judgeModel }),
+          })
+          const verdict = parseJudgeVerdict(judge.text)
 
-        yield* api.agents.reset({ params: { name: evalName, id: evalId }, query: { mode: "purge" } }).pipe(
-          Effect.ignore,
-        )
-
-        const regressed = !diff.matches || verdict === "different"
-        const result: CaseResult = { name, id, closedAt, diff, verdict, regressed }
-        return result
-      }))
+          const result: CaseResult = {
+            name,
+            id,
+            closedAt,
+            trajectory: diff.matches ? "OK" : "DIFF",
+            differences: diff.differences,
+            verdict,
+            regressed: !diff.matches || verdict !== "equivalent",
+          }
+          return result
+        }).pipe(Effect.ensuring(purge))
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function*() {
+            yield* Console.error(`error ${where}: ${Cause.pretty(cause)}`)
+            const result: CaseResult = {
+              name,
+              id,
+              closedAt,
+              trajectory: "ERROR",
+              differences: [Cause.pretty(cause)],
+              verdict: "error",
+              regressed: true,
+            }
+            return result
+          })),
+      )
+    })
 
     const results = evaluated.filter((result) => result !== undefined)
     const regressedCount = results.filter((result) => result.regressed).length
@@ -143,9 +171,9 @@ if (import.meta.main) {
       yield* Effect.forEach(results, (result) =>
         Effect.gen(function*() {
           yield* Console.log(`${result.name}/${result.id}/${result.closedAt}`)
-          yield* Console.log(`  trajectory: ${result.diff.matches ? "OK" : "DIFF"}`)
-          if (!result.diff.matches) {
-            yield* Effect.forEach(result.diff.differences, (difference) => Console.log(`    - ${difference}`))
+          yield* Console.log(`  trajectory: ${result.trajectory}`)
+          if (result.differences.length > 0) {
+            yield* Effect.forEach(result.differences, (difference) => Console.log(`    - ${difference}`))
           }
           yield* Console.log(`  judge: ${result.verdict}`)
         }))

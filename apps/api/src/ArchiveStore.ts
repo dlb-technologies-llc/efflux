@@ -33,7 +33,7 @@ export const listArchives = Effect.fn("listArchives")(function* (): Effect.fn.Re
 > {
   const bucket = yield* SessionsBucket
 
-  const objects: Array<R2Object> = []
+  const summaries: Array<ArchiveSummary> = []
   let cursor: string | undefined = undefined
   while (true) {
     const options: R2ListOptions =
@@ -41,24 +41,23 @@ export const listArchives = Effect.fn("listArchives")(function* (): Effect.fn.Re
         ? { prefix: ARCHIVE_PREFIX }
         : { prefix: ARCHIVE_PREFIX, cursor }
     const listed = yield* r2("list", ARCHIVE_PREFIX, () => bucket.list(options))
-    for (const object of listed.objects) objects.push(object)
+    for (const object of listed.objects) {
+      if (!object.key.endsWith(JOURNAL_SUFFIX)) continue
+      const parts = object.key
+        .slice(ARCHIVE_PREFIX.length, -JOURNAL_SUFFIX.length)
+        .split("/")
+      if (parts.length !== 3) continue
+      const [name, id, closedAtRaw] = parts
+      if (name === undefined || id === undefined || closedAtRaw === undefined) continue
+      const closedAt = Number(closedAtRaw)
+      if (!(Number.isInteger(closedAt) && closedAt >= 0)) continue
+      if (!(Number.isInteger(object.size) && object.size >= 0)) continue
+      summaries.push(new ArchiveSummary({ name, id, closedAt, sizeBytes: object.size }))
+    }
     if (!listed.truncated) break
     cursor = listed.cursor
   }
 
-  const summaries: Array<ArchiveSummary> = []
-  for (const object of objects) {
-    if (!object.key.endsWith(JOURNAL_SUFFIX)) continue
-    const parts = object.key
-      .slice(ARCHIVE_PREFIX.length, -JOURNAL_SUFFIX.length)
-      .split("/")
-    if (parts.length !== 3) continue
-    const [name, id, closedAtRaw] = parts
-    if (name === undefined || id === undefined || closedAtRaw === undefined) continue
-    const closedAt = Number(closedAtRaw)
-    if (!(Number.isInteger(closedAt) && closedAt >= 0)) continue
-    summaries.push(new ArchiveSummary({ name, id, closedAt, sizeBytes: object.size }))
-  }
   summaries.sort((a, b) => b.closedAt - a.closedAt)
   return summaries
 })

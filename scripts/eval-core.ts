@@ -114,6 +114,11 @@ export const extractTrajectory = (
  * The model's final reply: the `assistant-text` of the LAST turn (greatest
  * `turn` value that has any assistant-text) concatenated across its hops in
  * ascending `seq` order. Empty string when there is no assistant-text at all.
+ *
+ * Caveat: a turn that ended on tool-calls / a hop cap / an error emits no
+ * assistant-text, so this selects an EARLIER turn. If the baseline and candidate
+ * differ in which turn produced their last text, the judge compares different
+ * logical turns — a known limitation of the heuristic, not an exact turn match.
  */
 export const finalAnswer = (events: ReadonlyArray<JournalEvent>): string => {
   let lastTurn: number | undefined = undefined
