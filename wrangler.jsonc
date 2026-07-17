@@ -10,7 +10,7 @@
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents", "/agents/*", "/tasks", "/tasks/*", "/skills", "/skills/*", "/v1/*", "/knowledge", "/knowledge/*", "/meta/*"]
+    "run_worker_first": ["/agents", "/agents/*", "/tasks", "/tasks/*", "/skills", "/skills/*", "/v1/*", "/knowledge", "/knowledge/*", "/meta/*", "/archives", "/archives/*"]
   },
   "durable_objects": {
     "bindings": [
@@ -44,6 +44,12 @@
   "ai_search": [
     { "binding": "KNOWLEDGE_SEARCH", "instance_name": "efflux-knowledge", "remote": true }
   ],
+  "send_email": [
+    { "name": "EMAIL" }
+  ],
+  "vars": {
+    "NOTIFY_EMAIL_FROM": ""
+  },
   "triggers": { "crons": ["0 12 * * *"] },
   "observability": { "enabled": true }
 }

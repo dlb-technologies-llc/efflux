@@ -5,6 +5,8 @@
 import {
   CronExpression,
   DEFAULT_TOOL_RULES,
+  type JobNotify,
+  JobNotifyConfig,
   JournalTodoWrite,
   resolveRule,
   type RulesMap,
@@ -27,6 +29,12 @@ import {
   WebFetchResult,
   webFetchError,
 } from "./WebFetch.ts"
+import {
+  MAX_WEB_SEARCH_RESULTS,
+  runWebSearch,
+  WebSearchResult,
+  webSearchError,
+} from "./WebSearch.ts"
 
 /** Shape every exec-backed tool returns (Bash + file/search tools). */
 const BashResult = Schema.Struct({
@@ -56,6 +64,7 @@ export class ScheduledJobs extends Context.Service<
       readonly description: string
       readonly entrypointCommand: string
       readonly schedule: string
+      readonly notify?: JobNotify
     }) => Effect.Effect<CreateScheduledJobResult>
   }
 >()("api/ScheduledJobs") {}
@@ -320,6 +329,17 @@ export const WebFetchTool = Tool.make("web_fetch", {
   needsApproval: needsApprovalFor("web_fetch"),
 })
 
+export const WebSearchTool = Tool.make("web_search", {
+  description: `Search the open web via DuckDuckGo and return up to ${MAX_WEB_SEARCH_RESULTS} results, each with a title, URL, and snippet. Use this to DISCOVER pages, then call web_fetch on a result's URL to read it. Returns { results, error }: a non-empty "error" means the search could not complete (network/timeout, or DuckDuckGo rate-limited/blocked the query — retry later) and you should NOT treat it as "nothing exists"; an empty "results" list with an empty "error" means the search ran but genuinely matched nothing. DuckDuckGo may rate-limit automated queries, so results can be sparse.`,
+  parameters: Schema.Struct({
+    query: Schema.String.annotate({
+      description: "Natural-language or keyword web search query.",
+    }),
+  }),
+  success: WebSearchResult,
+  needsApproval: needsApprovalFor("web_search"),
+})
+
 /** Default passage count for search_knowledge; bounds tool output fed back into the prompt. */
 const DEFAULT_KNOWLEDGE_RESULTS = 5
 
@@ -394,6 +414,10 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
       description:
         "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names.",
     }),
+    notify: Schema.optionalKey(JobNotifyConfig).annotate({
+      description:
+        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. on='failure' alerts only on a non-zero/errored run; on='always' alerts on every run.",
+    }),
   }),
   success: Schema.String,
   dependencies: [ScheduledJobs],
@@ -412,6 +436,7 @@ export const AgentToolkit = Toolkit.make(
   GlobTool,
   GrepTool,
   WebFetchTool,
+  WebSearchTool,
   SearchKnowledgeTool,
   TodoWriteTool,
   TodoReadTool,
@@ -546,6 +571,12 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       ? webFetchError("denied by session policy")
       : yield* runWebFetch(params.url)
   }),
+  web_search: Effect.fn("tool.web_search")(function* (params) {
+    const rules = yield* ApprovalRules
+    return resolveRule(rules, "web_search") === "deny"
+      ? webSearchError("denied by session policy")
+      : yield* runWebSearch(params.query)
+  }),
   search_knowledge: Effect.fn("tool.search_knowledge")(function* (params) {
     const rules = yield* ApprovalRules
     if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
@@ -587,6 +618,7 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
         schedule: params.schedule,
+        ...(params.notify !== undefined ? { notify: params.notify } : {}),
       }),
     ).pipe(
       Effect.map((result) =>

@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
+import { JobNotifyConfig, NotifyChannel, NotifyFilter, ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Effect.gen(function* () {
@@ -83,6 +83,59 @@ describe("ScheduledJobSummary codec", () => {
         paused: true,
       }),
     ))
+
+  it.effect("pins a summary with the notify label present", () =>
+    assertStable(
+      ScheduledJobSummary,
+      new ScheduledJobSummary({
+        id: "job-alerting",
+        description: "alerts on failure",
+        entrypointCommand: "bun run check.ts",
+        schedule: "0 * * * *",
+        nextRunAt: 1_700_000_000_000,
+        approvedAt: 1_699_000_000_000,
+        lastRunStatus: "failed (exit 1)",
+        paused: false,
+        notify: "slack · on failure",
+      }),
+    ))
+})
+
+describe("JobNotifyConfig codec", () => {
+  it.effect("pins a slack config alerting on failure", () =>
+    assertStable(JobNotifyConfig, {
+      channel: "slack",
+      on: "failure",
+      slackUrlSecret: "SLACK_ALERT_URL",
+    }))
+
+  it.effect("pins a slack config alerting on every run", () =>
+    assertStable(JobNotifyConfig, {
+      channel: "slack",
+      on: "always",
+      slackUrlSecret: "OPS_WEBHOOK",
+    }))
+
+  it.effect("pins an email config alerting on failure", () =>
+    assertStable(JobNotifyConfig, {
+      channel: "email",
+      on: "failure",
+      emailTo: "alerts@example.com",
+    }))
+
+  it.effect("pins an email config alerting on every run", () =>
+    assertStable(JobNotifyConfig, {
+      channel: "email",
+      on: "always",
+      emailTo: "ops@example.com",
+    }))
+})
+
+describe("Notify literals codec", () => {
+  it.effect("pins the slack channel", () => assertStable(NotifyChannel, "slack"))
+  it.effect("pins the email channel", () => assertStable(NotifyChannel, "email"))
+  it.effect("pins the failure filter", () => assertStable(NotifyFilter, "failure"))
+  it.effect("pins the always filter", () => assertStable(NotifyFilter, "always"))
 })
 
 describe("ScheduledJobListResponse codec", () => {

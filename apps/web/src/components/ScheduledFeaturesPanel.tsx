@@ -6,8 +6,9 @@ import type {
   ScheduledJobSummary,
 } from "@efflux/shared"
 import { Exit } from "effect"
-import { CalendarClock, ChevronRight } from "lucide-react"
+import { Bell, CalendarClock, ChevronRight } from "lucide-react"
 import * as React from "react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
@@ -247,6 +248,12 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
           <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
         )}
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
+        {job.notify !== undefined ? (
+          <Badge variant="outline" className="font-mono font-normal text-muted-foreground">
+            <Bell />
+            {job.notify}
+          </Badge>
+        ) : null}
         {job.lastRunStatus !== undefined ? (
           <button
             type="button"

@@ -160,6 +160,7 @@ Every tool carries an `allow` / `ask` / `deny` rule (default: `Bash` is `ask`, e
 Beyond `Bash` and the file/search ops (`read_file`, `write_file`, `edit_file`, `glob`, `grep`, all on the same container exec seam), each session's model can call:
 
 - **`search_knowledge`** — queries the `efflux-knowledge` AI-Search index and grounds answers in the matching passages. Documents are uploaded with `PUT /knowledge/:name` and listed with their indexing status via `GET /knowledge` (indexing is asynchronous — poll until `completed`).
+- **`web_search`** — queries the open web via DuckDuckGo (keyless) and returns up to 8 results (title, URL, snippet). Pair it with `web_fetch` to read a discovered page. Results can be empty when DuckDuckGo rate-limits automated queries.
 - **`todo_write` / `todo_read`** — a task list the model maintains across turns, persisted in the journal as `todo-write` events and re-injected at the start of every turn.
 - **External MCP tools** — every server in the session's `mcpServers` config is connected on the turn's critical path and its `tools/list` merged into the toolkit as namespaced `mcp__<server>__<tool>` tools (subject to the same approval rules).
 
