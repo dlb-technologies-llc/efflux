@@ -32,8 +32,9 @@ import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { WaitUntil } from "./WaitUntil.ts"
 
-/** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
+/** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry, MEMORY→Memory). */
 export { Agent } from "./Agent.ts"
+export { Memory } from "./Memory.ts"
 export { Registry } from "./Registry.ts"
 export { Runner } from "./Runner.ts"
 export { Sandbox } from "./Sandbox.ts"

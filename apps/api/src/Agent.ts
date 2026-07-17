@@ -1,4 +1,4 @@
-import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JobNotifyConfig, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeBudget, mergeToolRule, nextCronOccurrence, SetBudgetRequest, ToolRule, type JobNotify, type PlainMessage } from "@efflux/shared"
+import { AgentConfig, COMPACTION_SUMMARY_PREFIX, JobNotifyConfig, JournalApprovalResolved, JournalEventPayload, JournalSessionClosed, Message, mergeBudget, mergeToolRule, nextCronOccurrence, SetBudgetRequest, ToolRule, type JobNotify, type MemoryDeleteResult, type MemoryWriteResult, type PlainMemoryEntry, type PlainMemorySummary, type PlainMessage } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import { soonestDeadline } from "./AlarmSchedule.ts"
@@ -511,6 +511,35 @@ export class Agent extends DurableObject<Env> {
     const row = this.ctx.storage.sql.exec("SELECT iv, ciphertext FROM secrets WHERE name = ?", name).toArray()[0]
     if (row === undefined) return undefined
     return decryptSecret(this.env.SECRETS_ENCRYPTION_KEY, String(row.iv), String(row.ciphertext))
+  }
+
+  /** The per-agent-NAME Memory DO stub, keyed by the name half of this DO's `<name>/<id>` identity (the same extraction the registry registration uses) — every session of this agent name shares one Memory DO; a future multi-tenant principal prepends to this key. */
+  #memoryStub() {
+    const full = this.ctx.id.name
+    if (full === undefined) throw new Error("Agent DO id has no name")
+    const slash = full.indexOf("/")
+    if (slash === -1) throw new Error("Agent DO id name is not <name>/<id>")
+    return this.env.MEMORY.get(this.env.MEMORY.idFromName(full.slice(0, slash)))
+  }
+
+  /** List every persistent memory entry's summary for this agent NAME (shared across all its sessions). Thin proxy to the Memory DO's `list`; values are plain across the RPC fence. */
+  async memoryList(): Promise<Array<PlainMemorySummary>> {
+    return await this.#memoryStub().list()
+  }
+
+  /** Read one persistent memory entry by name for this agent NAME (shared across all its sessions), `null` when absent. Thin proxy to the Memory DO's `read`; values are plain across the RPC fence. */
+  async memoryRead(name: string): Promise<PlainMemoryEntry | null> {
+    return await this.#memoryStub().read(name)
+  }
+
+  /** Upsert one persistent memory entry for this agent NAME (shared across all its sessions); cap violations come back in-band on the result. Thin proxy to the Memory DO's `write`; values are plain across the RPC fence. */
+  async memoryWrite(input: { name: string; description: string; content: string }): Promise<MemoryWriteResult> {
+    return await this.#memoryStub().write(input)
+  }
+
+  /** Delete one persistent memory entry by name for this agent NAME (shared across all its sessions); idempotent. Thin proxy to the Memory DO's `remove`; values are plain across the RPC fence. */
+  async memoryDelete(name: string): Promise<MemoryDeleteResult> {
+    return await this.#memoryStub().remove(name)
   }
 
   /**
