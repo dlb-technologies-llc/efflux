@@ -5,7 +5,7 @@ import {
   type RulesMap,
 } from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Cause, Clock, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
@@ -20,8 +20,9 @@ import {
   toAgentError,
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
-import { eventJson, journalHopBatch } from "./JournalWrite.ts"
+import { eventJson, hopCostUsd, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { logTurnMetric } from "./Metrics.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
@@ -45,6 +46,8 @@ interface FacadeTurnInput {
   readonly turn: number
   readonly initialPrompt: Prompt.Prompt
   readonly model: string
+  /** Session key (`name/id`) stamped on the per-turn `[metric]` line. */
+  readonly sessionId: string
   readonly rules: RulesMap
   /** The session's merged toolkit (local tools + resolved MCP tools) handed to the model call. */
   readonly toolkit: SessionToolkit["toolkit"]
@@ -71,16 +74,18 @@ const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are di
 export const collectOpenAiTurn = (
   input: FacadeTurnInput,
 ): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, initialPrompt, model, rules, sessionId, toolkit, toolLayer, turn } = input
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
   const loop = Effect.gen(function* () {
+    const startMs = yield* Clock.currentTimeMillis
     let promptValue: Prompt.Prompt = initialPrompt
     let text = ""
     let lastInputTokens = 0
     let totalOutputTokens = 0
     let toolCallCount = 0
+    let costTotal = 0
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
@@ -93,6 +98,7 @@ export const collectOpenAiTurn = (
       )
 
       toolCallCount += response.toolCalls.length
+      costTotal += hopCostUsd(response.content) ?? 0
       text = response.text
 
       const finish = response.content.find((p) => p.type === "finish")
@@ -125,6 +131,8 @@ export const collectOpenAiTurn = (
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
     }
 
+    const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
+    yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: toolCallCount })
     return { text, lastInputTokens, totalOutputTokens }
   })
 
@@ -156,7 +164,7 @@ const makeChunk = (
  * as an error and terminates the turn.
  */
 export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, meta, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, ambient, initialPrompt, meta, model, rules, sessionId, toolkit, toolLayer, turn } = input
 
   const encodeChunk = Schema.encodeSync(ChatCompletionChunk)
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
@@ -172,8 +180,10 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
       >(64)
 
       const driver = Effect.gen(function* () {
+        const startMs = yield* Clock.currentTimeMillis
         let promptValue: Prompt.Prompt = initialPrompt
         let totalToolCalls = 0
+        let costTotal = 0
 
         yield* Queue.offer(queue, makeChunk(meta, { role: "assistant" }, null))
 
@@ -218,6 +228,8 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
             Effect.timeout(MODEL_HOP_TIMEOUT),
           )
 
+          costTotal += hopCostUsd(collected) ?? 0
+
           const terminal =
             approvalRequested ||
             lastFinishReason === undefined ||
@@ -244,6 +256,8 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
           promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
         }
 
+        const elapsedMs = (yield* Clock.currentTimeMillis) - startMs
+        yield* logTurnMetric({ sessionId, model, latencyMs: elapsedMs, costUsd: costTotal, toolCalls: totalToolCalls })
         yield* Queue.offer(queue, makeChunk(meta, {}, "stop"))
       }).pipe(
         Effect.tapCause((cause) =>

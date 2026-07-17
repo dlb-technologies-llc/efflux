@@ -92,6 +92,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
           return streamOpenAiTurn({
             agent,
+            sessionId: `${parsed.name}/${parsed.id}`,
             ambient,
             turn,
             initialPrompt,
@@ -105,6 +106,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
 
         const collected = yield* collectOpenAiTurn({
           agent,
+          sessionId: `${parsed.name}/${parsed.id}`,
           turn,
           initialPrompt,
           model: effectiveModel,
