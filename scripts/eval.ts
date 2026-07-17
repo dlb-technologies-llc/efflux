@@ -109,7 +109,14 @@ if (import.meta.main) {
             params: { name: evalName, id: evalId },
             payload: {
               defaultModel: candidateModel,
-              rules: { Bash: "allow", request_secret: "deny", create_scheduled_job: "deny" },
+              rules: {
+                Bash: "allow",
+                request_secret: "deny",
+                create_scheduled_job: "deny",
+                memory_write: "deny",
+                memory_delete: "deny",
+              },
+              memoryEnabled: false,
             },
           })
           yield* Effect.forEach(userTurns, (turn) =>

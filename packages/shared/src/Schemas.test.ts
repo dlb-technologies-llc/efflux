@@ -76,6 +76,7 @@ const resolvedConfigPins: ReadonlyArray<ResolvedConfig> = [
     maxTotalTokens: null,
     maxCostUsd: null,
     mcpServers: [],
+    memoryEnabled: true,
   },
   {
     defaultModel: "openai/gpt-4o-mini",
@@ -85,6 +86,7 @@ const resolvedConfigPins: ReadonlyArray<ResolvedConfig> = [
     maxTotalTokens: 500000,
     maxCostUsd: 2.5,
     mcpServers: [{ name: "context7", url: "https://mcp.example.com/sse" }],
+    memoryEnabled: false,
   },
 ]
 
@@ -105,6 +107,7 @@ const agentConfigPins: ReadonlyArray<typeof AgentConfig.Type> = [
   {},
   { rules: { Bash: "ask" } },
   { maxTotalTokens: 500000, maxCostUsd: 2.5 },
+  { memoryEnabled: false },
   {
     defaultModel: "openai/gpt-4o-mini",
     rules: { Bash: "ask", Read: "allow", Write: "deny" },

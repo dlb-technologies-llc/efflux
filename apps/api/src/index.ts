@@ -21,6 +21,8 @@ import { FilesHandlers } from "./FilesHandlers.ts"
 import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
+import { MemoryStub } from "./Memory.ts"
+import { MemoryHandlers } from "./MemoryHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { ScheduleHandlers } from "./ScheduleHandlers.ts"
@@ -84,6 +86,7 @@ const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(FilesHandlers),
   Layer.provide(SecretsHandlers),
   Layer.provide(ScheduleHandlers),
+  Layer.provide(MemoryHandlers),
   Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
@@ -107,6 +110,7 @@ const buildWebHandler = (
         makeAiLayer(requireApiKey(env)),
         Layer.succeed(AgentStub, env.AGENTS),
         Layer.succeed(RegistryStub, env.REGISTRY),
+        Layer.succeed(MemoryStub, env.MEMORY),
         Layer.succeed(SkillsBucket, env.SKILLS),
         Layer.succeed(SessionsBucket, env.SESSIONS),
         Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
@@ -158,6 +162,7 @@ const buildWebHandler = (
       return HttpEffect.toWebHandlerWith<
         | AgentStub
         | RegistryStub
+        | MemoryStub
         | SkillsBucket
         | SessionsBucket
         | KnowledgeSearch
@@ -166,6 +171,7 @@ const buildWebHandler = (
         | Scope.Scope
         | AgentStub
         | RegistryStub
+        | MemoryStub
         | SkillsBucket
         | SessionsBucket
         | KnowledgeSearch
@@ -194,7 +200,9 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/knowledge/") ||
   pathname.startsWith("/meta/") ||
   pathname === "/archives" ||
-  pathname.startsWith("/archives/")
+  pathname.startsWith("/archives/") ||
+  pathname === "/memory" ||
+  pathname.startsWith("/memory/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(

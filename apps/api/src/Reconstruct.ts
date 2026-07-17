@@ -16,7 +16,8 @@ export interface ReconstructEvent {
 /**
  * Rebuild the continuation prompt for the PARKED turn identified by
  * `parkedTurn` (the seq of that turn's `user-message` event), resolving the
- * approval `approvalId` with the given decision.
+ * approval `approvalId` with the given decision. Message order:
+ * `[skill, role?, memory?, todos?, compaction-summary?, prior turns, parked turn, tool-approval-response]`.
  */
 export const reconstructForContinuation = (input: {
   events: ReadonlyArray<ReconstructEvent>
@@ -26,9 +27,10 @@ export const reconstructForContinuation = (input: {
   reason?: string
   skillBody: string
   roleBody: string | undefined
+  memory?: string
   todos?: string
 }): Prompt.Prompt => {
-  const { approvalId, approved, events, parkedTurn, reason, roleBody, skillBody, todos } = input
+  const { approvalId, approved, events, memory, parkedTurn, reason, roleBody, skillBody, todos } = input
 
   const bySeq = [...events].sort((a, b) => a.seq - b.seq)
 
@@ -97,6 +99,9 @@ export const reconstructForContinuation = (input: {
     messages.push(Prompt.systemMessage({ content: roleBody }))
   }
 
+  if (memory !== undefined) {
+    messages.push(Prompt.systemMessage({ content: memory }))
+  }
   if (todos !== undefined) {
     messages.push(Prompt.systemMessage({ content: `Current task list:\n${todos}` }))
   }

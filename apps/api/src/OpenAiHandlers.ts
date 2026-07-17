@@ -21,6 +21,7 @@ import { budgetExceeded, capsFromConfig, type SpendTotals } from "./Budget.ts"
 import { loadResolvedConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { formatMemoryIndex } from "./MemoryStore.ts"
 import { collectOpenAiTurn, streamOpenAiTurn } from "./OpenAiTurn.ts"
 import { RegistryStub } from "./Registry.ts"
 import { buildSessionToolkit } from "./SessionToolkit.ts"
@@ -48,18 +49,25 @@ const budgetExceededResponse = (message: string): HttpServerResponse.HttpServerR
     { status: 402 },
   )
 
-/** Map an OpenAI message list to a facade prompt: default `support` skill as the system message, then the client's user/assistant turns verbatim; system/tool/`content:null` messages are dropped. */
+/** Map an OpenAI message list to a facade prompt: default `support` skill as the system message, an optional cross-session memory index as a second system message, then the client's user/assistant turns verbatim; system/tool/`content:null` messages are dropped. */
 const toPromptMessages = (
   skillBody: string,
   messages: ReadonlyArray<ChatMessage>,
-): ReadonlyArray<{ role: "system" | "user" | "assistant"; content: string }> => [
-  { role: "system", content: skillBody },
-  ...messages.flatMap((m) =>
-    (m.role === "user" || m.role === "assistant") && m.content !== null
-      ? [{ role: m.role, content: m.content }]
-      : [],
-  ),
-]
+  memory?: string,
+): ReadonlyArray<{ role: "system" | "user" | "assistant"; content: string }> => {
+  const systemMessages: Array<{ role: "system"; content: string }> = [
+    { role: "system", content: skillBody },
+  ]
+  if (memory !== undefined) systemMessages.push({ role: "system", content: memory })
+  return [
+    ...systemMessages,
+    ...messages.flatMap((m) =>
+      (m.role === "user" || m.role === "assistant") && m.content !== null
+        ? [{ role: m.role, content: m.content }]
+        : [],
+    ),
+  ]
+}
 
 /** OpenAI-compatible facade handlers for the `v1` group: chat completions (JSON or SSE) and the session-backed model list. */
 export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
@@ -82,7 +90,11 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const { skillBody } = yield* loadOverlay(undefined, undefined)
-        const promptMessages = toPromptMessages(skillBody, payload.messages)
+        const memoryRows = resolved.memoryEnabled
+          ? yield* Effect.promise(() => agent.memoryList())
+          : undefined
+        const memory = memoryRows !== undefined ? formatMemoryIndex(memoryRows) : undefined
+        const promptMessages = toPromptMessages(skillBody, payload.messages, memory)
 
         const lastUser = [...payload.messages]
           .reverse()

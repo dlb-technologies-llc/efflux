@@ -25,6 +25,13 @@ import {
   PutKnowledgeRequest,
 } from "./Knowledge.ts"
 import {
+  MemoryEntry,
+  MemoryLimitError,
+  MemoryListResponse,
+  MemoryNotFoundError,
+  PutMemoryRequest,
+} from "./Memory.ts"
+import {
   ApprovalDecision,
   HistoryResponse,
   PromptRequest,
@@ -250,6 +257,43 @@ export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(putKnowledge)
   .middleware(AuthMiddleware)
 
+/** The agent name's memory index — name + description per fact, cheap to poll. */
+const listMemories = HttpApiEndpoint.get("listMemories", "/memory/:agent", {
+  params: Schema.Struct({ agent: SafeId }),
+  success: MemoryListResponse,
+  error: AgentError,
+})
+
+/** One full memory fact by name. */
+const getMemory = HttpApiEndpoint.get("getMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: MemoryEntry,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** Upsert a memory fact by name — caps (entry count, description, content size) surface as 400 `MemoryLimitError`. */
+const putMemory = HttpApiEndpoint.put("putMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  payload: PutMemoryRequest,
+  success: MemoryEntry,
+  error: [AgentError, MemoryLimitError],
+})
+
+/** Delete a memory fact by name. */
+const deleteMemory = HttpApiEndpoint.delete("deleteMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: Schema.Void,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** All cross-session memory endpoints grouped. Memory is scoped per agent NAME (not per session), hence `/memory/:agent` rather than a nested `/agents/...` path — nesting under `/agents/:agent/<x>` would collide with the session `:name/:id` route pattern. */
+export const MemoryGroup = HttpApiGroup.make("memory")
+  .add(listMemories)
+  .add(getMemory)
+  .add(putMemory)
+  .add(deleteMemory)
+  .middleware(AuthMiddleware)
+
 /** Upsert a session secret by key; the value is write-only and never echoed back. */
 const putSecret = HttpApiEndpoint.put("putSecret", "/agents/:name/:id/secrets/:key", {
   params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
@@ -419,4 +463,5 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(ScheduleGroup)
   .add(ArchivesGroup)
   .add(FilesGroup)
+  .add(MemoryGroup)
   .middleware(SchemaErrorMiddleware) {}
