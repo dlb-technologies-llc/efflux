@@ -26,6 +26,7 @@ import { Cause, Effect, Layer, type Duration } from "effect"
 import type { Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { eventJson } from "./JournalWrite.ts"
+import { makeMemoryStoreLayer } from "./MemoryStore.ts"
 import { makeSecretsStoreLayer } from "./Secrets.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import { loadRoleBody, loadSkillBody } from "./Skills.ts"
@@ -60,14 +61,18 @@ export const shouldContinueToolLoop = (
 
 /**
  * Compose the OpenRouter message array as
- * `[system: skill, system: role?, system: todos?, ...history, user]`.
- * The optional `todos` system message (a `Current task list:` prefix over the
- * current todo list) is injected AFTER skill/role and BEFORE history.
+ * `[system: skill, system: role?, system: memory?, system: todos?, ...history, user]`.
+ * The optional `memory` system message (the cross-session memory index) is
+ * re-composed fresh each turn and never persisted to history — the same rule
+ * as the other system messages. The optional `todos` system message (a
+ * `Current task list:` prefix over the current todo list) is injected AFTER
+ * skill/role/memory and BEFORE history.
  * System messages are NOT persisted to history — only user + assistant.
  */
 export const composeMessages = (input: {
   skillBody: string
   roleBody: string | undefined
+  memory?: string
   todos?: string
   history: ReadonlyArray<PlainMessage>
   message: string
@@ -79,6 +84,7 @@ export const composeMessages = (input: {
     { role: "system", content: input.skillBody },
   ]
   if (input.roleBody !== undefined) systemMessages.push({ role: "system", content: input.roleBody })
+  if (input.memory !== undefined) systemMessages.push({ role: "system", content: input.memory })
   if (input.todos !== undefined) {
     systemMessages.push({ role: "system", content: `Current task list:\n${input.todos}` })
   }
@@ -137,8 +143,8 @@ export const makeScheduledJobsLayer = (
 /**
  * Single-sources the per-turn tool-execution layer stack that all four turn
  * drivers share: the per-request `BashRunner` (bound to this DO's `exec` RPC),
- * the per-turn `TodoStore`, the per-request `SecretsStore` and
- * `ScheduledJobs` (both bound to this DO instance), the resolved
+ * the per-turn `TodoStore`, the per-request `SecretsStore`, `ScheduledJobs`,
+ * and `MemoryStore` (all bound to this DO instance), the resolved
  * `ApprovalRules`, and the session `toolLayer` that consumes them.
  * `provideMerge` feeds the merged layers into `toolLayer`'s dependencies
  * while still exposing all of them in the output, so a driver provides this
@@ -156,6 +162,7 @@ export const makeTurnLayers = (
       makeBashRunnerLayer((command) => agent.exec(command)),
       makeTodoStoreLayer(agent, turn),
       makeSecretsStoreLayer(agent),
+      makeMemoryStoreLayer(agent),
       makeScheduledJobsLayer(agent),
       Layer.succeed(ApprovalRules, rules),
     ),

@@ -25,6 +25,13 @@ import {
   PutKnowledgeRequest,
 } from "./Knowledge.ts"
 import {
+  MemoryEntry,
+  MemoryLimitError,
+  MemoryListResponse,
+  MemoryNotFoundError,
+  PutMemoryRequest,
+} from "./Memory.ts"
+import {
   ApprovalDecision,
   HistoryResponse,
   PromptRequest,
@@ -43,6 +50,7 @@ import {
 } from "./Skills.ts"
 import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
 import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
+import { MAX_UPLOAD_BYTES, UploadResponse, WorkspaceFilename } from "./Files.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
@@ -249,6 +257,43 @@ export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(putKnowledge)
   .middleware(AuthMiddleware)
 
+/** The agent name's memory index — name + description per fact, cheap to poll. */
+const listMemories = HttpApiEndpoint.get("listMemories", "/memory/:agent", {
+  params: Schema.Struct({ agent: SafeId }),
+  success: MemoryListResponse,
+  error: AgentError,
+})
+
+/** One full memory fact by name. */
+const getMemory = HttpApiEndpoint.get("getMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: MemoryEntry,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** Upsert a memory fact by name — caps (entry count, description, content size) surface as 400 `MemoryLimitError`. */
+const putMemory = HttpApiEndpoint.put("putMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  payload: PutMemoryRequest,
+  success: MemoryEntry,
+  error: [AgentError, MemoryLimitError],
+})
+
+/** Delete a memory fact by name. */
+const deleteMemory = HttpApiEndpoint.delete("deleteMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: Schema.Void,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** All cross-session memory endpoints grouped. Memory is scoped per agent NAME (not per session), hence `/memory/:agent` rather than a nested `/agents/...` path — nesting under `/agents/:agent/<x>` would collide with the session `:name/:id` route pattern. */
+export const MemoryGroup = HttpApiGroup.make("memory")
+  .add(listMemories)
+  .add(getMemory)
+  .add(putMemory)
+  .add(deleteMemory)
+  .middleware(AuthMiddleware)
+
 /** Upsert a session secret by key; the value is write-only and never echoed back. */
 const putSecret = HttpApiEndpoint.put("putSecret", "/agents/:name/:id/secrets/:key", {
   params: Schema.Struct({ name: SafeId, id: SafeId, key: SafeName }),
@@ -349,6 +394,26 @@ export const ArchivesGroup = HttpApiGroup.make("archives")
   .add(getArchive)
   .middleware(AuthMiddleware)
 
+/** Raw binary upload body, capped at MAX_UPLOAD_BYTES; the size check runs on decode server-side, so an over-cap upload fails before touching the DO. Encoded side is `Uint8Array` (required by `asUint8Array`). */
+const UploadBody = Schema.Uint8Array.pipe(
+  Schema.check(Schema.isMaxLength(MAX_UPLOAD_BYTES)),
+  HttpApiSchema.asUint8Array(),
+)
+
+/** Upload a file into the session's container `/workspace`; raw request body is the file bytes, `?filename=` names the destination (bare filename, lands at `/workspace/<filename>`). */
+const uploadFile = HttpApiEndpoint.post("uploadFile", "/agents/:name/:id/files", {
+  params: AgentParams,
+  query: { filename: WorkspaceFilename },
+  payload: UploadBody,
+  success: UploadResponse,
+  error: AgentError,
+})
+
+/** Session workspace file endpoints grouped. */
+export const FilesGroup = HttpApiGroup.make("files")
+  .add(uploadFile)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -397,4 +462,6 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(SecretsGroup)
   .add(ScheduleGroup)
   .add(ArchivesGroup)
+  .add(FilesGroup)
+  .add(MemoryGroup)
   .middleware(SchemaErrorMiddleware) {}
