@@ -25,6 +25,7 @@ import { compactIfNeeded } from "./Compaction.ts"
 import { loadResolvedConfig, resolveConfig } from "./Defaults.ts"
 import { fetchAllEvents } from "./JournalRead.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
+import { loadMemoryIndex } from "./Memory.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
@@ -64,12 +65,14 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         yield* compactIfNeeded(agent, effectiveModel, resolved.compactionThreshold)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
         const messages = composeMessages({
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
           history,
           message: payload.message,
@@ -220,12 +223,14 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
         const messages = composeMessages({
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
           history,
           message: payload.message,
@@ -280,6 +285,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
         const effectiveModel = userMsg?.model ?? resolved.defaultModel
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
 
         const initialPrompt = reconstructForContinuation({
@@ -290,6 +296,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
         })
 

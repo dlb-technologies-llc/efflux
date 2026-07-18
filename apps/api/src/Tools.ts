@@ -8,6 +8,9 @@ import {
   type JobNotify,
   JobNotifyConfig,
   JournalTodoWrite,
+  MEMORY_MAX_CONTENT_LENGTH,
+  MEMORY_MAX_DESCRIPTION_LENGTH,
+  MEMORY_MAX_ENTRIES,
   resolveRule,
   type RulesMap,
   SafeName,
@@ -17,6 +20,7 @@ import {
 import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
+import { MemoryStore } from "./MemoryStore.ts"
 import { logToolMetric, tapErrorStringMetric } from "./Metrics.ts"
 import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
@@ -427,6 +431,65 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
   needsApproval: needsApprovalFor("create_scheduled_job"),
 })
 
+/** Fetch one saved fact's full content from the agent's cross-session memory (the index of names is injected into the system prompt). */
+export const MemoryReadTool = Tool.make("memory_read", {
+  description:
+    "Read a saved fact's full content from this agent's cross-session memory. The Persistent memory index in your system prompt lists the available names — call this before relying on a fact's details.",
+  parameters: Schema.Struct({
+    name: SafeName.annotate({
+      description: "The memory's name, as listed in the Persistent memory index.",
+    }),
+  }),
+  success: Schema.Struct({
+    found: Schema.Boolean,
+    description: Schema.String,
+    content: Schema.String,
+  }),
+  dependencies: [MemoryStore],
+  needsApproval: needsApprovalFor("memory_read"),
+})
+
+/** Upsert one durable fact in the agent's cross-session memory; caps mirror `PutMemoryRequest` in `@efflux/shared`. */
+export const MemoryWriteTool = Tool.make("memory_write", {
+  description: `Save or update a durable fact in this agent's cross-session memory — it persists across ALL sessions of this agent name, not just this one. Writing an existing name updates it. Caps: at most ${MEMORY_MAX_ENTRIES} memories per agent, descriptions up to ${MEMORY_MAX_DESCRIPTION_LENGTH} characters, content up to ${MEMORY_MAX_CONTENT_LENGTH} characters.`,
+  parameters: Schema.Struct({
+    name: SafeName.annotate({
+      description:
+        "Short kebab-case name for the fact, e.g. preferred-deploy-flow. Writing an existing name updates that memory.",
+    }),
+    description: Schema.String.check(Schema.isMaxLength(256)).annotate({
+      description:
+        "Single-line summary shown in every future session's Persistent memory index.",
+    }),
+    content: Schema.String.check(Schema.isMaxLength(16_384)).annotate({
+      description: "The full fact to save.",
+    }),
+  }),
+  success: Schema.Struct({
+    saved: Schema.Boolean,
+    message: Schema.String,
+  }),
+  dependencies: [MemoryStore],
+  needsApproval: needsApprovalFor("memory_write"),
+})
+
+/** Remove one saved fact from the agent's cross-session memory. */
+export const MemoryDeleteTool = Tool.make("memory_delete", {
+  description:
+    "Permanently remove a saved fact from this agent's cross-session memory. Use this for stale or wrong facts — the removal applies to all sessions of this agent name.",
+  parameters: Schema.Struct({
+    name: SafeName.annotate({
+      description: "The memory's name, as listed in the Persistent memory index.",
+    }),
+  }),
+  success: Schema.Struct({
+    deleted: Schema.Boolean,
+    message: Schema.String,
+  }),
+  dependencies: [MemoryStore],
+  needsApproval: needsApprovalFor("memory_delete"),
+})
+
 export const AgentToolkit = Toolkit.make(
   GetCurrentTimeTool,
   SpawnSubagentTool,
@@ -446,6 +509,9 @@ export const AgentToolkit = Toolkit.make(
   HasSecretTool,
   RequestSecretTool,
   CreateScheduledJobTool,
+  MemoryReadTool,
+  MemoryWriteTool,
+  MemoryDeleteTool,
 )
 
 /** Record a purpose-built file-op tool's metric (exit 0 = ok, any non-zero = the op failed, e.g. missing file / denied `-1`) and return the result unchanged. */
@@ -681,5 +747,51 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
     return failed
       ? `Could not schedule '${params.schedule}': ${outcome.error}. Provide a cron expression that has a future occurrence.`
       : `Scheduled '${params.schedule}' — next run ${new Date(outcome.nextRunAt).toISOString()} UTC`
+  }),
+  memory_read: Effect.fn("tool.memory_read")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "memory_read") === "deny") {
+      yield* logToolMetric("memory_read", "error")
+      return { found: false, description: "", content: "denied by session policy" }
+    }
+    const row = yield* MemoryStore.use((store) => store.read(params.name))
+    yield* logToolMetric("memory_read", "ok")
+    return row === null
+      ? { found: false, description: "", content: "" }
+      : { found: true, description: row.description, content: row.content }
+  }),
+  memory_write: Effect.fn("tool.memory_write")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "memory_write") === "deny") {
+      yield* logToolMetric("memory_write", "error")
+      return { saved: false, message: "denied by session policy" }
+    }
+    const result = yield* MemoryStore.use((store) =>
+      store.write({
+        name: params.name,
+        description: params.description,
+        content: params.content,
+      }),
+    )
+    yield* logToolMetric("memory_write", result.saved ? "ok" : "error")
+    return {
+      saved: result.saved,
+      message: result.error ?? `Saved memory '${params.name}'.`,
+    }
+  }),
+  memory_delete: Effect.fn("tool.memory_delete")(function* (params) {
+    const rules = yield* ApprovalRules
+    if (resolveRule(rules, "memory_delete") === "deny") {
+      yield* logToolMetric("memory_delete", "error")
+      return { deleted: false, message: "denied by session policy" }
+    }
+    const result = yield* MemoryStore.use((store) => store.remove(params.name))
+    yield* logToolMetric("memory_delete", "ok")
+    return {
+      deleted: result.deleted,
+      message: result.deleted
+        ? `Deleted memory '${params.name}'.`
+        : `No memory named '${params.name}'.`,
+    }
   }),
 })
