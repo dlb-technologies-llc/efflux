@@ -1,6 +1,11 @@
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react"
 import type { MemoryEntry, MemorySummary } from "@efflux/shared"
-import { SafeName } from "@efflux/shared"
+import {
+  MEMORY_MAX_CONTENT_LENGTH,
+  MEMORY_MAX_DESCRIPTION_LENGTH,
+  PutMemoryRequest,
+  SafeName,
+} from "@efflux/shared"
 import { Exit, Result, Schema } from "effect"
 import { Brain, ChevronDown } from "lucide-react"
 import * as React from "react"
@@ -27,6 +32,7 @@ import { currentSessionAtom } from "../session.ts"
 import { AsyncBoundary } from "./AsyncBoundary.tsx"
 
 const decodeName = Schema.decodeUnknownResult(SafeName)
+const decodePut = Schema.decodeUnknownResult(PutMemoryRequest)
 
 /** Validate a memory name against the shared `SafeName` schema — the same rule the server enforces. Returns an actionable message, or null when valid (blank is handled by the disabled submit, not an error). */
 const nameError = (raw: string): string | null => {
@@ -34,6 +40,14 @@ const nameError = (raw: string): string | null => {
   return Result.isSuccess(decodeName(raw))
     ? null
     : "Use a short name: letters, digits, hyphens, underscores."
+}
+
+/** Validate description + content by decoding through the shared `PutMemoryRequest` schema — the same length caps the server enforces (never a hand-rolled bound). Returns an actionable message, or null when valid; blanks are handled by the disabled submit. */
+const putError = (description: string, content: string): string | null => {
+  if (description.length === 0 || content.length === 0) return null
+  return Result.isSuccess(decodePut({ description, content }))
+    ? null
+    : `Keep the description within ${MEMORY_MAX_DESCRIPTION_LENGTH} characters and content within ${MEMORY_MAX_CONTENT_LENGTH.toLocaleString("en-US")} characters.`
 }
 
 /** Inline editor for one loaded memory fact, seeded from the entry (parent remounts it via `key` on `updatedAt` so a save re-seeds). Saves through the same upsert the add form uses. */
@@ -52,9 +66,11 @@ function MemoryEditor({
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  const capsInvalid = putError(description, content)
+
   const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (description.length === 0 || content.length === 0) return
+    if (description.length === 0 || content.length === 0 || capsInvalid !== null) return
     setBusy(true)
     setError(null)
     const exit = await runPut({ agent, name: entry.name, description, content })
@@ -84,17 +100,49 @@ function MemoryEditor({
           type="submit"
           variant="secondary"
           size="sm"
-          disabled={busy || description.length === 0 || content.length === 0}
+          disabled={busy || description.length === 0 || content.length === 0 || capsInvalid !== null}
         >
           {busy ? "Saving..." : "Save"}
         </Button>
       </div>
+      {capsInvalid !== null ? <p className="text-sm text-destructive">{capsInvalid}</p> : null}
       {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
     </form>
   )
 }
 
-/** One memory row: a Collapsible whose header shows name + description + updated date and a two-step Delete (a memory is distilled from a conversation that may be gone — not trivially re-creatable, so the first click arms a Confirm/Cancel pair, mirroring `SecretRow`). Expanding lazily loads the full fact via `memoryEntryAtom` and offers an inline editor. */
+/** The expanded body of one memory row — mounted ONLY while the row is open, so the full fact is fetched lazily on expand (subscribing in the collapsed row would fire one GET per listed memory the moment the dialog opens, up to the 200-entry cap). */
+function MemoryRowBody({
+  agent,
+  name,
+  onChanged,
+}: {
+  readonly agent: string
+  readonly name: string
+  readonly onChanged: () => void
+}) {
+  const entryKey = `${agent}/${name}`
+  const entry = useAtomValue(memoryEntryAtom(entryKey))
+  const refreshEntry = useAtomRefresh(memoryEntryAtom(entryKey))
+
+  return (
+    <AsyncBoundary result={entry} onRetry={refreshEntry}>
+      {(value) => (
+        <MemoryEditor
+          key={value.updatedAt}
+          agent={agent}
+          entry={value}
+          onSaved={() => {
+            refreshEntry()
+            onChanged()
+          }}
+        />
+      )}
+    </AsyncBoundary>
+  )
+}
+
+/** One memory row: a Collapsible whose header shows name + description + updated date and a two-step Delete (a memory is distilled from a conversation that may be gone — not trivially re-creatable, so the first click arms a Confirm/Cancel pair, mirroring `SecretRow`). Expanding mounts `MemoryRowBody`, which lazily loads the full fact and offers an inline editor. */
 function MemoryRow({
   agent,
   memory,
@@ -104,9 +152,6 @@ function MemoryRow({
   readonly memory: MemorySummary
   readonly onChanged: () => void
 }) {
-  const entryKey = `${agent}/${memory.name}`
-  const entry = useAtomValue(memoryEntryAtom(entryKey))
-  const refreshEntry = useAtomRefresh(memoryEntryAtom(entryKey))
   const runDelete = useAtomSet(deleteMemoryFn, { mode: "promiseExit" })
   const [open, setOpen] = React.useState(false)
   const [confirming, setConfirming] = React.useState(false)
@@ -162,19 +207,7 @@ function MemoryRow({
         </span>
         <CollapsibleContent>
           <div className="mt-2 flex flex-col gap-2 pl-6">
-            <AsyncBoundary result={entry} onRetry={refreshEntry}>
-              {(value) => (
-                <MemoryEditor
-                  key={value.updatedAt}
-                  agent={agent}
-                  entry={value}
-                  onSaved={() => {
-                    refreshEntry()
-                    onChanged()
-                  }}
-                />
-              )}
-            </AsyncBoundary>
+            {open ? <MemoryRowBody agent={agent} name={memory.name} onChanged={onChanged} /> : null}
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -193,8 +226,13 @@ function MemoryAddForm({ agent, onChanged }: { readonly agent: string; readonly 
   const [error, setError] = React.useState<string | null>(null)
 
   const nameInvalid = nameError(name)
+  const capsInvalid = putError(description, content)
   const formValid =
-    name.length > 0 && nameInvalid === null && description.length > 0 && content.length > 0
+    name.length > 0 &&
+    nameInvalid === null &&
+    capsInvalid === null &&
+    description.length > 0 &&
+    content.length > 0
 
   const handleAdd = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -231,6 +269,7 @@ function MemoryAddForm({ agent, onChanged }: { readonly agent: string; readonly 
         />
       </div>
       {nameInvalid !== null ? <p className="text-sm text-destructive">{nameInvalid}</p> : null}
+      {capsInvalid !== null ? <p className="text-sm text-destructive">{capsInvalid}</p> : null}
       <Textarea
         value={content}
         onChange={(event) => setContent(event.target.value)}

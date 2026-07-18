@@ -8,8 +8,8 @@ import {
   type JobNotify,
   JobNotifyConfig,
   JournalTodoWrite,
-  MEMORY_MAX_CONTENT_BYTES,
-  MEMORY_MAX_DESCRIPTION_BYTES,
+  MEMORY_MAX_CONTENT_LENGTH,
+  MEMORY_MAX_DESCRIPTION_LENGTH,
   MEMORY_MAX_ENTRIES,
   resolveRule,
   type RulesMap,
@@ -448,7 +448,7 @@ export const MemoryReadTool = Tool.make("memory_read", {
 
 /** Upsert one durable fact in the agent's cross-session memory; caps mirror `PutMemoryRequest` in `@efflux/shared`. */
 export const MemoryWriteTool = Tool.make("memory_write", {
-  description: `Save or update a durable fact in this agent's cross-session memory — it persists across ALL sessions of this agent name, not just this one. Writing an existing name updates it. Caps: at most ${MEMORY_MAX_ENTRIES} memories per agent, descriptions up to ${MEMORY_MAX_DESCRIPTION_BYTES} characters, content up to ${MEMORY_MAX_CONTENT_BYTES} characters.`,
+  description: `Save or update a durable fact in this agent's cross-session memory — it persists across ALL sessions of this agent name, not just this one. Writing an existing name updates it. Caps: at most ${MEMORY_MAX_ENTRIES} memories per agent, descriptions up to ${MEMORY_MAX_DESCRIPTION_LENGTH} characters, content up to ${MEMORY_MAX_CONTENT_LENGTH} characters.`,
   parameters: Schema.Struct({
     name: SafeName.annotate({
       description:

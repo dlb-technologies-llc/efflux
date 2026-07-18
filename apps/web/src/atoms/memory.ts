@@ -1,7 +1,9 @@
 import { PutMemoryRequest } from "@efflux/shared"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { Atom } from "effect/unstable/reactivity"
 import { ApiClient, runtime } from "../runtime.ts"
+
+const decodePutMemoryRequest = Schema.decodeUnknownEffect(PutMemoryRequest)
 
 /**
  * Query atom (per-agent): load the agent's memory index (name + description +
@@ -38,9 +40,11 @@ export const memoryEntryAtom = Atom.family((key: string) =>
 
 /**
  * Mutation fn: upsert a memory fact via `PUT /memory/:agent/:name`.
- * The payload MUST be a constructed `new PutMemoryRequest(...)` — a
- * shape-matching object literal typechecks structurally but fails the client's
- * request encoder at runtime.
+ * The payload MUST be a `PutMemoryRequest` INSTANCE — a shape-matching object
+ * literal typechecks structurally but fails the client's request encoder at
+ * runtime. It is produced by DECODING the raw form input (not `new ...`, whose
+ * constructor THROWS on an over-cap value and surfaces as a defect instead of
+ * an actionable failure the form can render).
  */
 export const putMemoryFn = runtime.fn(
   (args: {
@@ -50,10 +54,14 @@ export const putMemoryFn = runtime.fn(
     readonly content: string
   }) =>
     Effect.gen(function*() {
+      const payload = yield* decodePutMemoryRequest({
+        description: args.description,
+        content: args.content,
+      })
       const client = yield* ApiClient
       return yield* client.memory.putMemory({
         params: { agent: args.agent, name: args.name },
-        payload: new PutMemoryRequest({ description: args.description, content: args.content }),
+        payload,
       })
     })
 )

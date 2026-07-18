@@ -61,8 +61,8 @@ export type MemoryDeleteResult = { readonly deleted: boolean }
 /** Cap on stored memories per agent name — a write beyond this raises `MemoryLimitError`. */
 export const MEMORY_MAX_ENTRIES = 200
 
-/** Cap on a memory's content size — mirrors `PutMemoryRequest.content`'s `isMaxLength(16_384)` check. */
-export const MEMORY_MAX_CONTENT_BYTES = 16384
+/** Cap on a memory's content length in characters — mirrors `PutMemoryRequest.content`'s `isMaxLength(16_384)` check. */
+export const MEMORY_MAX_CONTENT_LENGTH = 16384
 
-/** Cap on a memory's one-line description size — mirrors `PutMemoryRequest.description`'s `isMaxLength(256)` check. */
-export const MEMORY_MAX_DESCRIPTION_BYTES = 256
+/** Cap on a memory's one-line description length in characters — mirrors `PutMemoryRequest.description`'s `isMaxLength(256)` check. */
+export const MEMORY_MAX_DESCRIPTION_LENGTH = 256

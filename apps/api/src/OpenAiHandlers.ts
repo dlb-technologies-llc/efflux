@@ -21,17 +21,31 @@ import { budgetExceeded, capsFromConfig, type SpendTotals } from "./Budget.ts"
 import { loadResolvedConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
-import { formatMemoryIndex } from "./MemoryStore.ts"
+import { loadMemoryIndex } from "./Memory.ts"
 import { collectOpenAiTurn, streamOpenAiTurn } from "./OpenAiTurn.ts"
 import { RegistryStub } from "./Registry.ts"
 import { buildSessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
-/** Map a session's resolved rules for the facade: `ask` → `allow` (OpenAI cannot approve), `deny`/`allow` preserved. */
+/**
+ * Tools whose side effect is DURABLE and CROSS-SESSION (a memory write lands in
+ * every future session's system prompt for that agent name). On this facade —
+ * which can never park a turn for approval — their `ask` fails CLOSED to `deny`
+ * instead of open to `allow`: auto-allowing them would let a prompt-injected
+ * conversation silently persist instructions across sessions, the exact outcome
+ * the `DEFAULT_TOOL_RULES` `ask` defaults exist to prevent. A session that
+ * wants unattended facade writes sets the rule to `allow` explicitly.
+ */
+const FACADE_FAIL_CLOSED_TOOLS: ReadonlySet<string> = new Set(["memory_write", "memory_delete"])
+
+/** Map a session's resolved rules for the facade: `ask` → `allow` (OpenAI cannot approve) for session-scoped tools, but `ask` → `deny` for the durable cross-session tools in {@link FACADE_FAIL_CLOSED_TOOLS}; `deny`/`allow` preserved. */
 const autoApproveRules = (rules: RulesMap): RulesMap =>
   Object.fromEntries(
     Object.entries(rules).map(
-      ([name, rule]): [string, typeof ToolRule.Type] => [name, rule === "ask" ? "allow" : rule],
+      ([name, rule]): [string, typeof ToolRule.Type] => [
+        name,
+        rule === "ask" ? (FACADE_FAIL_CLOSED_TOOLS.has(name) ? "deny" : "allow") : rule,
+      ],
     ),
   )
 
@@ -90,10 +104,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const { skillBody } = yield* loadOverlay(undefined, undefined)
-        const memoryRows = resolved.memoryEnabled
-          ? yield* Effect.promise(() => agent.memoryList())
-          : undefined
-        const memory = memoryRows !== undefined ? formatMemoryIndex(memoryRows) : undefined
+        const memory = yield* loadMemoryIndex(parsed.name, resolved.memoryEnabled)
         const promptMessages = toPromptMessages(skillBody, payload.messages, memory)
 
         const lastUser = [...payload.messages]

@@ -5,12 +5,13 @@ import type {
   PlainMemorySummary,
 } from "@efflux/shared"
 import {
-  MEMORY_MAX_CONTENT_BYTES,
-  MEMORY_MAX_DESCRIPTION_BYTES,
+  MEMORY_MAX_CONTENT_LENGTH,
+  MEMORY_MAX_DESCRIPTION_LENGTH,
   MEMORY_MAX_ENTRIES,
 } from "@efflux/shared"
 import { DurableObject } from "cloudflare:workers"
-import { Context } from "effect"
+import { Context, Effect } from "effect"
+import { formatMemoryIndex } from "./MemoryStore.ts"
 
 /**
  * Cross-session memory Durable Object — one instance per agent NAME
@@ -67,9 +68,11 @@ export class Memory extends DurableObject<Env> {
 
   /**
    * Upsert a named fact, stamping timestamps internally and preserving
-   * `created_at` on update. Cap violations (description/content byte limits,
-   * or a full store receiving a NEW name — upserts to existing names always
-   * pass) return `{ saved: false, error, entry: null }` in-band; the success
+   * `created_at` on update. Cap violations (description/content CHARACTER
+   * limits — the same unit `PutMemoryRequest`'s `isMaxLength` checks count,
+   * so multibyte input that passes the schema passes here too — or a full
+   * store receiving a NEW name; upserts to existing names always pass)
+   * return `{ saved: false, error, entry: null }` in-band; the success
    * path returns the written row so callers never need a read-back.
    */
   async write(input: {
@@ -77,19 +80,17 @@ export class Memory extends DurableObject<Env> {
     description: string
     content: string
   }): Promise<MemoryWriteResult> {
-    const descriptionBytes = new TextEncoder().encode(input.description).byteLength
-    if (descriptionBytes > MEMORY_MAX_DESCRIPTION_BYTES) {
+    if (input.description.length > MEMORY_MAX_DESCRIPTION_LENGTH) {
       return {
         saved: false,
-        error: `description is ${descriptionBytes} bytes, above the ${MEMORY_MAX_DESCRIPTION_BYTES}-byte limit`,
+        error: `description is ${input.description.length} characters, above the ${MEMORY_MAX_DESCRIPTION_LENGTH}-character limit`,
         entry: null,
       }
     }
-    const contentBytes = new TextEncoder().encode(input.content).byteLength
-    if (contentBytes > MEMORY_MAX_CONTENT_BYTES) {
+    if (input.content.length > MEMORY_MAX_CONTENT_LENGTH) {
       return {
         saved: false,
-        error: `content is ${contentBytes} bytes, above the ${MEMORY_MAX_CONTENT_BYTES}-byte limit`,
+        error: `content is ${input.content.length} characters, above the ${MEMORY_MAX_CONTENT_LENGTH}-character limit`,
         entry: null,
       }
     }
@@ -149,3 +150,28 @@ export class MemoryStub extends Context.Service<
   MemoryStub,
   MemoryNamespace
 >()("api/MemoryStub") {}
+
+/**
+ * Load the agent name's formatted memory-index block for prompt injection —
+ * one hop, straight to the Memory DO via the root-provided `MemoryStub`
+ * (never through the session's Agent DO). BEST-EFFORT BY DESIGN: memory is a
+ * nice-to-have, so any failure (a Memory DO reset, storage error, RPC
+ * rejection) logs and yields `undefined` — a hiccup in the single per-name
+ * Memory DO must never 500 every session of that agent name (the Registry
+ * best-effort precedent). Returns `undefined` immediately when the session's
+ * `memoryEnabled` config is off.
+ */
+export const loadMemoryIndex = Effect.fn("loadMemoryIndex")(
+  function* (agent: string, enabled: boolean) {
+    if (!enabled) return undefined
+    const ns = yield* MemoryStub
+    const stub = ns.get(ns.idFromName(agent))
+    const rows = yield* Effect.promise(() => stub.list())
+    return formatMemoryIndex(rows)
+  },
+  (effect) =>
+    effect.pipe(
+      Effect.tapCause((cause) => Effect.logError("memory index load failed; turn continues without memory", cause)),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    ),
+)

@@ -201,7 +201,6 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/meta/") ||
   pathname === "/archives" ||
   pathname.startsWith("/archives/") ||
-  pathname === "/memory" ||
   pathname.startsWith("/memory/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
