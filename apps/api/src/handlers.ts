@@ -78,6 +78,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
 
         const result = yield* runPromptTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           turn,
           initialPrompt: Prompt.make(messages),
           model: effectiveModel,
@@ -233,6 +234,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
 
         return yield* runStreamingTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           ambient,
           turn,
           startHop: 0,
@@ -293,6 +295,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
 
         return yield* runStreamingTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           ambient,
           turn: res.turn,
           startHop: maxHopForTurn(events, res.turn) + 1,
