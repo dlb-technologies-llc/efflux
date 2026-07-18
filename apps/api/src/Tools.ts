@@ -21,6 +21,7 @@ import { Context, Effect, Encoding, Schema } from "effect"
 import { LanguageModel, Tool, Toolkit } from "effect/unstable/ai"
 import { KnowledgeSearch, searchKnowledge } from "./Knowledge.ts"
 import { MemoryStore } from "./MemoryStore.ts"
+import { logToolMetric, tapErrorStringMetric } from "./Metrics.ts"
 import { SecretsStore } from "./Secrets.ts"
 import { listSkills, loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { runSubagent } from "./Subagent.ts"
@@ -48,6 +49,8 @@ const BashResult = Schema.Struct({
 })
 
 type BashResultValue = typeof BashResult.Type
+
+type WebFetchResultValue = typeof WebFetchResult.Type
 
 /** Per-request handle to the DO's exec(command) RPC, provided per-request from the resolved Agent stub. */
 export class BashRunner extends Context.Service<
@@ -511,12 +514,38 @@ export const AgentToolkit = Toolkit.make(
   MemoryDeleteTool,
 )
 
+/** Record a purpose-built file-op tool's metric (exit 0 = ok, any non-zero = the op failed, e.g. missing file / denied `-1`) and return the result unchanged. */
+const tapBashMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
+  logToolMetric(name, result.exitCode === 0 ? "ok" : "error").pipe(Effect.as(result))
+
+/** Record the raw Bash executor's metric: a non-zero COMMAND exit is a normal outcome (e.g. `test`, `diff`, a failing build), not a tool failure — only a denied/failed exec (`exitCode -1`) is an error. */
+const tapBashExecMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
+  logToolMetric(name, result.exitCode === -1 ? "error" : "ok").pipe(Effect.as(result))
+
+/** Record grep's metric (exit 0 or 1 = ok — 1 is "no matches"; exit 2 = real error, -1 = denied) and return the result unchanged. */
+const tapGrepMetric = (name: string, result: BashResultValue): Effect.Effect<BashResultValue> =>
+  logToolMetric(name, result.exitCode === 0 || result.exitCode === 1 ? "ok" : "error").pipe(
+    Effect.as(result),
+  )
+
+/** Record web_fetch's metric (status 0 is the in-band failure sentinel = error; any real status = ok) and return the result unchanged. */
+const tapWebFetchMetric = (
+  name: string,
+  result: WebFetchResultValue,
+): Effect.Effect<WebFetchResultValue> =>
+  logToolMetric(name, result.status === 0 ? "error" : "ok").pipe(Effect.as(result))
+
+/** Record a failure-less tool's metric (has_secret/GetCurrentTime, or list_skills' array — always ok) and return the result unchanged. */
+const tapOkMetric = <A>(name: string, result: A): Effect.Effect<A> =>
+  logToolMetric(name, "ok").pipe(Effect.as(result))
+
 export const AgentToolkitLayer = AgentToolkit.toLayer({
   GetCurrentTime: Effect.fn("tool.GetCurrentTime")(function* () {
-    return yield* Effect.sync(() => new Date().toISOString())
+    const result = yield* Effect.sync(() => new Date().toISOString())
+    return yield* tapOkMetric("GetCurrentTime", result)
   }),
   SpawnSubagent: Effect.fn("tool.SpawnSubagent")(function* (params) {
-    return yield* runSubagent({
+    const result = yield* runSubagent({
       prompt: params.prompt,
       ...(params.skill !== undefined ? { skill: params.skill } : {}),
       ...(params.role !== undefined ? { role: params.role } : {}),
@@ -540,42 +569,51 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
       }),
     )
+    return yield* tapErrorStringMetric("SpawnSubagent", result)
   }),
   list_skills: Effect.fn("tool.list_skills")(function* () {
     const rules = yield* ApprovalRules
-    if (resolveRule(rules, "list_skills") === "deny") return []
-    return yield* listSkills().pipe(
-      Effect.map((skills) =>
-        skills.map(
-          (s) => new SkillSummary({ name: s.name, description: s.description }),
-        ),
-      ),
-      Effect.tapErrorTag("AgentError", (e) =>
-        Effect.logWarning(`list_skills: ${e.message}`),
-      ),
-      Effect.catchTag("AgentError", () => Effect.succeed([])),
-    )
+    const result =
+      resolveRule(rules, "list_skills") === "deny"
+        ? []
+        : yield* listSkills().pipe(
+            Effect.map((skills) =>
+              skills.map(
+                (s) => new SkillSummary({ name: s.name, description: s.description }),
+              ),
+            ),
+            Effect.tapErrorTag("AgentError", (e) =>
+              Effect.logWarning(`list_skills: ${e.message}`),
+            ),
+            Effect.catchTag("AgentError", () => Effect.succeed([])),
+          )
+    return yield* tapOkMetric("list_skills", result)
   }),
   load_skill: Effect.fn("tool.load_skill")(function* (params) {
     const rules = yield* ApprovalRules
-    if (resolveRule(rules, "load_skill") === "deny") return "Error: denied by session policy"
-    return yield* loadSkillBody(params.name).pipe(
-      Effect.map(capForPrompt),
-      Effect.tapErrorTag("SkillNotFoundError", (e) =>
-        Effect.logWarning(`load_skill: not found: ${e.skill}`),
-      ),
-      Effect.catchTags({
-        SkillNotFoundError: (e) =>
-          Effect.succeed(`Error: Skill not found: ${e.skill}`),
-        AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
-      }),
-    )
+    const result =
+      resolveRule(rules, "load_skill") === "deny"
+        ? "Error: denied by session policy"
+        : yield* loadSkillBody(params.name).pipe(
+            Effect.map(capForPrompt),
+            Effect.tapErrorTag("SkillNotFoundError", (e) =>
+              Effect.logWarning(`load_skill: not found: ${e.skill}`),
+            ),
+            Effect.catchTags({
+              SkillNotFoundError: (e) =>
+                Effect.succeed(`Error: Skill not found: ${e.skill}`),
+              AgentError: (e) => Effect.succeed(`Error: ${e.message}`),
+            }),
+          )
+    return yield* tapErrorStringMetric("load_skill", result)
   }),
   Bash: Effect.fn("tool.Bash")(function* (params) {
-    return yield* guardExec("Bash", execCapped(params.command))
+    const result = yield* guardExec("Bash", execCapped(params.command))
+    return yield* tapBashExecMetric("Bash", result)
   }),
   read_file: Effect.fn("tool.read_file")(function* (params) {
-    return yield* guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`))
+    const result = yield* guardExec("read_file", execCapped(`cat -- ${shellQuote(params.path)}`))
+    return yield* tapBashMetric("read_file", result)
   }),
   write_file: Effect.fn("tool.write_file")(function* (params) {
     const command = bunEval(
@@ -585,12 +623,13 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       WRITE_SCRIPT,
     )
-    return yield* guardExec(
+    const result = yield* guardExec(
       "write_file",
       command.length > MAX_COMMAND_CHARS
         ? Effect.succeed(commandTooLarge("content"))
         : execCapped(command),
     )
+    return yield* tapBashMetric("write_file", result)
   }),
   edit_file: Effect.fn("tool.edit_file")(function* (params) {
     const command = bunEval(
@@ -602,15 +641,16 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       },
       EDIT_SCRIPT,
     )
-    return yield* guardExec(
+    const result = yield* guardExec(
       "edit_file",
       command.length > MAX_COMMAND_CHARS
         ? Effect.succeed(commandTooLarge("old_string/new_string"))
         : execCapped(command),
     )
+    return yield* tapBashMetric("edit_file", result)
   }),
   glob: Effect.fn("tool.glob")(function* (params) {
-    return yield* guardExec(
+    const result = yield* guardExec(
       "glob",
       execCapped(
         bunEval(
@@ -622,20 +662,24 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
         ),
       ),
     )
+    return yield* tapBashMetric("glob", result)
   }),
   grep: Effect.fn("tool.grep")(function* (params) {
-    return yield* guardExec(
+    const result = yield* guardExec(
       "grep",
       execCapped(
         `grep -rEIn -e ${shellQuote(params.pattern)} -- ${shellQuote(params.path ?? ".")}`,
       ),
     )
+    return yield* tapGrepMetric("grep", result)
   }),
   web_fetch: Effect.fn("tool.web_fetch")(function* (params) {
     const rules = yield* ApprovalRules
-    return resolveRule(rules, "web_fetch") === "deny"
-      ? webFetchError("denied by session policy")
-      : yield* runWebFetch(params.url)
+    const result =
+      resolveRule(rules, "web_fetch") === "deny"
+        ? webFetchError("denied by session policy")
+        : yield* runWebFetch(params.url)
+    return yield* tapWebFetchMetric("web_fetch", result)
   }),
   web_search: Effect.fn("tool.web_search")(function* (params) {
     const rules = yield* ApprovalRules
@@ -645,95 +689,109 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
   }),
   search_knowledge: Effect.fn("tool.search_knowledge")(function* (params) {
     const rules = yield* ApprovalRules
-    if (resolveRule(rules, "search_knowledge") === "deny") return "Error: denied by session policy"
-    return yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
-      Effect.map(capForPrompt),
-      Effect.tapErrorTag("AgentError", (e) => Effect.logWarning(`search_knowledge: ${e.message}`)),
-      Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
-    )
+    const result =
+      resolveRule(rules, "search_knowledge") === "deny"
+        ? "Error: denied by session policy"
+        : yield* searchKnowledge(params.query, DEFAULT_KNOWLEDGE_RESULTS).pipe(
+            Effect.map(capForPrompt),
+            Effect.tapErrorTag("AgentError", (e) =>
+              Effect.logWarning(`search_knowledge: ${e.message}`),
+            ),
+            Effect.catchTag("AgentError", (e) => Effect.succeed(`Error: ${e.message}`)),
+          )
+    return yield* tapErrorStringMetric("search_knowledge", result)
   }),
   todo_write: Effect.fn("tool.todo_write")(function* (params) {
     const rules = yield* ApprovalRules
-    if (resolveRule(rules, "todo_write") === "deny") return "Error: denied by session policy"
+    if (resolveRule(rules, "todo_write") === "deny") {
+      return yield* tapErrorStringMetric("todo_write", "Error: denied by session policy")
+    }
     const store = yield* TodoStore
     yield* store.write(params.items)
-    return `Updated task list:\n${formatTodos(params.items)}`
+    return yield* tapErrorStringMetric("todo_write", `Updated task list:\n${formatTodos(params.items)}`)
   }),
   todo_read: Effect.fn("tool.todo_read")(function* () {
     const rules = yield* ApprovalRules
-    if (resolveRule(rules, "todo_read") === "deny") return "Error: denied by session policy"
+    if (resolveRule(rules, "todo_read") === "deny") {
+      return yield* tapErrorStringMetric("todo_read", "Error: denied by session policy")
+    }
     const store = yield* TodoStore
-    return formatTodos(yield* store.read)
+    return yield* tapErrorStringMetric("todo_read", formatTodos(yield* store.read))
   }),
   has_secret: Effect.fn("tool.has_secret")(function* (params) {
-    return yield* SecretsStore.use((store) => store.has(params.name))
+    const result = yield* SecretsStore.use((store) => store.has(params.name))
+    return yield* tapOkMetric("has_secret", result)
   }),
   /** Runs after human approval resumes the parked turn — but approval only means "resume the turn," not "the secret was actually stored" (the generic /approve endpoint can resolve ANY parked call with approved:true, including one where the FE's submit-secret-then-approve two-step never ran, e.g. a direct API caller). Actually checks has() and reports the true outcome either way; never reads or returns the secret's raw value. */
   request_secret: Effect.fn("tool.request_secret")(function* (params) {
-    return yield* SecretsStore.use((store) => store.has(params.name)).pipe(
+    const result = yield* SecretsStore.use((store) => store.has(params.name)).pipe(
       Effect.map((exists) =>
         exists
           ? `${params.name} is now available`
           : `${params.name} was NOT provided — the request was skipped, denied, or resolved without the secret ever being stored. Ask the user to provide it again if it's still needed.`
       ),
     )
+    return yield* tapErrorStringMetric("request_secret", result)
   }),
   create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
-    return yield* ScheduledJobs.use((jobs) =>
+    const outcome = yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
         schedule: params.schedule,
         ...(params.notify !== undefined ? { notify: params.notify } : {}),
       }),
-    ).pipe(
-      Effect.map((result) =>
-        "error" in result
-          ? `Could not schedule '${params.schedule}': ${result.error}. Provide a cron expression that has a future occurrence.`
-          : `Scheduled '${params.schedule}' — next run ${new Date(result.nextRunAt).toISOString()} UTC`,
-      ),
     )
+    const failed = "error" in outcome
+    yield* logToolMetric("create_scheduled_job", failed ? "error" : "ok")
+    return failed
+      ? `Could not schedule '${params.schedule}': ${outcome.error}. Provide a cron expression that has a future occurrence.`
+      : `Scheduled '${params.schedule}' — next run ${new Date(outcome.nextRunAt).toISOString()} UTC`
   }),
   memory_read: Effect.fn("tool.memory_read")(function* (params) {
     const rules = yield* ApprovalRules
-    return resolveRule(rules, "memory_read") === "deny"
-      ? { found: false, description: "", content: "denied by session policy" }
-      : yield* MemoryStore.use((store) => store.read(params.name)).pipe(
-          Effect.map((row) =>
-            row === null
-              ? { found: false, description: "", content: "" }
-              : { found: true, description: row.description, content: row.content },
-          ),
-        )
+    if (resolveRule(rules, "memory_read") === "deny") {
+      yield* logToolMetric("memory_read", "error")
+      return { found: false, description: "", content: "denied by session policy" }
+    }
+    const row = yield* MemoryStore.use((store) => store.read(params.name))
+    yield* logToolMetric("memory_read", "ok")
+    return row === null
+      ? { found: false, description: "", content: "" }
+      : { found: true, description: row.description, content: row.content }
   }),
   memory_write: Effect.fn("tool.memory_write")(function* (params) {
     const rules = yield* ApprovalRules
-    return resolveRule(rules, "memory_write") === "deny"
-      ? { saved: false, message: "denied by session policy" }
-      : yield* MemoryStore.use((store) =>
-          store.write({
-            name: params.name,
-            description: params.description,
-            content: params.content,
-          }),
-        ).pipe(
-          Effect.map((result) => ({
-            saved: result.saved,
-            message: result.error ?? `Saved memory '${params.name}'.`,
-          })),
-        )
+    if (resolveRule(rules, "memory_write") === "deny") {
+      yield* logToolMetric("memory_write", "error")
+      return { saved: false, message: "denied by session policy" }
+    }
+    const result = yield* MemoryStore.use((store) =>
+      store.write({
+        name: params.name,
+        description: params.description,
+        content: params.content,
+      }),
+    )
+    yield* logToolMetric("memory_write", result.saved ? "ok" : "error")
+    return {
+      saved: result.saved,
+      message: result.error ?? `Saved memory '${params.name}'.`,
+    }
   }),
   memory_delete: Effect.fn("tool.memory_delete")(function* (params) {
     const rules = yield* ApprovalRules
-    return resolveRule(rules, "memory_delete") === "deny"
-      ? { deleted: false, message: "denied by session policy" }
-      : yield* MemoryStore.use((store) => store.remove(params.name)).pipe(
-          Effect.map((result) => ({
-            deleted: result.deleted,
-            message: result.deleted
-              ? `Deleted memory '${params.name}'.`
-              : `No memory named '${params.name}'.`,
-          })),
-        )
+    if (resolveRule(rules, "memory_delete") === "deny") {
+      yield* logToolMetric("memory_delete", "error")
+      return { deleted: false, message: "denied by session policy" }
+    }
+    const result = yield* MemoryStore.use((store) => store.remove(params.name))
+    yield* logToolMetric("memory_delete", "ok")
+    return {
+      deleted: result.deleted,
+      message: result.deleted
+        ? `Deleted memory '${params.name}'.`
+        : `No memory named '${params.name}'.`,
+    }
   }),
 })
