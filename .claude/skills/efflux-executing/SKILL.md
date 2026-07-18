@@ -159,7 +159,9 @@ Completed:
 
 Conventional-commit message; never `--no-verify`. Behavior-critical refactors get their OWN commit, separate from cosmetic changes, so the branch bisects. Check off completed tasks `- [x]` in the plan, continue.
 
-If a task agent fails: capture its output, `AskUserQuestion`: "Retry task" / "Skip task" / "Abort".
+A signed commit can fail with `gpg: cannot open '/dev/tty'` when the gpg-agent's passphrase cache expires mid-session — the harness has no TTY for pinentry. Never bypass signing (`--no-gpg-sign` is as forbidden as `--no-verify`); the staged work is intact, so ask the user to prime the agent from their prompt (`! echo test | gpg --clearsign > /dev/null`) and retry the identical commit. (cross-session-memory #144: one commit round-trip lost to exactly this.)
+
+If a task agent fails: **first inspect the worktree for the task's files — an agent killed by an API/spend-limit error may have COMPLETED its writes before dying** (cross-session-memory #144: a wave-3 agent "failed" on the monthly spend limit with its atoms file already finished and spec-conformant on disk; diffing actual file state avoided a blind re-run). Resume from what actually landed; finishing small remainders INLINE (as the orchestrator) is a legitimate recovery when subagent spawns are the failing resource. Only then, for genuinely unfinished work: capture its output, `AskUserQuestion`: "Retry task" / "Skip task" / "Abort".
 
 ### Step 5: Verify before the PR
 
@@ -190,6 +192,7 @@ git -C <WORKTREE_PATH> merge origin/staging   # a MERGE commit — never rebase/
 ```
 
 - **Both-added conflicts are the common case and almost always "keep BOTH sides":** two features each appended an endpoint/handler/import at the same spot. Merge the import lists into one, keep both endpoint blocks, keep both handlers (and preserve YOUR wrapping — e.g. if you wrapped a handler the other side left bare, keep your wrapped version, not theirs).
+- **After the textual resolution, sweep the incoming branch's CROSS-CUTTING patterns over YOUR additions — the semantic half of the merge that no gate flags.** If the other feature instrumented/wrapped every sibling of something your branch added (a metric line on every tool handler, tracing on every route, a guard on every endpoint), your additions predate that convention and silently lack it; typecheck is blind to the omission and both features "work". Diff the incoming branch's repeated per-sibling edit, then apply the same treatment to each thing you added in that family before committing the merge. (cross-session-memory #144: #157 landed `[metric]` logging on every tool handler; the three memory tools this branch added had none — caught only by manually reading the other feature, fixed inside the merge commit.)
 - **Trust the central `bun run typecheck` over mid-merge editor diagnostics** — the LSP reports stale phantom errors (missing exports, unread imports, conflict-marker leftovers) until the merge is fully staged and reprocessed; a clean `bun run typecheck` (EXIT 0) is the authority.
 - **RE-VERIFY the merged runtime live**, not just typecheck: the merge pulls in the other feature's runtime code, so redeploy from the worktree and re-smoke YOUR surface plus one cross-feature sanity hit (per `/efflux-verifying`, including the deploy-clobber guard). Typecheck-green is not verification.
 - Push (`git -C <WORKTREE_PATH> push`); the PR recomputes to `MERGEABLE`.
