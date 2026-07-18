@@ -19,28 +19,29 @@ import { nextCronOccurrence, type JobRetry } from "@efflux/shared"
  *   `"schedule"` even if the cycle started as `"chain"`. A retry decision
  *   suppresses both notification and chain triggering (the DO only
  *   notifies/chains on `final`). Manual "run now" runs NEVER retry.
- * - **final** otherwise. The `reschedule` member:
- *   - For `origin === "schedule"`: `cronExpression === ""` →
- *     `{ _tag: "dormant" }` (the executor sets `next_run_at` back to the
- *     dormant sentinel 0); otherwise compute
- *     `nextCronOccurrence(cronExpression, nowMs)` — a number →
- *     `{ _tag: "cron", nextRunAt: <that> }`; `undefined`
- *     (exhausted/impossible schedule) → `{ _tag: "exhausted" }` (the
- *     executor deletes the job row).
- *   - For `origin === "manual" | "chain"` with `attemptsUsed > 0`: a retry
- *     deadline is currently armed in the job's `next_run_at`, and this later
- *     completed run SUPERSEDES that pending cycle — apply EXACTLY the same
- *     mapping as the schedule-origin rule above (`dormant`/`cron`/
- *     `exhausted`), NEVER `keep`. (A `keep` here would leave a stale armed
- *     retry that later fires as a phantom run — on a chain-only row that is
- *     a spurious billed container run of a supposedly dormant job.)
- *   - For `origin === "manual" | "chain"` with `attemptsUsed === 0`:
- *     `{ _tag: "keep" }` — never touch `next_run_at` (preserves the manual
- *     run-now contract).
+ * - **final** otherwise. The `reschedule` member is a function of `origin`
+ *   alone (NOT of `attemptsUsed`):
+ *   - For `origin === "schedule"` OR `origin === "chain"` — both are "real"
+ *     firings that just consumed the current due slot / retry deadline, so
+ *     the job's schedule ADVANCES: `cronExpression === ""` → `{ _tag:
+ *     "dormant" }` (the executor sets `next_run_at` back to the dormant
+ *     sentinel 0); otherwise `nextCronOccurrence(cronExpression, nowMs)` — a
+ *     number → `{ _tag: "cron", nextRunAt: <that> }`; `undefined`
+ *     (exhausted/impossible schedule) → `{ _tag: "exhausted" }` (executor
+ *     deletes the row). A chain trigger advancing the target's schedule is
+ *     what prevents a chain target that is ALSO independently cron-due in the
+ *     same alarm firing from running twice — the chain run consumes the due
+ *     slot, and the alarm loop's per-row re-validation then skips it.
+ *   - For `origin === "manual"`: `{ _tag: "keep" }` — a run-now NEVER touches
+ *     `next_run_at`, honoring the run-now contract unconditionally. If a
+ *     retry was armed, `keep` leaves it armed and it fires on its own
+ *     deadline (it is a legitimate pending retry, not a phantom); a manual
+ *     run neither advances the cron slot nor cancels a pending retry.
  *   - `chainTargetId = exitCode === 0 ? onSuccessJobId : onFailureJobId`.
  *   - On ANY `final`, the executor resets the persisted attempts counter to
- *     0; notification fires only on `final` (with the job's own notify
- *     filter still applied by the executor).
+ *     0 (except the `keep` path, which leaves a pending retry cycle intact);
+ *     notification fires only on `final` (with the job's own notify filter
+ *     still applied by the executor).
  *
  * @module
  */
@@ -71,9 +72,9 @@ export type AfterRunDecision =
     }
 
 /**
- * The `dormant`/`cron`/`exhausted` mapping shared by schedule-origin finals
- * and the supersede rule: empty cron → dormant sentinel, next occurrence →
- * cron, no next occurrence → exhausted.
+ * The `dormant`/`cron`/`exhausted` mapping shared by every schedule- and
+ * chain-origin final: empty cron → dormant sentinel, next occurrence → cron,
+ * no next occurrence → exhausted.
  */
 const rescheduleFromCron = (
   cronExpression: string,
@@ -90,7 +91,8 @@ const rescheduleFromCron = (
 /**
  * Decide what happens after a scheduled-job run completes. Implements the
  * module-level decision table exactly — see the `@module` JSDoc above for
- * the full retry / final / supersede semantics.
+ * the full retry / final semantics. The `reschedule` verdict depends only on
+ * `origin` (manual → keep, schedule/chain → advance), never on `attemptsUsed`.
  */
 export const decideAfterRun = (input: {
   readonly exitCode: number
@@ -116,12 +118,12 @@ export const decideAfterRun = (input: {
     }
   }
   const chainTargetId = input.exitCode === 0 ? input.onSuccessJobId : input.onFailureJobId
-  if (input.origin === "schedule" || input.attemptsUsed > 0) {
-    return {
-      _tag: "final",
-      reschedule: rescheduleFromCron(input.cronExpression, input.nowMs),
-      chainTargetId
-    }
+  if (input.origin === "manual") {
+    return { _tag: "final", reschedule: { _tag: "keep" }, chainTargetId }
   }
-  return { _tag: "final", reschedule: { _tag: "keep" }, chainTargetId }
+  return {
+    _tag: "final",
+    reschedule: rescheduleFromCron(input.cronExpression, input.nowMs),
+    chainTargetId
+  }
 }

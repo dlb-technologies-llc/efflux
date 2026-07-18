@@ -181,7 +181,7 @@ describe("decideAfterRun", () => {
     })
   })
 
-  describe("manual/chain with no attempts used", () => {
+  describe("manual origin keeps the schedule; chain origin advances it", () => {
     it("manual success with attemptsUsed 0 keeps the schedule untouched", () => {
       expect(decide({ exitCode: 0, origin: "manual" })).toEqual({
         _tag: "final",
@@ -190,25 +190,31 @@ describe("decideAfterRun", () => {
       })
     })
 
-    it("chain success with attemptsUsed 0 keeps the schedule untouched", () => {
-      expect(decide({ exitCode: 0, origin: "chain" })).toEqual({
+    it("manual with a pending retry (attemptsUsed 1) STILL keeps — a run-now never reschedules, so the armed retry survives", () => {
+      expect(decide({ exitCode: 0, origin: "manual", attemptsUsed: 1 })).toEqual({
         _tag: "final",
         reschedule: { _tag: "keep" },
         chainTargetId: undefined,
       })
     })
-  })
 
-  describe("supersede rule: manual/chain with attemptsUsed > 0 never keep", () => {
-    it("manual with attemptsUsed 1 and a real cron reschedules like a scheduled run", () => {
-      expect(decide({ exitCode: 0, origin: "manual", attemptsUsed: 1 })).toEqual({
+    it("chain success on a real cron ADVANCES the schedule (never keep) — consuming the due slot so a chain target that is also cron-due does not run twice", () => {
+      expect(decide({ exitCode: 0, origin: "chain" })).toEqual({
         _tag: "final",
         reschedule: { _tag: "cron", nextRunAt: nextCronOccurrence(everyFive, nowMs) },
         chainTargetId: undefined,
       })
     })
 
-    it("chain with attemptsUsed 1 and an empty cron goes dormant instead of keeping", () => {
+    it("chain success on a chain-only job (empty cron) goes dormant", () => {
+      expect(decide({ exitCode: 0, origin: "chain", cronExpression: "" })).toEqual({
+        _tag: "final",
+        reschedule: { _tag: "dormant" },
+        chainTargetId: undefined,
+      })
+    })
+
+    it("chain with a pending retry (attemptsUsed 1) on an empty cron goes dormant", () => {
       expect(decide({ exitCode: 0, origin: "chain", attemptsUsed: 1, cronExpression: "" })).toEqual({
         _tag: "final",
         reschedule: { _tag: "dormant" },

@@ -416,13 +416,13 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
     entrypointCommand: Schema.String.annotate({
       description: "Shell command to run when the job fires.",
     }),
-    schedule: Schema.optionalKey(Schema.Union([CronExpression, Schema.Literal("")])).annotate({
+    schedule: Schema.optionalKey(CronExpression).annotate({
       description:
-        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names. Omit entirely (an empty string is treated as omitted) to create a chain-only job: it never fires on its own schedule and runs ONLY when another job triggers it via onSuccessJobId/onFailureJobId.",
+        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names. OMIT this parameter entirely (do not pass an empty string) to create a chain-only job: it never fires on its own schedule and runs ONLY when another job triggers it via onSuccessJobId/onFailureJobId.",
     }),
     notify: Schema.optionalKey(JobNotifyConfig).annotate({
       description:
-        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. on='failure' alerts only on a non-zero/errored run; on='always' alerts on every run.",
+        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. Alerts fire on a firing's FINAL outcome (with retry, internal retry attempts do not each alert — one alert per firing, reflecting the final try): on='failure' alerts only when the firing ultimately fails; on='always' alerts on every completed firing.",
     }),
     retry: Schema.optionalKey(JobRetryConfig).annotate({
       description:
@@ -630,16 +630,15 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       ),
     )
   }),
-  /** Models routinely pad UNUSED optional params with "" instead of omitting them (observed live with gpt-4o-mini); the param schemas admit the empty string and it is normalized to absent here, so a padded call behaves exactly like an omitted one. */
+  /** `schedule` rejects the empty string at the schema (CronExpression), so an omitted schedule is a genuine chain-only job — never a silently-dormant fumble. The chain-id refs, by contrast, admit "" (a model routinely pads an UNUSED optional ref with "" rather than omitting it — observed live with gpt-4o-mini); "" unambiguously means "no ref" and is normalized to absent here so a padded call behaves exactly like an omitted one. */
   create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
-    const schedule = params.schedule === "" ? undefined : params.schedule
     const onSuccessJobId = params.onSuccessJobId === "" ? undefined : params.onSuccessJobId
     const onFailureJobId = params.onFailureJobId === "" ? undefined : params.onFailureJobId
     return yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
-        ...(schedule !== undefined ? { schedule } : {}),
+        ...(params.schedule !== undefined ? { schedule: params.schedule } : {}),
         ...(params.notify !== undefined ? { notify: params.notify } : {}),
         ...(params.retry !== undefined ? { retry: params.retry } : {}),
         ...(onSuccessJobId !== undefined ? { onSuccessJobId } : {}),
@@ -649,8 +648,8 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
       Effect.map((result) =>
         "error" in result
           ? `Could not create scheduled job: ${result.error}`
-          : schedule !== undefined
-            ? `Scheduled '${schedule}' (job ${result.id}) — next run ${new Date(result.nextRunAt).toISOString()} UTC`
+          : params.schedule !== undefined
+            ? `Scheduled '${params.schedule}' (job ${result.id}) — next run ${new Date(result.nextRunAt).toISOString()} UTC`
             : `Created chain-only job ${result.id} — it never fires on its own; trigger it from another job's onSuccessJobId/onFailureJobId.`,
       ),
     )

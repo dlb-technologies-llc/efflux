@@ -165,7 +165,10 @@ interface ScheduledJobRowProps {
  * delete-then-refresh shape in `SkillsPanel.tsx`. The meta line also surfaces
  * the DO-formatted `retry`/`chain` labels as outline badges, and a chain-only
  * (`triggered`) job swaps its schedule/next-run text for a "Runs when
- * triggered" chip — its sentinel `nextRunAt` of 0 must never render as a date.
+ * triggered" chip — its dormant sentinel `nextRunAt` of 0 never renders as a
+ * date, but a chain-only job carrying an armed retry (`nextRunAt > 0`) also
+ * shows that pending "Retry at" time so a self-firing job is never
+ * misrepresented as purely trigger-only.
  */
 function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
   const runDelete = useAtomSet(deleteScheduledJobFn, { mode: "promiseExit" })
@@ -246,6 +249,11 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
           <>
             {job.paused ? <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Paused</span> : null}
             <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Runs when triggered</span>
+            {!job.paused && job.nextRunAt > 0 ? (
+              <span>
+                Retry at {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}
+              </span>
+            ) : null}
           </>
         ) : (
           <>

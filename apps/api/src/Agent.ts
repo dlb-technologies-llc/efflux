@@ -650,7 +650,7 @@ export class Agent extends DurableObject<Env> {
   > {
     const rows = this.ctx.storage.sql
       .exec(
-        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status, notify_config, paused, on_success_job_id, on_failure_job_id, retry_max, retry_backoff_seconds FROM scheduled_jobs ORDER BY next_run_at",
+        "SELECT id, description, entrypoint_command, cron_expression, next_run_at, approved_at, last_run_status, notify_config, paused, on_success_job_id, on_failure_job_id, retry_max, retry_backoff_seconds FROM scheduled_jobs ORDER BY next_run_at = 0, next_run_at",
       )
       .toArray()
     const descriptions = new Map<string, string>()
@@ -705,15 +705,22 @@ export class Agent extends DurableObject<Env> {
     const row = this.ctx.storage.sql
       .exec("SELECT workspace_snapshot_key FROM scheduled_jobs WHERE id = ?", input.id)
       .toArray()[0]
-    this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", input.id)
-    if (row !== undefined) {
-      try {
-        await this.env.SESSIONS.delete(String(row.workspace_snapshot_key))
-      } catch (error) {
-        console.error("deleteScheduledJob: snapshot delete failed (orphaned R2 object)", error)
-      }
+    if (row === undefined) {
+      this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", input.id)
+    } else {
+      await this.#deleteJobAndReclaim(input.id, String(row.workspace_snapshot_key), "deleteScheduledJob")
     }
     await this.#touchActivity()
+  }
+
+  /** Delete one scheduled_jobs row and best-effort reclaim its promoted R2 workspace snapshot — a reclaim failure is logged as an orphaned object, never thrown. Single source shared by the explicit delete and every exhausted-schedule path (busy-skip and post-run) so the three delete-and-reclaim sites cannot drift. */
+  async #deleteJobAndReclaim(id: string, workspaceSnapshotKey: string, logContext: string): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", id)
+    try {
+      await this.env.SESSIONS.delete(workspaceSnapshotKey)
+    } catch (error) {
+      console.error(`${logContext}: snapshot delete failed (orphaned R2 object)`, error)
+    }
   }
 
   /** Pause a scheduled job: it stops firing but retains all config (command, schedule, snapshot, run history). Idempotent — a missing or already-paused id is a no-op. Re-arms the single DO alarm (via #rearmAlarm) so the now-paused job's deadline no longer holds an alarm slot; NOT treated as conversational activity, so the idle-reap TTL window is untouched. A paused row still suppresses idle-reaping (see #rearmAlarm). */
@@ -722,7 +729,7 @@ export class Agent extends DurableObject<Env> {
     await this.#rearmAlarm()
   }
 
-  /** Resume a paused scheduled job. A chain-only job (empty-string `cron_expression` sentinel) has no cron slot to recompute — the recompute path's no-future-occurrence guard would leave it paused forever — so it only flips `paused` off (whatever `next_run_at` it holds, dormant 0 or a pending retry deadline, stands) and re-arms. A cron job fires again on its existing schedule: `next_run_at` is RECOMPUTED from the cron expression relative to NOW (the next upcoming slot) — missed occurrences during the pause are skipped and the job does NOT fire immediately on resume — and because that recompute silently supersedes any retry deadline armed before the pause, `retry_attempts` is reset to 0 alongside it (otherwise the next failure would read stale attempts and burn retry budget it never used). Idempotent AND resume-only: a missing id OR a job that is not currently paused (`paused` NULL/0) is a no-op — so a stale/double-submitted resume on an already-active job can never shift its schedule past an imminent fire. Defensive: a cron with no future occurrence (unreachable for any job that passed creation validation, since a recurring expression always recurs within the ~9-year horizon) leaves the job paused rather than arming a past deadline. */
+  /** Resume a paused scheduled job. A chain-only job (empty-string `cron_expression` sentinel) has no cron slot to recompute; it returns to its resting DORMANT state — `next_run_at` reset to the sentinel 0 and `retry_attempts` to 0 — so it fires only when next triggered by a chain. Resetting `next_run_at` here is load-bearing: a retry armed before the pause leaves a real future/past deadline in `next_run_at`, and simply flipping `paused` off would re-arm an already-elapsed deadline and fire the job immediately on resume — violating the resume contract (jobs never fire immediately on resume). Discarding a pending retry on resume is intended: pause means "stop firing," and a chain-only job's resting state is dormant. A cron job fires again on its existing schedule: `next_run_at` is RECOMPUTED from the cron expression relative to NOW (the next upcoming slot) — missed occurrences during the pause are skipped and the job does NOT fire immediately on resume — and because that recompute abandons any retry cycle armed before the pause, `retry_attempts` is reset to 0 alongside it (otherwise the next failure would read stale attempts and burn retry budget it never used). One consequence of abandoning a retry cycle on pause/resume: a scheduled failure whose retry cycle had not yet reached its final try emits no deferred failure notification (notify fires only on `final`) — an accepted, narrow gap, since that failure was transient and would have been retried. Idempotent AND resume-only: a missing id OR a job that is not currently paused (`paused` NULL/0) is a no-op — so a stale/double-submitted resume on an already-active job can never shift its schedule past an imminent fire. Defensive: a cron with no future occurrence (unreachable for any job that passed creation validation, since a recurring expression always recurs within the ~9-year horizon) leaves the job paused rather than arming a past deadline. */
   async resumeScheduledJob(input: { id: string }): Promise<void> {
     const row = this.ctx.storage.sql
       .exec("SELECT cron_expression, paused FROM scheduled_jobs WHERE id = ?", input.id)
@@ -730,7 +737,7 @@ export class Agent extends DurableObject<Env> {
     if (row === undefined) return
     if (row.paused === null || Number(row.paused) !== 1) return
     if (String(row.cron_expression) === "") {
-      this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET paused = 0 WHERE id = ?", input.id)
+      this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET paused = 0, next_run_at = 0, retry_attempts = 0 WHERE id = ?", input.id)
       await this.#rearmAlarm()
       return
     }
@@ -749,10 +756,12 @@ export class Agent extends DurableObject<Env> {
    * return the run just recorded (via {@link getLastRun}). Deliberately touches NEITHER
    * `next_run_at`/the alarm NOR the `paused` flag — a manual "run now" neither reschedules the job
    * nor un-pauses it, so a paused job can be test-fired without resuming it. Per the decision table,
-   * a manual run never retries and never reschedules — unless it supersedes a pending retry cycle
-   * (`retry_attempts > 0`), in which case the engine's supersede rule remaps the stale armed retry
-   * deadline (`keep` is forbidden there). The outcome chain DOES fire: the cascade runs sequentially
-   * inside `#runScheduledJob`'s post-run sequence, BEFORE this method returns. Returns `undefined`
+   * a manual run never retries and never reschedules (the engine's `keep` verdict for `origin
+   * "manual"` leaves `next_run_at` AND `retry_attempts` untouched — a pending retry cycle, if any,
+   * survives the poke and still fires on its own deadline). The outcome chain DOES fire: the cascade
+   * runs sequentially inside `#runScheduledJob`'s post-run sequence, BEFORE this method returns — so
+   * a manual run of a deep pipeline holds the response for the whole cascade (chains are acyclic and
+   * small in practice; the alarm path awaits the same sequential cascade). Returns `undefined`
    * when the id no longer exists (deleted between listing and the click) OR when a run for this job
    * is already in flight (`#runScheduledJob`'s guard short-circuits) — the handler maps either to a
    * null run. Because the guard forbids overlapping runs of the same job AND is held through the
@@ -872,31 +881,56 @@ export class Agent extends DurableObject<Env> {
 
   /**
    * DO alarm handler: dispatches any scheduled jobs due now, then re-arms to whatever deadline is
-   * next. The loop ONLY dispatches — `#runScheduledJob`'s post-run sequence owns ALL rescheduling
-   * (cron advance, retry arming, dormancy, exhausted-delete), and its guard-skip path recomputes a
-   * busy row's schedule, so every due row's `next_run_at` is advanced, dormanted, or deleted before
-   * the dispatch returns (the totality invariant on `#runScheduledJob`). The due query excludes
-   * `next_run_at = 0`: that is the dormant chain-only sentinel, and without the exclusion a dormant
-   * row would read as forever-due and hot-loop the alarm. If no job was due, this firing must be
-   * the reap deadline — archive-and-purge the session (reaped sessions feed the eval corpus),
-   * unless a schedule appeared in the meantime (defensive guard; #rearmAlarm never arms to
-   * reapAt while scheduled_jobs has rows, so this shouldn't happen in practice). The trailing
-   * `#rearmAlarm` after the dispatch loop is redundant with post-run's own unconditional re-arm
-   * but harmless — kept as a belt-and-braces guarantee that a dispatching alarm always re-arms.
+   * next. It snapshots the due IDS once, then RE-VALIDATES each row against its CURRENT state
+   * immediately before dispatch (re-SELECT; skip if the row is gone, now paused, or no longer due
+   * — `next_run_at` not in `(0, now]`). This is load-bearing: an earlier iteration's chain cascade
+   * can advance a later due row's schedule (a chain target that is ALSO independently cron-due runs
+   * ONCE, via the chain, then the re-validation skips its scheduled slot) or delete it (an exhausted
+   * chain target), and dispatching a stale snapshot row would otherwise run it a second time — or
+   * against an already-reclaimed empty workspace. The loop ONLY dispatches — `#runScheduledJob`'s
+   * post-run sequence owns ALL rescheduling (cron advance, retry arming, dormancy, exhausted-delete),
+   * and its guard-skip path recomputes a busy row's schedule, so every dispatched row's `next_run_at`
+   * is advanced, dormanted, or deleted before the dispatch returns (the totality invariant on
+   * `#runScheduledJob`). The due query excludes `next_run_at = 0`: that is the dormant chain-only
+   * sentinel, and without the exclusion a dormant row would read as forever-due and hot-loop the
+   * alarm. If no job was due, this firing must be the reap deadline — archive-and-purge the session
+   * (reaped sessions feed the eval corpus), unless a schedule appeared in the meantime (defensive
+   * guard; #rearmAlarm never arms to reapAt while scheduled_jobs has rows, so this shouldn't happen
+   * in practice). The trailing `#rearmAlarm` after the dispatch loop is redundant with post-run's own
+   * unconditional re-arm but harmless — kept as a belt-and-braces guarantee that a dispatching alarm
+   * always re-arms.
    */
   async alarm(): Promise<void> {
     const now = Date.now()
-    const due = this.ctx.storage.sql
-      .exec("SELECT * FROM scheduled_jobs WHERE next_run_at <= ? AND next_run_at > 0 AND (paused IS NULL OR paused = 0)", now)
+    const dueIds = this.ctx.storage.sql
+      .exec("SELECT id FROM scheduled_jobs WHERE next_run_at <= ? AND next_run_at > 0 AND (paused IS NULL OR paused = 0) ORDER BY next_run_at", now)
       .toArray()
-    if (due.length > 0) {
-      for (const row of due) {
-        const job = {
-          id: String(row.id),
-          entrypointCommand: String(row.entrypoint_command),
-          workspaceSnapshotKey: String(row.workspace_snapshot_key),
+    if (dueIds.length > 0) {
+      this.#alarmBatchRan = new Set<string>()
+      try {
+        for (const dueRow of dueIds) {
+          if (this.#alarmBatchRan.has(String(dueRow.id))) continue
+          const row = this.ctx.storage.sql
+            .exec(
+              "SELECT id, entrypoint_command, workspace_snapshot_key, next_run_at, paused FROM scheduled_jobs WHERE id = ?",
+              String(dueRow.id),
+            )
+            .toArray()[0]
+          if (row === undefined) continue
+          if (row.paused !== null && Number(row.paused) === 1) continue
+          const nextRunAt = Number(row.next_run_at)
+          if (!(nextRunAt > 0 && nextRunAt <= now)) continue
+          await this.#runScheduledJob(
+            {
+              id: String(row.id),
+              entrypointCommand: String(row.entrypoint_command),
+              workspaceSnapshotKey: String(row.workspace_snapshot_key),
+            },
+            "schedule",
+          )
         }
-        await this.#runScheduledJob(job, "schedule")
+      } finally {
+        this.#alarmBatchRan = undefined
       }
       await this.#rearmAlarm()
       return
@@ -1122,6 +1156,9 @@ export class Agent extends DurableObject<Env> {
   /** Job ids with a run currently in flight on this DO instance. `#runScheduledJob` refuses to start a second run for a job already running (whether the first is a manual "run now" or an alarm fire), so at most one run per job is ever live: it prevents two invocations from sharing — and tearing down — the same per-job `Runner` container, and caps billed container cold-starts per job to one. In-memory (not SQL) is correct — it only needs to hold across one awaited run within this DO instance, and an eviction that clears it also cancels the in-flight run. */
   readonly #runningJobs = new Set<string>()
 
+  /** Ids already fired in the CURRENT `alarm()` batch — a fresh Set for the duration of one alarm firing, `undefined` at every other time. It guarantees each job runs AT MOST ONCE per alarm tick even when it is BOTH independently cron-due AND reached via a chain trigger in the same tick (a job with its own cron that is also another job's `onSuccessJobId`/`onFailureJobId`): whichever reach lands second — the due-snapshot dispatch or the chain trigger — is skipped, so it never double-runs (two billed Runner cold-starts, duplicated side effects) regardless of processing order. `run-now` leaves this `undefined`, so a manual cascade is unaffected. */
+  #alarmBatchRan: Set<string> | undefined
+
   /**
    * Dispatch one scheduled job on a fresh `Runner`: restore its dedicated workspace snapshot,
    * export any referenced secrets, run the entrypoint command, record the run, then execute the
@@ -1140,15 +1177,17 @@ export class Agent extends DurableObject<Env> {
    * in `#runningJobs` returns `false` without running — but when `origin === "schedule"` it FIRST
    * recomputes the row's schedule (empty-cron sentinel → dormant `next_run_at = 0`; real cron →
    * next occurrence; no future occurrence → delete row + best-effort snapshot reclaim — each
-   * resetting `retry_attempts` to 0, abandoning the superseded retry cycle) so the still-due row
+   * resetting `retry_attempts` to 0, abandoning the interrupted retry cycle) so the still-due row
    * cannot hot-loop the alarm.
    *
    * POST-RUN SEQUENCE (runs after the run outcome is captured — success, failure, or caught
    * error — with the guard still held): (1) re-SELECT the job row for FRESH config; row gone
    * (deleted mid-run) → skip all post-run work (the run is already recorded via `#recordJobRun`).
    * (2) Apply the decision's scheduling SQL — `retry` arms `next_run_at`/`retry_attempts`;
-   * `final` resets attempts and reschedules per `cron`/`dormant`/`keep` (an `exhausted` row is
-   * NOT deleted yet). (3) On `final` only, deliver the outcome notification best-effort — it MUST
+   * `final` with a `cron`/`dormant` reschedule resets attempts and advances/dormants `next_run_at`
+   * (an `exhausted` row is NOT deleted yet; a `keep` reschedule — manual run-now only — is a true
+   * no-op that touches neither `next_run_at` nor `retry_attempts`, so a pending retry cycle survives
+   * a manual poke untouched). (3) On `final` only, deliver the outcome notification best-effort — it MUST
    * precede the exhausted delete because `#deliverNotification` re-SELECTs the row and silently
    * no-ops on a deleted job; an uncaught notify throw would propagate through the chain recursion
    * into `alarm()` and trigger Cloudflare's alarm-retry storm (duplicate billed runs). (4) On
@@ -1156,8 +1195,9 @@ export class Agent extends DurableObject<Env> {
    * `chainTargetId`, trigger the target sequentially via `await this.#runScheduledJob(target,
    * "chain")` — the chain graph is acyclic by construction (creation-time-only chain config over
    * server-generated UUIDs); a missing target, a paused target (`paused` means "stop firing
-   * automatically"), or a busy target (`false` return) is skipped with a `console.error` — never
-   * a silently dropped trigger — and the whole trigger is wrapped best-effort. (6) `#rearmAlarm()`
+   * automatically"), a busy target, or a target that already fired in this same alarm tick (the
+   * `#alarmBatchRan` per-tick dedup — a `false` return either way) is skipped with a `console.error`
+   * — never a silently dropped trigger — and the whole trigger is wrapped best-effort. (6) `#rearmAlarm()`
    * unconditionally — LOAD-BEARING: a retry armed from a run-now cascade (origin `"chain"` under
    * a manual parent) writes `next_run_at = now + backoff`, but `runScheduledJobNow` never re-arms
    * the alarm — in a pure chain-only pipeline NO alarm exists at all, so without this call that
@@ -1179,6 +1219,7 @@ export class Agent extends DurableObject<Env> {
   ): Promise<boolean> {
     const name = this.ctx.id.name
     if (name === undefined) return false
+    if (this.#alarmBatchRan?.has(job.id)) return false
     if (this.#runningJobs.has(job.id)) {
       if (origin === "schedule") {
         const busy = this.ctx.storage.sql
@@ -1191,12 +1232,7 @@ export class Agent extends DurableObject<Env> {
           } else {
             const next = nextCronOccurrence(cron, Date.now())
             if (next === undefined) {
-              this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", job.id)
-              try {
-                await this.env.SESSIONS.delete(job.workspaceSnapshotKey)
-              } catch (error) {
-                console.error("busy-skip: exhausted-job snapshot delete failed (orphaned R2 object)", error)
-              }
+              await this.#deleteJobAndReclaim(job.id, job.workspaceSnapshotKey, "busy-skip: exhausted-job")
             } else {
               this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET next_run_at = ?, retry_attempts = 0 WHERE id = ?", next, job.id)
             }
@@ -1208,6 +1244,7 @@ export class Agent extends DurableObject<Env> {
     const startedAt = Date.now()
     const runner = this.env.RUNNER.get(this.env.RUNNER.idFromName(`${name}:${job.id}`))
     this.#runningJobs.add(job.id)
+    this.#alarmBatchRan?.add(job.id)
     let capturedRun: { exitCode: number; startedAt: number; finishedAt: number; stdoutExcerpt: string; stderrExcerpt: string } | undefined
     try {
       try {
@@ -1288,8 +1325,6 @@ export class Agent extends DurableObject<Env> {
               )
             } else if (decision.reschedule._tag === "dormant") {
               this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET retry_attempts = 0, next_run_at = 0 WHERE id = ?", job.id)
-            } else {
-              this.ctx.storage.sql.exec("UPDATE scheduled_jobs SET retry_attempts = 0 WHERE id = ?", job.id)
             }
             try {
               await this.#deliverNotification(job.id, capturedRun)
@@ -1297,12 +1332,7 @@ export class Agent extends DurableObject<Env> {
               console.error("scheduled-job notify failed", error)
             }
             if (decision.reschedule._tag === "exhausted") {
-              this.ctx.storage.sql.exec("DELETE FROM scheduled_jobs WHERE id = ?", job.id)
-              try {
-                await this.env.SESSIONS.delete(job.workspaceSnapshotKey)
-              } catch (error) {
-                console.error("post-run: exhausted-job snapshot delete failed (orphaned R2 object)", error)
-              }
+              await this.#deleteJobAndReclaim(job.id, job.workspaceSnapshotKey, "post-run: exhausted-job")
             }
             if (decision.chainTargetId !== undefined) {
               try {
@@ -1326,7 +1356,7 @@ export class Agent extends DurableObject<Env> {
                     "chain",
                   )
                   if (!triggered) {
-                    console.error(`chain trigger skipped: target job ${decision.chainTargetId} already running (source ${job.id})`)
+                    console.error(`chain trigger skipped: target job ${decision.chainTargetId} already running or already fired this alarm tick (source ${job.id})`)
                   }
                 }
               } catch (error) {
