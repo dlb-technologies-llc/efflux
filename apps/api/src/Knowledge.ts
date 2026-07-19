@@ -1,10 +1,26 @@
 import { AgentError } from "@efflux/shared"
-import { Context, Effect } from "effect"
+import { Context, Effect, Option } from "effect"
 
-/** Runtime handle to the AI Search instance, provided per-isolate from `env.KNOWLEDGE_SEARCH`. */
-export class KnowledgeSearch extends Context.Service<KnowledgeSearch, AiSearchInstance>()(
-  "api/KnowledgeSearch",
-) {}
+/** Runtime handle to the AI Search instance, provided per-isolate as `Option.some(env.KNOWLEDGE_SEARCH)` — or `Option.none()` in the local-only build, where the AI Search instance is decommissioned and its binding removed (see `wrangler.jsonc`). `Option` (not `| undefined`): effect's service map is a `Map`, so a service stored as bare `undefined` is indistinguishable from an unprovided one. */
+export class KnowledgeSearch extends Context.Service<
+  KnowledgeSearch,
+  Option.Option<AiSearchInstance>
+>()("api/KnowledgeSearch") {}
+
+/** Yields the live AI Search instance, or fails when the binding is absent (local-only build). Every knowledge operation funnels through here so a missing instance degrades to one clear error instead of a crash. */
+const requireInstance: Effect.Effect<AiSearchInstance, AgentError, KnowledgeSearch> = Effect.gen(
+  function* () {
+    const instance = yield* KnowledgeSearch
+    if (Option.isNone(instance)) {
+      return yield* Effect.fail(
+        new AgentError({
+          message: "Knowledge search is disabled in this local-only build (no AI Search instance).",
+        }),
+      )
+    }
+    return instance.value
+  },
+)
 
 /** AI Search builtin storage infers document type from the item key's extension and rejects extensionless keys as `unsupported_file_type`; v1 uploads UTF-8 text, so keys carry `.md`. The `:name` path param is a dot-less SafeId, so the suffix is a storage detail added here and stripped back off {@link toName}. */
 const KEY_SUFFIX = ".md"
@@ -21,7 +37,7 @@ export const uploadKnowledge = Effect.fn("uploadKnowledge")(function* (
   name: string,
   content: string,
 ): Effect.fn.Return<{ name: string; id: string; status: string }, AgentError, KnowledgeSearch> {
-  const instance = yield* KnowledgeSearch
+  const instance = yield* requireInstance
   const info = yield* Effect.tryPromise({
     try: () => instance.items.upload(toKey(name), content),
     catch: (e) =>
@@ -40,7 +56,7 @@ export const listKnowledge = Effect.fn("listKnowledge")(function* (): Effect.fn.
   AgentError,
   KnowledgeSearch
 > {
-  const instance = yield* KnowledgeSearch
+  const instance = yield* requireInstance
   const res = yield* Effect.tryPromise({
     try: () => instance.items.list(),
     catch: (e) =>
@@ -56,7 +72,7 @@ export const searchKnowledge = Effect.fn("searchKnowledge")(function* (
   query: string,
   maxNumResults: number,
 ): Effect.fn.Return<string, AgentError, KnowledgeSearch> {
-  const instance = yield* KnowledgeSearch
+  const instance = yield* requireInstance
   const res = yield* Effect.tryPromise({
     try: () =>
       instance.search({

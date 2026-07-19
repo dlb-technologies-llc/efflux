@@ -1,7 +1,7 @@
 import { AgentApi, ApiToken } from "@efflux/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Context, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
+import { Cause, Context, Effect, FileSystem, Layer, Option, Path, Redacted, Scope } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import * as Etag from "effect/unstable/http/Etag"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
@@ -108,7 +108,10 @@ const buildWebHandler = (
         Layer.succeed(RegistryStub, env.REGISTRY),
         Layer.succeed(SkillsBucket, env.SKILLS),
         Layer.succeed(SessionsBucket, env.SESSIONS),
-        Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
+        // Local-only: the AI Search binding is removed (see wrangler.jsonc). Provide
+        // `Option.none()` so knowledge ops degrade to a clear disabled error; to restore,
+        // re-add the binding and swap this back to `Option.some(env.KNOWLEDGE_SEARCH)`.
+        Layer.succeed(KnowledgeSearch, Option.none()),
         TracingLive,
       )
       const handler = yield* HttpRouter.toHttpEffect(
