@@ -17,7 +17,7 @@ import {
   StreamPartToolResult,
 } from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, type Context, Effect, Filter, Layer, Queue, Ref, Result, Schema, Stream } from "effect"
+import { Cause, Clock, type Context, Effect, Filter, Layer, Queue, Ref, Result, Schema, Stream } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse, type Toolkit } from "effect/unstable/ai"
 import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
@@ -32,8 +32,9 @@ import {
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { addSpend, budgetExceeded, type SpendCaps, type SpendTotals, usageEventDelta } from "./Budget.ts"
-import { buildUsageEvent, eventJson } from "./JournalWrite.ts"
+import { buildUsageEvent, eventJson, hopCostUsd } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { logTurnMetric } from "./Metrics.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
@@ -50,6 +51,8 @@ interface RunStreamingTurnInput {
   startHop: number
   initialPrompt: Prompt.Prompt
   model: string
+  /** Session key (`name/id`) stamped on the per-turn `[metric]` line. */
+  sessionId: string
   /** Resolved per-tool permission rules for this turn; provided into the driver as the ApprovalRules Reference. */
   rules: RulesMap
   /** The merged session toolkit (local `AgentToolkit` folded with the resolved MCP tools) driving `streamText` this turn. */
@@ -78,7 +81,7 @@ interface RunStreamingTurnInput {
 export const runStreamingTurn = (
   input: RunStreamingTurnInput,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse> => {
-  const { agent, ambient, caps, initialPrompt, model, priorSpend, rules, startHop, toolkit, toolLayer, turn, waitUntil } =
+  const { agent, ambient, caps, initialPrompt, model, priorSpend, rules, sessionId, startHop, toolkit, toolLayer, turn, waitUntil } =
     input
 
   let pendingHopText = ""
@@ -112,10 +115,14 @@ export const runStreamingTurn = (
       AiError.AiError | Cause.TimeoutError | Cause.Done | AgentError
     >(256)
 
+    let startMs = 0
+    let totalToolCalls = 0
+    let costTotal = 0
+    let parked = false
+
     const hopLoop = Effect.gen(function* () {
+      startMs = yield* Clock.currentTimeMillis
       let promptValue: Prompt.Prompt = initialPrompt
-      let totalToolCalls = 0
-      let parked = false
       let reachedTerminal = false
       let lastFinishPart: AiResponse.StreamPart<Toolkit.Tools<SessionToolkit["toolkit"]>> | undefined
       let lastReason: AiResponse.FinishReason | undefined
@@ -226,6 +233,8 @@ export const runStreamingTurn = (
           Effect.timeout(MODEL_HOP_TIMEOUT),
         )
 
+        costTotal += hopCostUsd(collected) ?? 0
+
         const terminal =
           parked || lastFinishReason === undefined || !shouldContinueToolLoop(lastFinishReason)
 
@@ -281,6 +290,17 @@ export const runStreamingTurn = (
     })
 
     const driverEffect = hopLoop.pipe(
+      Effect.ensuring(
+        Effect.suspend(() =>
+          parked || startMs === 0
+            ? Effect.void
+            : Clock.currentTimeMillis.pipe(
+                Effect.flatMap((now) =>
+                  logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: totalToolCalls }),
+                ),
+              ),
+        ),
+      ),
       Effect.tap(() =>
         flushPartialHopText.pipe(
           Effect.andThen(snapshotWorkspace(agent)),

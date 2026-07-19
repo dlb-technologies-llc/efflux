@@ -4,7 +4,8 @@
  *
  * 1. Unit pins for the fallback semantics — an absent tool resolves to `allow`,
  *    every explicit rule is returned verbatim, and the canonical
- *    `DEFAULT_TOOL_RULES` table parks `Bash` on `ask` while any other tool
+ *    `DEFAULT_TOOL_RULES` table parks `Bash`, `memory_write`, and
+ *    `memory_delete` on `ask` while any other tool (including `memory_read`)
  *    falls through to `allow`.
  *
  * 2. A property covering the fallback's range: over rules maps built from fixed
@@ -41,6 +42,18 @@ describe("resolveRule fallback semantics", () => {
 
   it("DEFAULT_TOOL_RULES lets any non-Bash tool fall through to allow", () => {
     expect(resolveRule(DEFAULT_TOOL_RULES, "Read")).toBe("allow")
+  })
+
+  it("DEFAULT_TOOL_RULES parks memory_write on ask", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_write")).toBe("ask")
+  })
+
+  it("DEFAULT_TOOL_RULES parks memory_delete on ask", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_delete")).toBe("ask")
+  })
+
+  it("DEFAULT_TOOL_RULES lets memory_read fall through to allow", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_read")).toBe("allow")
   })
 })
 

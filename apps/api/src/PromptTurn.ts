@@ -5,7 +5,7 @@ import {
   type RulesMap,
 } from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import {
   MAX_TOOL_HOPS,
@@ -18,8 +18,9 @@ import {
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
 import { type SpendCaps, type SpendTotals, addSpend, budgetExceeded } from "./Budget.ts"
-import { eventJson, journalHopBatch } from "./JournalWrite.ts"
+import { eventJson, hopCostUsd, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { logTurnMetric } from "./Metrics.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
@@ -41,6 +42,8 @@ interface RunPromptTurnInput {
   turn: number
   initialPrompt: Prompt.Prompt
   model: string
+  /** Session key (`name/id`) stamped on the per-turn `[metric]` line. */
+  sessionId: string
   /** Resolved per-tool permission rules for this turn; provided into the model call as the ApprovalRules Reference. */
   rules: RulesMap
   /** The session's merged toolkit (local tools + resolved MCP tools) handed to `generateText`. */
@@ -62,15 +65,20 @@ interface RunPromptTurnInput {
 export const runPromptTurn = (
   input: RunPromptTurnInput,
 ): Effect.Effect<PromptTurnResult, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, caps, initialPrompt, model, priorSpend, rules, toolkit, toolLayer, turn } = input
+  const { agent, caps, initialPrompt, model, priorSpend, rules, sessionId, toolkit, toolLayer, turn } = input
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
+  let startMs = 0
+  let toolCallCount = 0
+  let costTotal = 0
+  let parked = false
+
   const loop = Effect.gen(function* () {
+    startMs = yield* Clock.currentTimeMillis
     let promptValue: Prompt.Prompt = initialPrompt
     let finalText = ""
     let finalFinishReason: AiResponse.FinishReason = "unknown"
-    let toolCallCount = 0
     let anyHopText = false
     let approval: PromptApproval | undefined
     let running: SpendTotals = priorSpend
@@ -87,6 +95,7 @@ export const runPromptTurn = (
       )
 
       toolCallCount += response.toolCalls.length
+      costTotal += hopCostUsd(response.content) ?? 0
       finalText = response.text
       finalFinishReason = response.finishReason
       anyHopText ||= response.text.length > 0
@@ -114,6 +123,7 @@ export const runPromptTurn = (
             toolCallId: approvalPart.toolCallId,
           }
         }
+        parked = true
         break
       }
 
@@ -137,6 +147,17 @@ export const runPromptTurn = (
   })
 
   return loop.pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        parked || startMs === 0
+          ? Effect.void
+          : Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: toolCallCount }),
+              ),
+            ),
+      ),
+    ),
     Effect.ensuring(snapshotWorkspace(agent)),
     Effect.tapCause(journalTurnError(agent, turn)),
   )

@@ -21,16 +21,31 @@ import { budgetExceeded, capsFromConfig, type SpendTotals } from "./Budget.ts"
 import { loadResolvedConfig } from "./Defaults.ts"
 import { openTurn } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { loadMemoryIndex } from "./Memory.ts"
 import { collectOpenAiTurn, streamOpenAiTurn } from "./OpenAiTurn.ts"
 import { RegistryStub } from "./Registry.ts"
 import { buildSessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
-/** Map a session's resolved rules for the facade: `ask` → `allow` (OpenAI cannot approve), `deny`/`allow` preserved. */
+/**
+ * Tools whose side effect is DURABLE and CROSS-SESSION (a memory write lands in
+ * every future session's system prompt for that agent name). On this facade —
+ * which can never park a turn for approval — their `ask` fails CLOSED to `deny`
+ * instead of open to `allow`: auto-allowing them would let a prompt-injected
+ * conversation silently persist instructions across sessions, the exact outcome
+ * the `DEFAULT_TOOL_RULES` `ask` defaults exist to prevent. A session that
+ * wants unattended facade writes sets the rule to `allow` explicitly.
+ */
+const FACADE_FAIL_CLOSED_TOOLS: ReadonlySet<string> = new Set(["memory_write", "memory_delete"])
+
+/** Map a session's resolved rules for the facade: `ask` → `allow` (OpenAI cannot approve) for session-scoped tools, but `ask` → `deny` for the durable cross-session tools in {@link FACADE_FAIL_CLOSED_TOOLS}; `deny`/`allow` preserved. */
 const autoApproveRules = (rules: RulesMap): RulesMap =>
   Object.fromEntries(
     Object.entries(rules).map(
-      ([name, rule]): [string, typeof ToolRule.Type] => [name, rule === "ask" ? "allow" : rule],
+      ([name, rule]): [string, typeof ToolRule.Type] => [
+        name,
+        rule === "ask" ? (FACADE_FAIL_CLOSED_TOOLS.has(name) ? "deny" : "allow") : rule,
+      ],
     ),
   )
 
@@ -48,18 +63,25 @@ const budgetExceededResponse = (message: string): HttpServerResponse.HttpServerR
     { status: 402 },
   )
 
-/** Map an OpenAI message list to a facade prompt: default `support` skill as the system message, then the client's user/assistant turns verbatim; system/tool/`content:null` messages are dropped. */
+/** Map an OpenAI message list to a facade prompt: default `support` skill as the system message, an optional cross-session memory index as a second system message, then the client's user/assistant turns verbatim; system/tool/`content:null` messages are dropped. */
 const toPromptMessages = (
   skillBody: string,
   messages: ReadonlyArray<ChatMessage>,
-): ReadonlyArray<{ role: "system" | "user" | "assistant"; content: string }> => [
-  { role: "system", content: skillBody },
-  ...messages.flatMap((m) =>
-    (m.role === "user" || m.role === "assistant") && m.content !== null
-      ? [{ role: m.role, content: m.content }]
-      : [],
-  ),
-]
+  memory?: string,
+): ReadonlyArray<{ role: "system" | "user" | "assistant"; content: string }> => {
+  const systemMessages: Array<{ role: "system"; content: string }> = [
+    { role: "system", content: skillBody },
+  ]
+  if (memory !== undefined) systemMessages.push({ role: "system", content: memory })
+  return [
+    ...systemMessages,
+    ...messages.flatMap((m) =>
+      (m.role === "user" || m.role === "assistant") && m.content !== null
+        ? [{ role: m.role, content: m.content }]
+        : [],
+    ),
+  ]
+}
 
 /** OpenAI-compatible facade handlers for the `v1` group: chat completions (JSON or SSE) and the session-backed model list. */
 export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
@@ -82,7 +104,8 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const { skillBody } = yield* loadOverlay(undefined, undefined)
-        const promptMessages = toPromptMessages(skillBody, payload.messages)
+        const memory = yield* loadMemoryIndex(parsed.name, resolved.memoryEnabled)
+        const promptMessages = toPromptMessages(skillBody, payload.messages, memory)
 
         const lastUser = [...payload.messages]
           .reverse()
@@ -105,6 +128,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
           const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
           return streamOpenAiTurn({
             agent,
+            sessionId: `${parsed.name}/${parsed.id}`,
             ambient,
             turn,
             initialPrompt,
@@ -120,6 +144,7 @@ export const OpenAiHandlers = HttpApiBuilder.group(AgentApi, "v1", (handlers) =>
 
         const collected = yield* collectOpenAiTurn({
           agent,
+          sessionId: `${parsed.name}/${parsed.id}`,
           turn,
           initialPrompt,
           model: effectiveModel,
