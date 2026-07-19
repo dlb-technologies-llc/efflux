@@ -277,9 +277,9 @@ bun run build                                 # builds the FE then typechecks th
 
 `bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on the API prefixes `/agents`, `/tasks`, `/skills`, `/v1`, `/knowledge`, and `/meta`, so the same Worker serves both the HttpApi and the built FE on deploy.
 
-## Deploy
+## Deploy (disabled — local-only)
 
-First-time provisioning creates the named resources the bindings expect:
+Deployment has been removed to stop billed Container/R2/AI-Search usage: the `deploy`/`predeploy`/`tail` scripts are gone and the account resources were decommissioned. Run everything locally with `bun run dev:local`. To **re-enable** deploy, restore those `package.json` scripts, re-add `"remote": true` to the `ai_search` binding in `wrangler.jsonc`, then re-provision the named resources the bindings expect:
 
 ```sh
 # 1. R2 buckets — skills/roles + per-session workspace tarballs
@@ -305,8 +305,7 @@ Useful root scripts:
 | Script              | What it does                                                     |
 | ------------------- | ---------------------------------------------------------------- |
 | `bun run dev`       | `wrangler dev` — local Worker + emulated bindings (needs Docker)  |
-| `bun run deploy`    | `wrangler deploy` (runs `predeploy` first; needs Docker)          |
-| `bun run tail`      | `wrangler tail` — stream Worker logs                              |
+| `bun run dev:local` | validated local path: checks `.dev.vars`, inlines `VITE_API_TOKEN`, seeds local R2 skills, then `wrangler dev` |
 | `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the six tsconfigs          |
 | `bun run cf-typegen`| `wrangler types` — regenerate `worker-configuration.d.ts`         |
 
