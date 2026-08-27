@@ -8,13 +8,15 @@
  * the project convention (see `Journal.test.ts`) it is NOT property-tested
  * via `Schema.toArbitrary` (the generator would exhaust FastCheck's
  * `.filter`); instead both schemas are pinned with fixed representative
- * values built from the real constructors.
+ * values built from the real constructors. `JobRetryConfig`'s bounded ints
+ * are refined too, so it is likewise pinned only: boundary/mid round-trips
+ * plus out-of-bounds decode rejections via `Effect.flip`.
  *
  * @module
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { JobNotifyConfig, NotifyChannel, NotifyFilter, ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
+import { JobNotifyConfig, JobRetryConfig, NotifyChannel, NotifyFilter, ScheduledJobListResponse, ScheduledJobRunDetail, ScheduledJobRunListResponse, ScheduledJobRunResponse, ScheduledJobSummary } from "./Schedule.ts"
 
 const assertStable = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Effect.gen(function* () {
@@ -99,6 +101,39 @@ describe("ScheduledJobSummary codec", () => {
         notify: "slack · on failure",
       }),
     ))
+
+  it.effect("pins a chain-only (triggered) summary", () =>
+    assertStable(
+      ScheduledJobSummary,
+      new ScheduledJobSummary({
+        id: "job-chained-cleanup",
+        description: "runs when nightly report succeeds",
+        entrypointCommand: "bun run cleanup.ts",
+        schedule: "",
+        nextRunAt: 0,
+        approvedAt: 1_699_000_000_000,
+        paused: false,
+        chain: "on success → nightly report",
+        triggered: true,
+      }),
+    ))
+
+  it.effect("pins a cron summary carrying retry and chain labels", () =>
+    assertStable(
+      ScheduledJobSummary,
+      new ScheduledJobSummary({
+        id: "job-resilient-sync",
+        description: "syncs with retry and a failure chain",
+        entrypointCommand: "bun run sync.ts",
+        schedule: "15 2 * * *",
+        nextRunAt: 1_700_000_000_000,
+        approvedAt: 1_699_000_000_000,
+        lastRunStatus: "success",
+        paused: false,
+        retry: "up to 3 tries · 300s apart",
+        chain: "on failure → alert cleanup",
+      }),
+    ))
 })
 
 describe("JobNotifyConfig codec", () => {
@@ -128,6 +163,29 @@ describe("JobNotifyConfig codec", () => {
       channel: "email",
       on: "always",
       emailTo: "ops@example.com",
+    }))
+})
+
+describe("JobRetryConfig codec", () => {
+  it.effect("pins the lower-bound config", () =>
+    assertStable(JobRetryConfig, { maxAttempts: 2, backoffSeconds: 10 }))
+
+  it.effect("pins the upper-bound config", () =>
+    assertStable(JobRetryConfig, { maxAttempts: 5, backoffSeconds: 3600 }))
+
+  it.effect("pins a mid-range config", () =>
+    assertStable(JobRetryConfig, { maxAttempts: 3, backoffSeconds: 300 }))
+
+  it.effect("rejects maxAttempts below the minimum", () =>
+    Effect.gen(function* () {
+      const failure = yield* Schema.decodeUnknownEffect(JobRetryConfig)({ maxAttempts: 1, backoffSeconds: 300 }).pipe(Effect.flip)
+      expect(failure).toBeDefined()
+    }))
+
+  it.effect("rejects backoffSeconds below the minimum", () =>
+    Effect.gen(function* () {
+      const failure = yield* Schema.decodeUnknownEffect(JobRetryConfig)({ maxAttempts: 3, backoffSeconds: 5 }).pipe(Effect.flip)
+      expect(failure).toBeDefined()
     }))
 })
 

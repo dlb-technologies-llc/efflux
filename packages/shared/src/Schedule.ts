@@ -6,7 +6,9 @@
  * a single job's most recent run (its captured stdout/stderr — a run's
  * actual output is otherwise generated and immediately discarded, visible
  * nowhere). Per-job outcome-notification config (`JobNotifyConfig`) likewise
- * rides on the `create_scheduled_job` tool rather than any new HTTP surface.
+ * rides on the `create_scheduled_job` tool rather than any new HTTP surface,
+ * as do the retry policy (`JobRetryConfig`) and the outcome-chain targets
+ * (`onSuccessJobId`/`onFailureJobId`) — the HTTP surface remains read-only.
  *
  * @module
  */
@@ -46,6 +48,24 @@ export const JobNotifyConfig = Schema.Struct({
 export type JobNotify = typeof JobNotifyConfig.Type
 
 /**
+ * Per-job retry-on-failure policy, supplied at scheduling time via the
+ * `create_scheduled_job` tool and stored on the job. A plain `Schema.Struct`
+ * (NOT a `Schema.Class`) on purpose, for the same fence-safety reason as
+ * `JobNotifyConfig` above: the decoded value crosses the DO RPC fence and a
+ * class instance would throw `DataCloneError` at the `structuredClone`
+ * boundary. `maxAttempts` counts TOTAL tries per firing cycle (e.g. 3 = the
+ * initial run plus up to 2 retries); `backoffSeconds` is the fixed delay
+ * between tries. Manual "run now" runs never retry.
+ */
+export const JobRetryConfig = Schema.Struct({
+  maxAttempts: Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 5 })),
+  backoffSeconds: Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 3600 })),
+})
+
+/** Decoded shape of `JobRetryConfig` — plain object, fence-safe. */
+export type JobRetry = typeof JobRetryConfig.Type
+
+/**
  * A single scheduled job as surfaced to a caller (list endpoint / FE panel).
  * The job's cadence is described by a cron `schedule` string (server-generated
  * from a previously-validated expression), not a daily hour/minute pair; a
@@ -53,7 +73,8 @@ export type JobNotify = typeof JobNotifyConfig.Type
  * reports whether the job is currently paused — a paused job stops firing while
  * its config is retained, so it can be resumed later. `notify` is a human label
  * (e.g. `"slack · on failure"`) present only when the job has notifications
- * configured.
+ * configured; `retry` and `chain` are the same kind of DO-formatted human
+ * labels for the retry policy and outcome-chain targets.
  */
 export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("ScheduledJobSummary")({
   id: SafeId,
@@ -65,6 +86,12 @@ export class ScheduledJobSummary extends Schema.Class<ScheduledJobSummary>("Sche
   lastRunStatus: Schema.optionalKey(Schema.String),
   notify: Schema.optionalKey(Schema.String),
   paused: Schema.Boolean,
+  /** DO-formatted human label for the retry policy (e.g. `up to 3 tries · 300s apart`), present only when the job has a retry policy. */
+  retry: Schema.optionalKey(Schema.String),
+  /** DO-formatted human label for the outcome-chain targets (e.g. `on success → nightly report`; a deleted target renders `(missing)`), present only when the job has chain targets. */
+  chain: Schema.optionalKey(Schema.String),
+  /** Absent = a normally scheduled (cron) job; `true` = a chain-only job that has NO schedule of its own and runs ONLY when another job's outcome triggers it — its `schedule` field is the empty string and `nextRunAt` is the dormant sentinel `0`, neither of which should be rendered as a real schedule/time. */
+  triggered: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** Envelope for the scheduled-job list endpoint. */

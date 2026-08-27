@@ -7,12 +7,15 @@ import {
   DEFAULT_TOOL_RULES,
   type JobNotify,
   JobNotifyConfig,
+  type JobRetry,
+  JobRetryConfig,
   JournalTodoWrite,
   MEMORY_MAX_CONTENT_LENGTH,
   MEMORY_MAX_DESCRIPTION_LENGTH,
   MEMORY_MAX_ENTRIES,
   resolveRule,
   type RulesMap,
+  SafeId,
   SafeName,
   SkillSummary,
   SubagentTaskRequest,
@@ -70,8 +73,11 @@ export class ScheduledJobs extends Context.Service<
     readonly create: (input: {
       readonly description: string
       readonly entrypointCommand: string
-      readonly schedule: string
+      readonly schedule?: string
       readonly notify?: JobNotify
+      readonly retry?: JobRetry
+      readonly onSuccessJobId?: string
+      readonly onFailureJobId?: string
     }) => Effect.Effect<CreateScheduledJobResult>
   }
 >()("api/ScheduledJobs") {}
@@ -409,7 +415,7 @@ export const RequestSecretTool = Tool.make("request_secret", {
 
 export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
   description:
-    "Schedule a recurring job that runs a shell command in this session's sandbox on a UTC cron schedule. Always requires human approval before the job is created.",
+    "Schedule a job that runs a shell command in this session's sandbox — either on a UTC cron schedule or as a chain-only job triggered by another job's outcome. Supports retry-on-failure and onSuccess/onFailure chaining to build pipelines. Always requires human approval before the job is created.",
   parameters: Schema.Struct({
     description: Schema.String.annotate({
       description: "Human-readable description of what the job does.",
@@ -417,13 +423,25 @@ export const CreateScheduledJobTool = Tool.make("create_scheduled_job", {
     entrypointCommand: Schema.String.annotate({
       description: "Shell command to run when the job fires.",
     }),
-    schedule: CronExpression.annotate({
+    schedule: Schema.optionalKey(CronExpression).annotate({
       description:
-        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names.",
+        "UTC cron expression (minute hour day-of-month month day-of-week) or a macro (@hourly/@daily/@weekly/@monthly/@yearly). Supports *, lists (1,15), ranges (9-17), and steps (*/10). Examples: '*/10 * * * *' every 10 min; '0 * * * *' hourly; '30 6 * * *' daily 06:30; '0 9 * * 1-5' 09:00 on weekdays. No timezones or names. OMIT this parameter entirely (do not pass an empty string) to create a chain-only job: it never fires on its own schedule and runs ONLY when another job triggers it via onSuccessJobId/onFailureJobId.",
     }),
     notify: Schema.optionalKey(JobNotifyConfig).annotate({
       description:
-        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. on='failure' alerts only on a non-zero/errored run; on='always' alerts on every run.",
+        "Optional outcome notification. channel 'slack' → set slackUrlSecret to the NAME of a session secret (created via request_secret) holding a Slack Incoming Webhook URL; channel 'email' → set emailTo to a recipient address verified on the account's Email Routing. Alerts fire on a firing's FINAL outcome (with retry, internal retry attempts do not each alert — one alert per firing, reflecting the final try): on='failure' alerts only when the firing ultimately fails; on='always' alerts on every completed firing.",
+    }),
+    retry: Schema.optionalKey(JobRetryConfig).annotate({
+      description:
+        "Optional retry policy. maxAttempts (2-5) is the TOTAL number of tries per firing — the initial run plus up to maxAttempts-1 retries; backoffSeconds (10-3600) is the fixed delay between tries. Retries apply to scheduled and chain-triggered runs; manual 'run now' runs never retry. Failure notifications and onFailure chaining fire only after the final try.",
+    }),
+    onSuccessJobId: Schema.optionalKey(Schema.Union([SafeId, Schema.Literal("")])).annotate({
+      description:
+        "Id of another scheduled job in THIS session to trigger when a run succeeds. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id. Omit when unused (an empty string is treated as omitted).",
+    }),
+    onFailureJobId: Schema.optionalKey(Schema.Union([SafeId, Schema.Literal("")])).annotate({
+      description:
+        "Id of another scheduled job in THIS session to trigger when a run fails for good — after retries, if any, are exhausted. The target must already exist — create the downstream job first; every create_scheduled_job result includes the created job's id. Omit when unused (an empty string is treated as omitted).",
     }),
   }),
   success: Schema.String,
@@ -733,20 +751,28 @@ export const AgentToolkitLayer = AgentToolkit.toLayer({
     )
     return yield* tapErrorStringMetric("request_secret", result)
   }),
+  /** `schedule` rejects the empty string at the schema (CronExpression), so an omitted schedule is a genuine chain-only job — never a silently-dormant fumble. The chain-id refs, by contrast, admit "" (a model routinely pads an UNUSED optional ref with "" rather than omitting it — observed live with gpt-4o-mini); "" unambiguously means "no ref" and is normalized to absent here so a padded call behaves exactly like an omitted one. */
   create_scheduled_job: Effect.fn("tool.create_scheduled_job")(function* (params) {
+    const onSuccessJobId = params.onSuccessJobId === "" ? undefined : params.onSuccessJobId
+    const onFailureJobId = params.onFailureJobId === "" ? undefined : params.onFailureJobId
     const outcome = yield* ScheduledJobs.use((jobs) =>
       jobs.create({
         description: params.description,
         entrypointCommand: params.entrypointCommand,
-        schedule: params.schedule,
+        ...(params.schedule !== undefined ? { schedule: params.schedule } : {}),
         ...(params.notify !== undefined ? { notify: params.notify } : {}),
+        ...(params.retry !== undefined ? { retry: params.retry } : {}),
+        ...(onSuccessJobId !== undefined ? { onSuccessJobId } : {}),
+        ...(onFailureJobId !== undefined ? { onFailureJobId } : {}),
       }),
     )
     const failed = "error" in outcome
     yield* logToolMetric("create_scheduled_job", failed ? "error" : "ok")
     return failed
-      ? `Could not schedule '${params.schedule}': ${outcome.error}. Provide a cron expression that has a future occurrence.`
-      : `Scheduled '${params.schedule}' — next run ${new Date(outcome.nextRunAt).toISOString()} UTC`
+      ? `Could not create scheduled job: ${outcome.error}`
+      : params.schedule !== undefined
+        ? `Scheduled '${params.schedule}' (job ${outcome.id}) — next run ${new Date(outcome.nextRunAt).toISOString()} UTC`
+        : `Created chain-only job ${outcome.id} — it never fires on its own; trigger it from another job's onSuccessJobId/onFailureJobId.`
   }),
   memory_read: Effect.fn("tool.memory_read")(function* (params) {
     const rules = yield* ApprovalRules
