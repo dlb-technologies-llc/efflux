@@ -43,9 +43,12 @@
     { "binding": "SKILLS", "bucket_name": "efflux-skills" },
     { "binding": "SESSIONS", "bucket_name": "efflux-sessions" }
   ],
-  "ai_search": [
-    { "binding": "KNOWLEDGE_SEARCH", "instance_name": "efflux-knowledge", "remote": true }
-  ],
+  // Local-only: the AI Search binding is removed. AI Search has no local emulation —
+  // `wrangler dev` always opens a remote proxy for it and aborts boot when the
+  // decommissioned `efflux-knowledge` instance is gone. `search_knowledge` degrades to
+  // a disabled no-op (see apps/api/src/Knowledge.ts). Re-add this block + the instance
+  // to restore it:
+  //   "ai_search": [ { "binding": "KNOWLEDGE_SEARCH", "instance_name": "efflux-knowledge", "remote": true } ],
   "send_email": [
     { "name": "EMAIL" }
   ],
