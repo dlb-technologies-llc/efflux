@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "efflux",
-  "account_id": "0e23a33dd52d75e88e3e6a75d617d302",
   "main": "apps/api/src/index.ts",
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
