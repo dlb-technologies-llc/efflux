@@ -3,6 +3,7 @@ import {
   AgentConfig,
   ApprovalConflictError,
   ApprovalNotFoundError,
+  BudgetExceededError,
   HistoryResponse,
   JournalEvent,
   JournalResponse,
@@ -10,6 +11,7 @@ import {
   PromptResponse,
   SessionInfo,
   SessionsResponse,
+  SessionUsage,
   SubagentTaskResponse,
 } from "@efflux/shared"
 import { Effect, Schema } from "effect"
@@ -17,11 +19,13 @@ import { type LanguageModel, Prompt } from "effect/unstable/ai"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { composeMessages, loadOverlay } from "./AgentLoop.ts"
 import { AgentStub } from "./AgentStub.ts"
+import { budgetExceeded, capsFromConfig, type SpendTotals } from "./Budget.ts"
 import { runAttachStream } from "./AttachStream.ts"
 import { compactIfNeeded } from "./Compaction.ts"
 import { loadResolvedConfig, resolveConfig } from "./Defaults.ts"
 import { fetchAllEvents } from "./JournalRead.ts"
 import { decodeEventPayload, openTurn } from "./JournalWrite.ts"
+import { loadMemoryIndex } from "./Memory.ts"
 import { runPromptTurn } from "./PromptTurn.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
 import { maxHopForTurn, type ReconstructEvent, reconstructForContinuation } from "./Reconstruct.ts"
@@ -46,16 +50,29 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const agents = yield* AgentStub
         const agent = agents.getByName(`${params.name}/${params.id}`)
         const resolved = yield* loadResolvedConfig(agent)
+        const caps = capsFromConfig(resolved)
+        const priorSpend: SpendTotals = yield* Effect.promise(() => agent.usageTotals())
+        if (budgetExceeded(priorSpend, caps)) {
+          return yield* new BudgetExceededError({
+            message: "Session token/cost budget reached; raise the cap via PUT /config to continue.",
+            totalTokens: priorSpend.tokens,
+            totalCost: priorSpend.cost,
+            maxTotalTokens: caps.maxTotalTokens,
+            maxCostUsd: caps.maxCostUsd,
+          })
+        }
         const effectiveModel = payload.model ?? resolved.defaultModel
         yield* compactIfNeeded(agent, effectiveModel, resolved.compactionThreshold)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
         const messages = composeMessages({
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
           history,
           message: payload.message,
@@ -64,12 +81,15 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
 
         const result = yield* runPromptTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           turn,
           initialPrompt: Prompt.make(messages),
           model: effectiveModel,
           rules: resolved.rules,
           toolkit,
           toolLayer,
+          caps,
+          priorSpend,
         })
 
         const messageCount = history.length + (result.anyHopText ? 2 : 1)
@@ -140,6 +160,22 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         })
       }),
     )
+    .handle("usage", ({ params }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        const resolved = yield* loadResolvedConfig(agent)
+        const totals = yield* Effect.promise(() => agent.usageTotals())
+        const caps = capsFromConfig(resolved)
+        return new SessionUsage({
+          totalTokens: totals.tokens,
+          totalCost: totals.cost,
+          maxTotalTokens: resolved.maxTotalTokens,
+          maxCostUsd: resolved.maxCostUsd,
+          exceeded: budgetExceeded(totals, caps),
+        })
+      }),
+    )
     .handle("getConfig", ({ params }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub
@@ -163,6 +199,16 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         return yield* loadResolvedConfig(agent)
       }),
     )
+    .handle("putBudget", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const agents = yield* AgentStub
+        const agent = agents.getByName(`${params.name}/${params.id}`)
+        yield* Effect.promise(() =>
+          agent.setBudget({ maxTotalTokens: payload.maxTotalTokens, maxCostUsd: payload.maxCostUsd }),
+        )
+        return yield* loadResolvedConfig(agent)
+      }),
+    )
     .handle("stream", ({ params, payload }) =>
       Effect.gen(function* () {
         const agents = yield* AgentStub
@@ -170,17 +216,21 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         const waitUntil = yield* WaitUntil
         const ambient = yield* Effect.context<LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch>()
         const resolved = yield* loadResolvedConfig(agent)
+        const caps = capsFromConfig(resolved)
+        const priorSpend: SpendTotals = yield* Effect.promise(() => agent.usageTotals())
         const effectiveModel = payload.model ?? resolved.defaultModel
         yield* compactIfNeeded(agent, effectiveModel, resolved.compactionThreshold)
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
 
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const history = yield* Effect.promise(() => agent.history())
         const { skillBody, roleBody } = yield* loadOverlay(payload.skill, payload.role)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
         const messages = composeMessages({
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
           history,
           message: payload.message,
@@ -189,6 +239,7 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
 
         return yield* runStreamingTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           ambient,
           turn,
           startHop: 0,
@@ -198,6 +249,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           toolkit,
           toolLayer,
           waitUntil,
+          caps,
+          priorSpend,
         })
       }),
     )
@@ -224,12 +277,15 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
         }
 
         const resolved = yield* loadResolvedConfig(agent)
+        const caps = capsFromConfig(resolved)
+        const priorSpend: SpendTotals = yield* Effect.promise(() => agent.usageTotals())
         const { toolkit, toolLayer } = yield* buildSessionToolkit(resolved.mcpServers)
         const events = yield* fetchAllEvents(agent)
         const userMsg = findUserMessage(events, res.turn)
         const { skillBody, roleBody } = yield* loadOverlay(userMsg?.skill, userMsg?.role)
         const effectiveModel = userMsg?.model ?? resolved.defaultModel
         const todoItems = yield* Effect.promise(() => agent.latestTodos())
+        const memory = yield* loadMemoryIndex(params.name, resolved.memoryEnabled)
         const todos = todoItems.length > 0 ? formatTodos(todoItems) : undefined
 
         const initialPrompt = reconstructForContinuation({
@@ -240,11 +296,13 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
           skillBody,
           roleBody,
+          ...(memory !== undefined ? { memory } : {}),
           ...(todos !== undefined ? { todos } : {}),
         })
 
         return yield* runStreamingTurn({
           agent,
+          sessionId: `${params.name}/${params.id}`,
           ambient,
           turn: res.turn,
           startHop: maxHopForTurn(events, res.turn) + 1,
@@ -254,6 +312,8 @@ export const AgentHandlers = HttpApiBuilder.group(AgentApi, "agents", (handlers)
           toolkit,
           toolLayer,
           waitUntil,
+          caps,
+          priorSpend,
         })
       }),
     )

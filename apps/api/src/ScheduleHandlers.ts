@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { AgentStub } from "./AgentStub.ts"
 
-/** Scheduled-job handlers for the `schedule` group: list/cancel a session's approved scheduled jobs on its `Agent` DO. */
+/** Scheduled-job handlers for the `schedule` group: list/cancel a session's approved scheduled jobs on its `Agent` DO; summaries carry retry/chain/triggered metadata. */
 export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (handlers) =>
   handlers
     .handle("listScheduledJobs", ({ params }) =>
@@ -23,6 +23,10 @@ export const ScheduleHandlers = HttpApiBuilder.group(AgentApi, "schedule", (hand
                 approvedAt: job.approvedAt,
                 paused: job.paused,
                 ...(job.lastRunStatus !== undefined ? { lastRunStatus: job.lastRunStatus } : {}),
+                ...(job.notify !== undefined ? { notify: job.notify } : {}),
+                ...(job.retry !== undefined ? { retry: job.retry } : {}),
+                ...(job.chain !== undefined ? { chain: job.chain } : {}),
+                ...(job.triggered ? { triggered: true } : {}),
               }),
           ),
         })

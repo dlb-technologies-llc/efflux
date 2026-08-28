@@ -121,6 +121,29 @@ const composeCases: ReadonlyArray<{
     ],
   },
   {
+    name: "memory + todos present: [system(skill), system(role), system(memory), system(todos), ...history, user]",
+    input: {
+      skillBody: "SKILL",
+      roleBody: "ROLE",
+      memory: "## Persistent memory\n- fact: a fact",
+      todos: "- [ ] a",
+      history: [
+        { role: "user", content: "h1" },
+        { role: "assistant", content: "h2" },
+      ],
+      message: "MSG",
+    },
+    expected: [
+      { role: "system", content: "SKILL" },
+      { role: "system", content: "ROLE" },
+      { role: "system", content: "## Persistent memory\n- fact: a fact" },
+      { role: "system", content: "Current task list:\n- [ ] a" },
+      { role: "user", content: "h1" },
+      { role: "assistant", content: "h2" },
+      { role: "user", content: "MSG" },
+    ],
+  },
+  {
     name: "todos absent (redundant safety): [system(skill), system(role), ...history, user]",
     input: {
       skillBody: "SKILL",

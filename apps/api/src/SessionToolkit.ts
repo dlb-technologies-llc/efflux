@@ -13,6 +13,7 @@ import { resolveRule, type McpServer } from "@efflux/shared"
 import { Effect, Layer, Schema } from "effect"
 import { Tool, Toolkit } from "effect/unstable/ai"
 import { connect, type McpToolDef } from "./Mcp.ts"
+import { tapErrorStringMetric } from "./Metrics.ts"
 import { AgentToolkit, AgentToolkitLayer, ApprovalRules } from "./Tools.ts"
 import { capForPrompt } from "./Truncate.ts"
 
@@ -114,6 +115,7 @@ export const buildSessionToolkit = (mcpServers: ReadonlyArray<McpServer>) =>
             return capForPrompt(isError ? `Error: ${text}` : text)
           },
           Effect.catchTag("McpError", (error) => Effect.succeed(`Error: ${error.message}`)),
+          Effect.flatMap((result) => tapErrorStringMetric(namespaced, result)),
         )
       }
     }

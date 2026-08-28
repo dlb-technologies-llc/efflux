@@ -5,15 +5,18 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "effect/unstable/httpapi"
-import { AgentConfig, ResolvedConfig, SetToolRuleRequest } from "./Config.ts"
+import { AgentConfig, ResolvedConfig, SetBudgetRequest, SetToolRuleRequest } from "./Config.ts"
 import {
   AgentError,
   ApprovalConflictError,
   ApprovalNotFoundError,
+  BudgetExceededError,
   RoleNotFoundError,
   SkillNotFoundError,
 } from "./Errors.ts"
-import { JournalResponse, SessionsResponse } from "./Journal.ts"
+import { JournalResponse, SessionArchive, SessionsResponse } from "./Journal.ts"
+import { ArchiveListResponse } from "./Archives.ts"
+import { SessionUsage } from "./Usage.ts"
 import { ChatCompletionRequest, ModelsResponse } from "./OpenAi.ts"
 import { ToolsResponse } from "./Meta.ts"
 import {
@@ -21,6 +24,13 @@ import {
   KnowledgeListResponse,
   PutKnowledgeRequest,
 } from "./Knowledge.ts"
+import {
+  MemoryEntry,
+  MemoryLimitError,
+  MemoryListResponse,
+  MemoryNotFoundError,
+  PutMemoryRequest,
+} from "./Memory.ts"
 import {
   ApprovalDecision,
   HistoryResponse,
@@ -40,9 +50,15 @@ import {
 } from "./Skills.ts"
 import { PutSecretRequest, SecretListResponse, SecretSummary } from "./Secrets.ts"
 import { ScheduledJobListResponse, ScheduledJobRunListResponse, ScheduledJobRunResponse } from "./Schedule.ts"
+import { MAX_UPLOAD_BYTES, UploadResponse, WorkspaceFilename } from "./Files.ts"
 
 /** Exclusive seq cursor decoded from a query or path string — a non-negative integer matching the journal's SQLite `seq` column. Single source for every `?after=` cursor and the approve path's `eventId`. */
 const SeqFromString = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+)
+
+/** Archive close-timestamp decoded from the path — a non-negative integer epoch-ms, the third segment of the `archives/<name>/<id>/<closedAt>/journal.json` key. */
+const ClosedAtFromString = Schema.NumberFromString.pipe(
   Schema.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 )
 
@@ -55,7 +71,7 @@ const prompt = HttpApiEndpoint.post("prompt", "/agents/:name/:id", {
   params: AgentParams,
   payload: PromptRequest,
   success: PromptResponse,
-  error: [AgentError, SkillNotFoundError, RoleNotFoundError],
+  error: [AgentError, SkillNotFoundError, RoleNotFoundError, BudgetExceededError],
 })
 
 const history = HttpApiEndpoint.get("history", "/agents/:name/:id", {
@@ -139,6 +155,13 @@ const sessions = HttpApiEndpoint.get("sessions", "/agents", {
   success: SessionsResponse,
 })
 
+/** Cumulative session spend + resolved caps + whether either ceiling is tripped. */
+const usage = HttpApiEndpoint.get("usage", "/agents/:name/:id/usage", {
+  params: AgentParams,
+  success: SessionUsage,
+  error: AgentError,
+})
+
 /** Read the session's effective (resolved) config — stored overrides merged over Defaults. */
 const getConfig = HttpApiEndpoint.get("getConfig", "/agents/:name/:id/config", {
   params: AgentParams,
@@ -162,6 +185,13 @@ const putToolRule = HttpApiEndpoint.put(
     success: ResolvedConfig,
   },
 )
+
+/** Set or clear the session's token/cost budget, merged into the stored overrides; returns the new effective config. Impossible ceilings are rejected by the `SetBudgetRequest` decode. */
+const putBudget = HttpApiEndpoint.put("putBudget", "/agents/:name/:id/config/budget", {
+  params: AgentParams,
+  payload: SetBudgetRequest,
+  success: ResolvedConfig,
+})
 
 /** Every skill in R2, name plus description. */
 const listSkills = HttpApiEndpoint.get("listSkills", "/skills", {
@@ -225,6 +255,43 @@ const putKnowledge = HttpApiEndpoint.put("putKnowledge", "/knowledge/:name", {
 export const KnowledgeGroup = HttpApiGroup.make("knowledge")
   .add(listKnowledge)
   .add(putKnowledge)
+  .middleware(AuthMiddleware)
+
+/** The agent name's memory index — name + description per fact, cheap to poll. */
+const listMemories = HttpApiEndpoint.get("listMemories", "/memory/:agent", {
+  params: Schema.Struct({ agent: SafeId }),
+  success: MemoryListResponse,
+  error: AgentError,
+})
+
+/** One full memory fact by name. */
+const getMemory = HttpApiEndpoint.get("getMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: MemoryEntry,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** Upsert a memory fact by name — caps (entry count, description, content size) surface as 400 `MemoryLimitError`. */
+const putMemory = HttpApiEndpoint.put("putMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  payload: PutMemoryRequest,
+  success: MemoryEntry,
+  error: [AgentError, MemoryLimitError],
+})
+
+/** Delete a memory fact by name. */
+const deleteMemory = HttpApiEndpoint.delete("deleteMemory", "/memory/:agent/:name", {
+  params: Schema.Struct({ agent: SafeId, name: SafeName }),
+  success: Schema.Void,
+  error: [AgentError, MemoryNotFoundError],
+})
+
+/** All cross-session memory endpoints grouped. Memory is scoped per agent NAME (not per session), hence `/memory/:agent` rather than a nested `/agents/...` path — nesting under `/agents/:agent/<x>` would collide with the session `:name/:id` route pattern. */
+export const MemoryGroup = HttpApiGroup.make("memory")
+  .add(listMemories)
+  .add(getMemory)
+  .add(putMemory)
+  .add(deleteMemory)
   .middleware(AuthMiddleware)
 
 /** Upsert a session secret by key; the value is write-only and never echoed back. */
@@ -291,7 +358,7 @@ const resumeScheduledJob = HttpApiEndpoint.post("resumeScheduledJob", "/agents/:
   error: AgentError,
 })
 
-/** Fire a scheduled job immediately, independent of its schedule — it runs on a fresh Runner through the same path the alarm uses, records a run, and returns that run's captured output. Does NOT reschedule the job or change its paused state. `run` is null when the job id no longer exists OR a run is already in flight for it (a manual "run now" or an alarm fire holds the per-job guard). */
+/** Fire a scheduled job immediately, independent of its schedule — it runs on a fresh Runner through the same path the alarm uses, records a run, and returns that run's captured output. A manual run also fires the job's outcome chain: its onSuccess/onFailure target jobs run too, cascading through their own chains. It still does NOT reschedule the job or change its paused state, and a manual run itself is never retried. `run` is null when the job id no longer exists OR a run is already in flight for it (a manual "run now" or an alarm fire holds the per-job guard). */
 const runScheduledJobNow = HttpApiEndpoint.post("runScheduledJobNow", "/agents/:name/:id/schedule/:jobId/run-now", {
   params: Schema.Struct({ name: SafeId, id: SafeId, jobId: SafeId }),
   success: ScheduledJobRunResponse,
@@ -308,6 +375,45 @@ export const ScheduleGroup = HttpApiGroup.make("schedule")
   .add(runScheduledJobNow)
   .middleware(AuthMiddleware)
 
+/** The archived-session corpus index — every `journal.json` under `archives/`, newest close first. */
+const listArchives = HttpApiEndpoint.get("listArchives", "/archives", {
+  success: ArchiveListResponse,
+  error: AgentError,
+})
+
+/** One archived session's full journal by `name` + `id` + `closedAt` (the three key segments). */
+const getArchive = HttpApiEndpoint.get("getArchive", "/archives/:name/:id/:closedAt", {
+  params: Schema.Struct({ name: SafeId, id: SafeId, closedAt: ClosedAtFromString }),
+  success: SessionArchive,
+  error: AgentError,
+})
+
+/** Read-only archived-corpus endpoints grouped. */
+export const ArchivesGroup = HttpApiGroup.make("archives")
+  .add(listArchives)
+  .add(getArchive)
+  .middleware(AuthMiddleware)
+
+/** Raw binary upload body, capped at MAX_UPLOAD_BYTES; the size check runs on decode server-side, so an over-cap upload fails before touching the DO. Encoded side is `Uint8Array` (required by `asUint8Array`). */
+const UploadBody = Schema.Uint8Array.pipe(
+  Schema.check(Schema.isMaxLength(MAX_UPLOAD_BYTES)),
+  HttpApiSchema.asUint8Array(),
+)
+
+/** Upload a file into the session's container `/workspace`; raw request body is the file bytes, `?filename=` names the destination (bare filename, lands at `/workspace/<filename>`). */
+const uploadFile = HttpApiEndpoint.post("uploadFile", "/agents/:name/:id/files", {
+  params: AgentParams,
+  query: { filename: WorkspaceFilename },
+  payload: UploadBody,
+  success: UploadResponse,
+  error: AgentError,
+})
+
+/** Session workspace file endpoints grouped. */
+export const FilesGroup = HttpApiGroup.make("files")
+  .add(uploadFile)
+  .middleware(AuthMiddleware)
+
 /** All agent endpoints grouped. */
 export const AgentGroup = HttpApiGroup.make("agents")
   .add(prompt)
@@ -319,9 +425,11 @@ export const AgentGroup = HttpApiGroup.make("agents")
   .add(journal)
   .add(attach)
   .add(sessions)
+  .add(usage)
   .add(getConfig)
   .add(putConfig)
   .add(putToolRule)
+  .add(putBudget)
   .middleware(AuthMiddleware)
 
 /** OpenAI-compatible chat completions. Success is declared as text because the handler returns a raw `HttpServerResponse` — JSON for non-stream, SSE for `stream:true`. */
@@ -353,4 +461,7 @@ export class AgentApi extends HttpApi.make("agent-api")
   .add(MetaGroup)
   .add(SecretsGroup)
   .add(ScheduleGroup)
+  .add(ArchivesGroup)
+  .add(FilesGroup)
+  .add(MemoryGroup)
   .middleware(SchemaErrorMiddleware) {}

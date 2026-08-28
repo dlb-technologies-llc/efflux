@@ -137,6 +137,21 @@ const handleRestore = (request: HttpServerRequest.HttpServerRequest) =>
     return yield* HttpServerResponse.json({ ok: true })
   })
 
+/** Upload handler — writes the raw request body to /workspace/<filename> from the x-efflux-filename header; guards traversal (defense-in-depth, since the container must not trust its caller even though the Worker schema-validates the name). */
+const handleUpload = (request: HttpServerRequest.HttpServerRequest) =>
+  Effect.gen(function*() {
+    const filename = request.headers["x-efflux-filename"]
+    if (filename === undefined || filename === "" || filename.includes("/") || filename.startsWith(".")) {
+      return HttpServerResponse.text("missing or unsafe x-efflux-filename header", { status: 400 })
+    }
+    const bytes = yield* Effect.result(request.arrayBuffer)
+    if (Result.isFailure(bytes)) {
+      return HttpServerResponse.text("could not read upload body", { status: 500 })
+    }
+    const written = yield* Effect.promise(() => Bun.write(`${WORKSPACE}/${filename}`, bytes.success))
+    return yield* HttpServerResponse.json({ ok: true, bytes: written })
+  })
+
 /** Snapshot handler — refuses until hydrated so a snapshot of a fresh container never overwrites a good R2 object. */
 const handleSnapshot = Effect.gen(function*() {
   if (!hydrated) return HttpServerResponse.text("workspace not hydrated; refusing to snapshot", { status: 409 })
@@ -159,6 +174,7 @@ const routerLayer = HttpRouter.addAll([
   HttpRouter.route("POST", "/exec", handleExec),
   HttpRouter.route("GET", "/status", Effect.suspend(() => HttpServerResponse.json({ hydrated }))),
   HttpRouter.route("POST", "/restore", handleRestore),
+  HttpRouter.route("POST", "/upload", handleUpload),
   HttpRouter.route("GET", "/snapshot", handleSnapshot),
   HttpRouter.route("POST", "/reset", handleReset),
   HttpRouter.route("GET", "/", Effect.succeed(HttpServerResponse.text("Sandbox container (POST /exec)"))),

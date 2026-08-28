@@ -77,6 +77,9 @@ OpenRouter's `LanguageModel` is provided at the Worker root (`aiLayer`) and cons
 
 Every endpoint is a method on the `AgentApi` HttpApi. All endpoints require an `Authorization: Bearer $API_TOKEN` header (the `API_TOKEN` deploy secret); requests without it get a 401.
 
+> [!WARNING]
+> The web console's copy of that token is inlined into the public JS bundle at build time, so on a publicly reachable deployment the bearer gates non-browser abuse and nothing more. Since a session's `Bash` tool is arbitrary code execution in your container on your OpenRouter key, put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of any instance you don't want strangers running code in. See [SECURITY.md](SECURITY.md).
+
 ```sh
 # Start (or continue) a session — default model
 curl https://<your-worker>/agents/support/user-abc \
@@ -153,17 +156,21 @@ curl -X PUT https://<your-worker>/agents/support/user-abc/config \
   }'
 ```
 
-Every tool carries an `allow` / `ask` / `deny` rule (default: `Bash` is `ask`, everything else `allow`). A `deny` tool refuses the call in-band. An `ask` tool **parks** the turn — the stream/prompt surfaces an approval request carrying the journal `eventId` of the parked call — and the caller resumes it with `POST /agents/:name/:id/approve/:eventId`, posting an `ApprovalDecision` (`approved` defaults true; a denial `reason` is fed back to the model). The approve call returns SSE and continues the parked turn from where it stopped.
+Every tool carries an `allow` / `ask` / `deny` rule (default: `Bash`, `request_secret`, `create_scheduled_job`, `memory_write`, and `memory_delete` are `ask`, everything else `allow`). A `deny` tool refuses the call in-band. An `ask` tool **parks** the turn — the stream/prompt surfaces an approval request carrying the journal `eventId` of the parked call — and the caller resumes it with `POST /agents/:name/:id/approve/:eventId`, posting an `ApprovalDecision` (`approved` defaults true; a denial `reason` is fed back to the model). The approve call returns SSE and continues the parked turn from where it stopped.
 
 ### The rest of the toolkit
 
 Beyond `Bash` and the file/search ops (`read_file`, `write_file`, `edit_file`, `glob`, `grep`, all on the same container exec seam), each session's model can call:
 
 - **`search_knowledge`** — queries the `efflux-knowledge` AI-Search index and grounds answers in the matching passages. Documents are uploaded with `PUT /knowledge/:name` and listed with their indexing status via `GET /knowledge` (indexing is asynchronous — poll until `completed`).
+- **`web_search`** — queries the open web via DuckDuckGo (keyless) and returns up to 8 results (title, URL, snippet). Pair it with `web_fetch` to read a discovered page. Results can be empty when DuckDuckGo rate-limits automated queries.
 - **`todo_write` / `todo_read`** — a task list the model maintains across turns, persisted in the journal as `todo-write` events and re-injected at the start of every turn.
+- **`memory_read` / `memory_write` / `memory_delete`** — durable facts the agent keeps across sessions (see **Persistent memory** below). Writes and deletes default to `ask`; reads are `allow`.
 - **External MCP tools** — every server in the session's `mcpServers` config is connected on the turn's critical path and its `tools/list` merged into the toolkit as namespaced `mcp__<server>__<tool>` tools (subject to the same approval rules).
 
 **Context compaction** is automatic: once a turn's estimated token count crosses the session `compactionThreshold`, older turns are folded into prose and written as a `compaction` journal event; later prompts serve that summary plus the turns after the checkpoint, keeping long sessions within the model's context window.
+
+**Persistent memory** is scoped per agent NAME: every session of `support` shares one store of named facts (name + one-line description + content, in a dedicated `Memory` Durable Object), while `dev` keeps its own. The index — names and descriptions only — is injected as a system message into every turn (including the `/v1` facade), so a returning agent starts warm; the model pulls a fact's full content with `memory_read` on demand. Facts are capped at 200 entries, 16,384-character content, and 256-character descriptions (violations surface as HTTP 400 `MemoryLimitError`), managed from the web app's Memory panel or via `GET/PUT/DELETE /memory/:agent[/:name]`, and the injection can be disabled per session with the `memoryEnabled` config field (the eval harness does exactly that). On the `/v1` facade — which cannot park a turn for approval — an `ask` on `memory_write`/`memory_delete` fails closed to `deny` (never silently auto-allows a durable cross-session write); set the rule to `allow` explicitly for unattended facade saves.
 
 ### Session lifecycle
 
@@ -273,9 +280,9 @@ bun run build                                 # builds the FE then typechecks th
 
 `bun run typecheck` chains `bun run cf-typegen` (`wrangler types`) first, regenerating the gitignored `worker-configuration.d.ts` from `wrangler.jsonc`. `bun run build` runs the Vite build (`apps/web/dist`), then `tsc --noEmit` against `apps/api/src`. `wrangler.jsonc` declares `assets.directory: "./apps/web/dist"` with `run_worker_first` on the API prefixes `/agents`, `/tasks`, `/skills`, `/v1`, `/knowledge`, and `/meta`, so the same Worker serves both the HttpApi and the built FE on deploy.
 
-## Deploy
+## Deploy (disabled — local-only)
 
-First-time provisioning creates the named resources the bindings expect:
+Deployment has been removed to stop billed Container/R2/AI-Search usage: the `deploy`/`predeploy`/`tail` scripts are gone and the account resources were decommissioned. Run everything locally with `bun run dev:local`. To **re-enable** deploy, restore those `package.json` scripts, re-add `"remote": true` to the `ai_search` binding in `wrangler.jsonc`, then re-provision the named resources the bindings expect:
 
 ```sh
 # 1. R2 buckets — skills/roles + per-session workspace tarballs
@@ -294,6 +301,8 @@ wrangler secret put API_TOKEN
 bun run deploy
 ```
 
+`wrangler.jsonc` deliberately does not pin an `account_id`; wrangler resolves it from `CLOUDFLARE_ACCOUNT_ID` or your interactive login, so a fork deploys to your own account without editing the config.
+
 The `predeploy` hook runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc`, which declares the Worker `efflux`, the `Agent`/`Sandbox`/`Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `efflux-skills`/`efflux-sessions` R2 buckets, the `efflux-knowledge` AI Search instance, the cron trigger, and the FE assets. On the first request after a cold deploy the `Sandbox` container spins up from zero instances, so the first tool call can 500 and then succeed on retry (see `ISSUES.md`).
 
 Useful root scripts:
@@ -301,10 +310,26 @@ Useful root scripts:
 | Script              | What it does                                                     |
 | ------------------- | ---------------------------------------------------------------- |
 | `bun run dev`       | `wrangler dev` — local Worker + emulated bindings (needs Docker)  |
-| `bun run deploy`    | `wrangler deploy` (runs `predeploy` first; needs Docker)          |
-| `bun run tail`      | `wrangler tail` — stream Worker logs                              |
+| `bun run dev:local` | validated local path: checks `.dev.vars`, inlines `VITE_API_TOKEN`, seeds local R2 skills, then `wrangler dev` |
 | `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the six tsconfigs          |
 | `bun run cf-typegen`| `wrangler types` — regenerate `worker-configuration.d.ts`         |
+
+## Security
+
+Efflux executes model-authored shell commands in a container — that is the point of it,
+and it makes the deployment boundary the thing to get right.
+
+- **The browser token is not an auth boundary.** `VITE_API_TOKEN` is inlined into the
+  public bundle; anyone who loads the console can read it.
+- **Put an identity boundary in front of any public instance.** Cloudflare Access is the
+  native fit.
+- **What is genuinely defended:** constant-time bearer comparison, AES-GCM-encrypted
+  session secrets, an SSRF guard on `web_fetch`, and an ask-by-default policy for `Bash`,
+  `request_secret`, and `create_scheduled_job`.
+
+[SECURITY.md](SECURITY.md) has the full threat model, the known limitations (DNS
+rebinding, generic `/approve` resolution, the unpinned base image), and how to report a
+vulnerability.
 
 ## The claim
 
@@ -335,3 +360,7 @@ A typical agent-framework "support agent" example is ~30 lines. Efflux is larger
 - Testable services. Each piece is a Layer you can swap.
 
 The foundation requires no framework.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

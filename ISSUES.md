@@ -811,6 +811,13 @@ After renaming the `ai_search` `instance_name` in `wrangler.jsonc` (to `efflux-k
 
 Provision the instance first — `wrangler ai-search create efflux-knowledge --type builtin` — or, for a quick local smoke before it exists, comment the `ai_search` block out of the worktree `wrangler.jsonc` (uncommitted; the committed config keeps it). Only the knowledge-search feature then no-ops.
 
+### Local-only (binding removed for good) — 2026-07-19, #164
+
+Two traps beyond the quick-smoke comment-out, when the deployed instance is decommissioned and you want a COMMITTED local-only config:
+
+- **Dropping `"remote": true` does NOT enable local boot.** AI Search has no local emulation, so `wrangler dev` opens a *remote* proxy for the binding regardless of the flag and still aborts with `instance … was not found` once the instance is gone. To run local-only you must **remove the `ai_search` block entirely**, not merely un-remote it.
+- **Removing the block ripples into the consuming code.** `env.KNOWLEDGE_SEARCH` drops out of the generated `Env`, so `index.ts` stops typechecking. Make the service optional — `KnowledgeSearch = Option<AiSearchInstance>`, provided `Option.none()` — and funnel every op through a guard that fails with a clear "disabled" `AgentError`; `/knowledge` + `search_knowledge` then degrade instead of crashing. Use **`Option`, never bare `undefined`**: effect's service map is a `Map`, so a service stored as `undefined` is indistinguishable from an unprovided one and resolves pathologically (a bare-`undefined` KnowledgeSearch, combined with a self-referential helper, drove workerd to a heap-OOM that typecheck + the full test suite passed clean over).
+
 ## `Sandbox` container cold-starts at zero instances — the first tool call 500s
 
 ### Symptoms (2026-07-10, #85 first deploy)
@@ -841,7 +848,7 @@ Renaming the checkout directory while a Claude Code session is live orphaned the
 
 ### Symptoms (2026-07-15, feature-generating #98)
 
-A routine feature PR's verification pass — plus the user's own manual testing of the new feature afterward — was driven entirely against the shared deployed worker (`https://efflux.david-0e2.workers.dev`) rather than `bun run dev` locally: many `bun scripts/agent.ts` smoke sessions, dozens of `curl`s against live endpoints, two full `bun run deploy` cycles, and an extended interactive chat session in the browser, all pointed at the deployed URL. The Cloudflare billing dashboard afterward showed **`Container Memory, per GiB-Second`: 9.68M billable units → $23.97** for the billing period — the single largest line item by far. `9.68M GiB-seconds ÷ 4 GiB (the `standard-1` instance's fixed memory) ÷ 3600 ≈ 672 cumulative instance-hours` — the sum of every container instance's alive time across every session, not one container running continuously (Cloudflare's own docs confirm `sleepAfter` actually terminates the instance — `SIGTERM` then `SIGKILL` after 15 min — it does not just idle it).
+A routine feature PR's verification pass — plus the user's own manual testing of the new feature afterward — was driven entirely against the shared deployed worker (`https://<your-worker>.workers.dev`) rather than `bun run dev` locally: many `bun scripts/agent.ts` smoke sessions, dozens of `curl`s against live endpoints, two full `bun run deploy` cycles, and an extended interactive chat session in the browser, all pointed at the deployed URL. The Cloudflare billing dashboard afterward showed **`Container Memory, per GiB-Second`: 9.68M billable units → $23.97** for the billing period — the single largest line item by far. `9.68M GiB-seconds ÷ 4 GiB (the `standard-1` instance's fixed memory) ÷ 3600 ≈ 672 cumulative instance-hours` — the sum of every container instance's alive time across every session, not one container running continuously (Cloudflare's own docs confirm `sleepAfter` actually terminates the instance — `SIGTERM` then `SIGKILL` after 15 min — it does not just idle it).
 
 ### Root cause
 
