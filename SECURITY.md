@@ -57,9 +57,15 @@ These are implemented and tested, not aspirational:
   32-byte key and a fresh random 12-byte IV per encryption. The GCM tag means tampered
   ciphertext fails closed rather than decrypting to garbage.
 - **Ask-by-default tool policy** — `packages/shared/src/Config.ts`; `Bash`,
-  `request_secret`, and `create_scheduled_job` all require explicit approval unless a
-  session opts out. Sessions can set a tool to `allow`; that is a deliberate choice with
-  consequences.
+  `request_secret`, `create_scheduled_job`, `memory_write`, and `memory_delete` all
+  require explicit approval unless a session opts out. Sessions can set a tool to
+  `allow`; that is a deliberate choice with consequences.
+- **SSRF guard on MCP server URLs too** — `apps/api/src/Mcp.ts` runs the same
+  `isBlockedHost` check on configured server URLs and on redirect targets, so a
+  session-supplied MCP endpoint cannot be pointed at internal addresses.
+- **`web_search` takes no URL.** It POSTs a query to one fixed upstream endpoint
+  (`apps/api/src/WebSearch.ts`), so it is not an SSRF surface; `web_fetch` is the tool
+  that accepts a caller-supplied URL, and that one is guarded.
 - **SSRF guard on `web_fetch`** — `Ssrf.ts`; blocks localhost, loopback, private,
   link-local and unique-local ranges, IPv4-mapped/compat IPv6 forms, bare
   integer/hex IP literals, and `.internal`/`.local` suffixes.
@@ -68,6 +74,13 @@ These are implemented and tested, not aspirational:
 
 Documented rather than hidden, so you can judge them yourself:
 
+- **Gating `Bash` does not confine the container filesystem.** `read_file`,
+  `write_file`, `edit_file`, `glob`, and `grep` are exec-backed — they run shell
+  commands in the same sandbox — but they are absent from `DEFAULT_TOOL_RULES`, and
+  `resolveRule` defaults absent tools to `allow`. A session that sets `Bash: "deny"`
+  still has unprompted read/write access to the container's workspace. Deny them
+  explicitly if that is not what you want. (Their arguments are shell-quoted or
+  base64-passed, so this is a policy gap, not a command-injection one.)
 - **The SSRF guard does not stop DNS rebinding**, nor dotted octal/hex octet
   obfuscation. It is a hostname filter, not a network policy. See the module doc in
   `apps/api/src/Ssrf.ts`.
