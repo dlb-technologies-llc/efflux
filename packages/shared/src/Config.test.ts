@@ -4,7 +4,8 @@
  *
  * 1. Unit pins for the fallback semantics — an absent tool resolves to `allow`,
  *    every explicit rule is returned verbatim, and the canonical
- *    `DEFAULT_TOOL_RULES` table parks `Bash` on `ask` while any other tool
+ *    `DEFAULT_TOOL_RULES` table parks `Bash`, `memory_write`, and
+ *    `memory_delete` on `ask` while any other tool (including `memory_read`)
  *    falls through to `allow`.
  *
  * 2. A property covering the fallback's range: over rules maps built from fixed
@@ -18,7 +19,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Schema } from "effect"
-import { DEFAULT_TOOL_RULES, mergeToolRule, resolveRule, SetToolRuleRequest, ToolRule } from "@efflux/shared"
+import { DEFAULT_TOOL_RULES, mergeBudget, mergeToolRule, resolveRule, SetBudgetRequest, SetToolRuleRequest, ToolRule } from "@efflux/shared"
 import type { RulesMap } from "@efflux/shared"
 
 const explicitRules: RulesMap = { Bash: "allow", web_fetch: "ask", Read: "deny" }
@@ -41,6 +42,18 @@ describe("resolveRule fallback semantics", () => {
 
   it("DEFAULT_TOOL_RULES lets any non-Bash tool fall through to allow", () => {
     expect(resolveRule(DEFAULT_TOOL_RULES, "Read")).toBe("allow")
+  })
+
+  it("DEFAULT_TOOL_RULES parks memory_write on ask", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_write")).toBe("ask")
+  })
+
+  it("DEFAULT_TOOL_RULES parks memory_delete on ask", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_delete")).toBe("ask")
+  })
+
+  it("DEFAULT_TOOL_RULES lets memory_read fall through to allow", () => {
+    expect(resolveRule(DEFAULT_TOOL_RULES, "memory_read")).toBe("allow")
   })
 })
 
@@ -85,6 +98,59 @@ describe("mergeToolRule", () => {
       defaultModel: "x/y",
       ttlSeconds: 42,
       rules: { Bash: "allow" },
+    })
+  })
+})
+
+const decodeBudget = Schema.decodeUnknownSync(SetBudgetRequest)
+
+describe("SetBudgetRequest validation", () => {
+  it("accepts a positive integer token cap and a positive cost cap", () => {
+    expect(decodeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5 })).toStrictEqual({
+      maxTotalTokens: 500,
+      maxCostUsd: 2.5,
+    })
+  })
+
+  it("accepts null (cleared) caps", () => {
+    expect(decodeBudget({ maxTotalTokens: null, maxCostUsd: null })).toStrictEqual({
+      maxTotalTokens: null,
+      maxCostUsd: null,
+    })
+  })
+
+  it("rejects a zero, negative, or fractional token cap", () => {
+    for (const bad of [0, -5, 1.5]) {
+      expect(() => decodeBudget({ maxTotalTokens: bad, maxCostUsd: null })).toThrow()
+    }
+  })
+
+  it("rejects a zero or negative cost cap", () => {
+    for (const bad of [0, -1]) {
+      expect(() => decodeBudget({ maxTotalTokens: null, maxCostUsd: bad })).toThrow()
+    }
+  })
+})
+
+describe("mergeBudget", () => {
+  it("sets both caps, preserving every other override", () => {
+    expect(mergeBudget({ defaultModel: "x/y", ttlSeconds: 42 }, { maxTotalTokens: 500, maxCostUsd: 2.5 })).toStrictEqual({
+      defaultModel: "x/y",
+      ttlSeconds: 42,
+      maxTotalTokens: 500,
+      maxCostUsd: 2.5,
+    })
+  })
+
+  it("clears both caps when null, dropping the keys and keeping other overrides", () => {
+    expect(
+      mergeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5, defaultModel: "x/y" }, { maxTotalTokens: null, maxCostUsd: null }),
+    ).toStrictEqual({ defaultModel: "x/y" })
+  })
+
+  it("sets one cap while clearing the other", () => {
+    expect(mergeBudget({ maxTotalTokens: 500, maxCostUsd: 2.5 }, { maxTotalTokens: 1000, maxCostUsd: null })).toStrictEqual({
+      maxTotalTokens: 1000,
     })
   })
 })

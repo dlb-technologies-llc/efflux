@@ -5,7 +5,7 @@ import {
   type RulesMap,
 } from "@efflux/shared"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Cause, Clock, type Context, Effect, Layer, Queue, Schema, Stream } from "effect"
 import { LanguageModel, Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type * as AiError from "effect/unstable/ai/AiError"
 import { Sse } from "effect/unstable/encoding"
@@ -20,8 +20,10 @@ import {
   toAgentError,
 } from "./AgentLoop.ts"
 import type { AgentNamespace } from "./AgentStub.ts"
-import { eventJson, journalHopBatch } from "./JournalWrite.ts"
+import { type SpendCaps, type SpendTotals, addSpend, budgetExceeded } from "./Budget.ts"
+import { eventJson, hopCostUsd, journalHopBatch } from "./JournalWrite.ts"
 import type { KnowledgeSearch } from "./Knowledge.ts"
+import { logTurnMetric } from "./Metrics.ts"
 import type { SessionToolkit } from "./SessionToolkit.ts"
 import type { SkillsBucket } from "./Skills.ts"
 
@@ -45,12 +47,18 @@ interface FacadeTurnInput {
   readonly turn: number
   readonly initialPrompt: Prompt.Prompt
   readonly model: string
+  /** Session key (`name/id`) stamped on the per-turn `[metric]` line. */
+  readonly sessionId: string
   readonly rules: RulesMap
   /** The session's merged toolkit (local tools + resolved MCP tools) handed to the model call. */
   readonly toolkit: SessionToolkit["toolkit"]
   /** The matching handler layer for `toolkit`, provided into each hop's model call. */
   readonly toolLayer: SessionToolkit["toolLayer"]
   readonly meta: TurnMeta
+  /** Resolved spend ceilings for this session; the loop stops before a hop that would run over. */
+  readonly caps: SpendCaps
+  /** Cumulative spend BEFORE this turn (summed from the journal); the running total seeds from it. */
+  readonly priorSpend: SpendTotals
 }
 
 /** Streaming driver inputs: the root context is forwarded so the forked stream can reach the model + skills bucket. */
@@ -71,18 +79,24 @@ const APPROVAL_DISABLED = "facade turn requested tool approval; approvals are di
 export const collectOpenAiTurn = (
   input: FacadeTurnInput,
 ): Effect.Effect<CollectedTurn, AgentError, LanguageModel.LanguageModel | SkillsBucket | KnowledgeSearch> => {
-  const { agent, initialPrompt, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, caps, initialPrompt, model, priorSpend, rules, sessionId, toolkit, toolLayer, turn } = input
 
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
 
+  let startMs = 0
+  let toolCallCount = 0
+  let costTotal = 0
+
   const loop = Effect.gen(function* () {
+    startMs = yield* Clock.currentTimeMillis
     let promptValue: Prompt.Prompt = initialPrompt
     let text = ""
     let lastInputTokens = 0
     let totalOutputTokens = 0
-    let toolCallCount = 0
+    let running: SpendTotals = priorSpend
 
     for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+      if (budgetExceeded(running, caps)) break
       const call = LanguageModel.generateText({ prompt: promptValue, toolkit })
       const withModel = OpenRouterLanguageModel.withConfigOverride(call, { model })
 
@@ -93,6 +107,7 @@ export const collectOpenAiTurn = (
       )
 
       toolCallCount += response.toolCalls.length
+      costTotal += hopCostUsd(response.content) ?? 0
       text = response.text
 
       const finish = response.content.find((p) => p.type === "finish")
@@ -111,7 +126,7 @@ export const collectOpenAiTurn = (
       }
 
       const terminal = !shouldContinueToolLoop(response.finishReason)
-      yield* journalHopBatch({
+      const delta = yield* journalHopBatch({
         agent,
         turn,
         hop,
@@ -120,6 +135,7 @@ export const collectOpenAiTurn = (
         text: response.text,
         ...(terminal ? { done: { finishReason: response.finishReason, toolCallCount } } : {}),
       })
+      running = addSpend(running, delta)
 
       if (terminal) break
       promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(response.content))
@@ -129,6 +145,17 @@ export const collectOpenAiTurn = (
   })
 
   return loop.pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        startMs === 0
+          ? Effect.void
+          : Clock.currentTimeMillis.pipe(
+              Effect.flatMap((now) =>
+                logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: toolCallCount }),
+              ),
+            ),
+      ),
+    ),
     Effect.ensuring(snapshotWorkspace(agent)),
     Effect.tapCause(journalTurnError(agent, turn)),
   )
@@ -156,7 +183,7 @@ const makeChunk = (
  * as an error and terminates the turn.
  */
 export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.HttpServerResponse => {
-  const { agent, ambient, initialPrompt, meta, model, rules, toolkit, toolLayer, turn } = input
+  const { agent, ambient, caps, initialPrompt, meta, model, priorSpend, rules, sessionId, toolkit, toolLayer, turn } = input
 
   const encodeChunk = Schema.encodeSync(ChatCompletionChunk)
   const turnLayers = makeTurnLayers(agent, turn, rules, toolLayer)
@@ -171,13 +198,19 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
         AiError.AiError | Cause.TimeoutError | Cause.Done
       >(64)
 
+      let startMs = 0
+      let totalToolCalls = 0
+      let costTotal = 0
+
       const driver = Effect.gen(function* () {
+        startMs = yield* Clock.currentTimeMillis
         let promptValue: Prompt.Prompt = initialPrompt
-        let totalToolCalls = 0
+        let running: SpendTotals = priorSpend
 
         yield* Queue.offer(queue, makeChunk(meta, { role: "assistant" }, null))
 
         for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+          if (budgetExceeded(running, caps)) break
           const baseCall = LanguageModel.streamText({ prompt: promptValue, toolkit })
           const withModel = baseCall.pipe(
             Stream.provide(Layer.succeed(OpenRouterLanguageModel.Config, { model })),
@@ -218,6 +251,8 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
             Effect.timeout(MODEL_HOP_TIMEOUT),
           )
 
+          costTotal += hopCostUsd(collected) ?? 0
+
           const terminal =
             approvalRequested ||
             lastFinishReason === undefined ||
@@ -228,7 +263,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
               agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: APPROVAL_DISABLED }))]),
             )
           }
-          yield* journalHopBatch({
+          const delta = yield* journalHopBatch({
             agent,
             turn,
             hop,
@@ -239,6 +274,7 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
               ? { done: { finishReason: lastFinishReason, toolCallCount: totalToolCalls } }
               : {}),
           })
+          running = addSpend(running, delta)
 
           if (terminal) break
           promptValue = Prompt.concat(promptValue, Prompt.fromResponseParts(collected))
@@ -246,6 +282,17 @@ export const streamOpenAiTurn = (input: StreamTurnInput): HttpServerResponse.Htt
 
         yield* Queue.offer(queue, makeChunk(meta, {}, "stop"))
       }).pipe(
+        Effect.ensuring(
+          Effect.suspend(() =>
+            startMs === 0
+              ? Effect.void
+              : Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((now) =>
+                    logTurnMetric({ sessionId, model, latencyMs: now - startMs, costUsd: costTotal, toolCalls: totalToolCalls }),
+                  ),
+                ),
+          ),
+        ),
         Effect.tapCause((cause) =>
           Effect.promise(() =>
             agent.appendEvents([eventJson(new JournalErrorEvent({ turn, message: Cause.pretty(cause) }))]),

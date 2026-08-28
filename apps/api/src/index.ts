@@ -1,7 +1,7 @@
 import { AgentApi, ApiToken } from "@efflux/shared"
 import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient"
 import * as OpenRouterLanguageModel from "@effect/ai-openrouter/OpenRouterLanguageModel"
-import { Cause, Context, Effect, FileSystem, Layer, Path, Redacted, Scope } from "effect"
+import { Cause, Context, Effect, FileSystem, Layer, Option, Path, Redacted, Scope } from "effect"
 import { LanguageModel } from "effect/unstable/ai"
 import * as Etag from "effect/unstable/http/Etag"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
@@ -15,9 +15,14 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { DEFAULT_MODEL } from "./Defaults.ts"
 import { AgentStub } from "./AgentStub.ts"
 import { AgentHandlers } from "./handlers.ts"
+import { ArchiveHandlers } from "./ArchiveHandlers.ts"
+import { SessionsBucket } from "./ArchiveStore.ts"
+import { FilesHandlers } from "./FilesHandlers.ts"
 import { OpenAiHandlers } from "./OpenAiHandlers.ts"
 import { KnowledgeSearch } from "./Knowledge.ts"
 import { KnowledgeHandlers } from "./KnowledgeHandlers.ts"
+import { MemoryStub } from "./Memory.ts"
+import { MemoryHandlers } from "./MemoryHandlers.ts"
 import { MetaHandlers } from "./MetaHandlers.ts"
 import { RegistryStub } from "./Registry.ts"
 import { ScheduleHandlers } from "./ScheduleHandlers.ts"
@@ -29,8 +34,9 @@ import { SchemaErrorMiddlewareLive } from "./SchemaErrorMiddleware.ts"
 import { loadSkillBody, SkillsBucket } from "./Skills.ts"
 import { WaitUntil } from "./WaitUntil.ts"
 
-/** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry). */
+/** DO classes must be re-exported from the Worker entry so the runtime can bind them (wrangler.jsonc: AGENTS→Agent, SANDBOX→Sandbox, REGISTRY→Registry, MEMORY→Memory). */
 export { Agent } from "./Agent.ts"
+export { Memory } from "./Memory.ts"
 export { Registry } from "./Registry.ts"
 export { Runner } from "./Runner.ts"
 export { Sandbox } from "./Sandbox.ts"
@@ -73,11 +79,14 @@ const HttpPlatformStub = Layer.succeed(HttpPlatform.HttpPlatform, {
 const routerLayer = HttpApiBuilder.layer(AgentApi).pipe(
   Layer.provide(AgentHandlers),
   Layer.provide(SkillHandlers),
+  Layer.provide(ArchiveHandlers),
   Layer.provide(OpenAiHandlers),
   Layer.provide(KnowledgeHandlers),
   Layer.provide(MetaHandlers),
+  Layer.provide(FilesHandlers),
   Layer.provide(SecretsHandlers),
   Layer.provide(ScheduleHandlers),
+  Layer.provide(MemoryHandlers),
   Layer.provide(AuthMiddlewareLive),
   Layer.provide(SchemaErrorMiddlewareLive),
   Layer.provide([
@@ -101,8 +110,13 @@ const buildWebHandler = (
         makeAiLayer(requireApiKey(env)),
         Layer.succeed(AgentStub, env.AGENTS),
         Layer.succeed(RegistryStub, env.REGISTRY),
+        Layer.succeed(MemoryStub, env.MEMORY),
         Layer.succeed(SkillsBucket, env.SKILLS),
-        Layer.succeed(KnowledgeSearch, env.KNOWLEDGE_SEARCH),
+        Layer.succeed(SessionsBucket, env.SESSIONS),
+        // Local-only: the AI Search binding is removed (see wrangler.jsonc). Provide
+        // `Option.none()` so knowledge ops degrade to a clear disabled error; to restore,
+        // re-add the binding and swap this back to `Option.some(env.KNOWLEDGE_SEARCH)`.
+        Layer.succeed(KnowledgeSearch, Option.none()),
         TracingLive,
       )
       const handler = yield* HttpRouter.toHttpEffect(
@@ -149,12 +163,20 @@ const buildWebHandler = (
       )
       const context = yield* Layer.build(services)
       return HttpEffect.toWebHandlerWith<
-        AgentStub | RegistryStub | SkillsBucket | KnowledgeSearch | LanguageModel.LanguageModel,
+        | AgentStub
+        | RegistryStub
+        | MemoryStub
+        | SkillsBucket
+        | SessionsBucket
+        | KnowledgeSearch
+        | LanguageModel.LanguageModel,
         | HttpServerRequest.HttpServerRequest
         | Scope.Scope
         | AgentStub
         | RegistryStub
+        | MemoryStub
         | SkillsBucket
+        | SessionsBucket
         | KnowledgeSearch
         | LanguageModel.LanguageModel
         | WaitUntil
@@ -179,7 +201,10 @@ const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/v1/") ||
   pathname === "/knowledge" ||
   pathname.startsWith("/knowledge/") ||
-  pathname.startsWith("/meta/")
+  pathname.startsWith("/meta/") ||
+  pathname === "/archives" ||
+  pathname.startsWith("/archives/") ||
+  pathname.startsWith("/memory/")
 
 /** Daily heartbeat cron: exercises the same skill-loading + generateText path the prompt handler uses, against the support skill. */
 const cronEffect = Effect.fn("cronHeartbeat")(

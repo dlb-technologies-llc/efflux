@@ -6,8 +6,9 @@ import type {
   ScheduledJobSummary,
 } from "@efflux/shared"
 import { Exit } from "effect"
-import { CalendarClock, ChevronRight } from "lucide-react"
+import { Bell, CalendarClock, ChevronRight, Repeat, Workflow } from "lucide-react"
 import * as React from "react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
@@ -161,7 +162,13 @@ interface ScheduledJobRowProps {
  * toggles the job via `pauseScheduledJobFn`/`resumeScheduledJobFn`, and a delete
  * button that cancels the job via `deleteScheduledJobFn`. All three refresh the
  * parent list (`onChanged`) on success — mirrors `SkillEditor`'s
- * delete-then-refresh shape in `SkillsPanel.tsx`.
+ * delete-then-refresh shape in `SkillsPanel.tsx`. The meta line also surfaces
+ * the DO-formatted `retry`/`chain` labels as outline badges, and a chain-only
+ * (`triggered`) job swaps its schedule/next-run text for a "Runs when
+ * triggered" chip — its dormant sentinel `nextRunAt` of 0 never renders as a
+ * date, but a chain-only job carrying an armed retry (`nextRunAt > 0`) also
+ * shows that pending "Retry at" time so a self-firing job is never
+ * misrepresented as purely trigger-only.
  */
 function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
   const runDelete = useAtomSet(deleteScheduledJobFn, { mode: "promiseExit" })
@@ -238,15 +245,47 @@ function ScheduledJobRow({ session, job, onChanged }: ScheduledJobRowProps) {
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
-        <span>
-          Schedule: <span className="text-foreground">{job.schedule}</span> UTC
-        </span>
-        {job.paused ? (
-          <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Paused</span>
+        {job.triggered === true ? (
+          <>
+            {job.paused ? <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Paused</span> : null}
+            <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Runs when triggered</span>
+            {!job.paused && job.nextRunAt > 0 ? (
+              <span>
+                Retry at {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}
+              </span>
+            ) : null}
+          </>
         ) : (
-          <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
+          <>
+            <span>
+              Schedule: <span className="text-foreground">{job.schedule}</span> UTC
+            </span>
+            {job.paused ? (
+              <span className="rounded bg-bg-subtle px-1.5 py-0.5 text-foreground">Paused</span>
+            ) : (
+              <span>Next run: {new Date(job.nextRunAt).toLocaleString(undefined, { timeZone: "UTC", timeZoneName: "short" })}</span>
+            )}
+          </>
         )}
         {job.lastRunStatus !== undefined ? <span>Last run: {job.lastRunStatus}</span> : null}
+        {job.notify !== undefined ? (
+          <Badge variant="outline" className="font-mono font-normal text-muted-foreground">
+            <Bell />
+            {job.notify}
+          </Badge>
+        ) : null}
+        {job.retry !== undefined ? (
+          <Badge variant="outline" className="font-mono font-normal text-muted-foreground">
+            <Repeat />
+            {job.retry}
+          </Badge>
+        ) : null}
+        {job.chain !== undefined ? (
+          <Badge variant="outline" className="font-mono font-normal text-muted-foreground">
+            <Workflow />
+            {job.chain}
+          </Badge>
+        ) : null}
         {job.lastRunStatus !== undefined ? (
           <button
             type="button"

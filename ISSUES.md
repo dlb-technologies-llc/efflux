@@ -811,6 +811,13 @@ After renaming the `ai_search` `instance_name` in `wrangler.jsonc` (to `efflux-k
 
 Provision the instance first — `wrangler ai-search create efflux-knowledge --type builtin` — or, for a quick local smoke before it exists, comment the `ai_search` block out of the worktree `wrangler.jsonc` (uncommitted; the committed config keeps it). Only the knowledge-search feature then no-ops.
 
+### Local-only (binding removed for good) — 2026-07-19, #164
+
+Two traps beyond the quick-smoke comment-out, when the deployed instance is decommissioned and you want a COMMITTED local-only config:
+
+- **Dropping `"remote": true` does NOT enable local boot.** AI Search has no local emulation, so `wrangler dev` opens a *remote* proxy for the binding regardless of the flag and still aborts with `instance … was not found` once the instance is gone. To run local-only you must **remove the `ai_search` block entirely**, not merely un-remote it.
+- **Removing the block ripples into the consuming code.** `env.KNOWLEDGE_SEARCH` drops out of the generated `Env`, so `index.ts` stops typechecking. Make the service optional — `KnowledgeSearch = Option<AiSearchInstance>`, provided `Option.none()` — and funnel every op through a guard that fails with a clear "disabled" `AgentError`; `/knowledge` + `search_knowledge` then degrade instead of crashing. Use **`Option`, never bare `undefined`**: effect's service map is a `Map`, so a service stored as `undefined` is indistinguishable from an unprovided one and resolves pathologically (a bare-`undefined` KnowledgeSearch, combined with a self-referential helper, drove workerd to a heap-OOM that typecheck + the full test suite passed clean over).
+
 ## `Sandbox` container cold-starts at zero instances — the first tool call 500s
 
 ### Symptoms (2026-07-10, #85 first deploy)

@@ -45,8 +45,8 @@ export const causeMessage = (cause: Cause.Cause<unknown>): string => {
   return "unknown error"
 }
 
-/** Read the response body up to MAX_FETCH_BYTES; cancels the reader on early exit and streams decode so a byte cut can't split a multibyte char. */
-const readBody = (
+/** Read the response body up to MAX_FETCH_BYTES; cancels the reader on early exit and streams decode so a byte cut can't split a multibyte char. Shared with web_search (`WebSearch.ts`) so both honor the same abort-wired, byte-capped read invariant. */
+export const readBody = (
   response: Response,
 ): Effect.Effect<{ text: string; truncated: boolean }, Cause.UnknownError> =>
   Effect.tryPromise(async (signal) => {

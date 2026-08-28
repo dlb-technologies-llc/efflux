@@ -323,7 +323,7 @@ describe("reconstructForContinuation", () => {
       expect(userTexts(prompt)).toContain("parked turn msg")
     }))
 
-  it.effect("injects the todos system message and orders skill/role, todos, summary, then prior users", () =>
+  it.effect("injects the memory + todos system messages and orders skill/role, memory, todos, summary, then prior users", () =>
     Effect.sync(() => {
       const events: ReadonlyArray<ReconstructEvent> = [
         { seq: 1, event: new JournalUserMessage({ content: "dropped turn" }) },
@@ -347,10 +347,12 @@ describe("reconstructForContinuation", () => {
         approved: true,
         skillBody: "SKILL",
         roleBody: "ROLE",
+        memory: "## Persistent memory\n- fact: a fact",
         todos: "- [ ] x",
       })
 
       expect(roleSequence(prompt)).toStrictEqual([
+        "system",
         "system",
         "system",
         "system",
@@ -360,8 +362,13 @@ describe("reconstructForContinuation", () => {
         "assistant",
         "tool",
       ])
-      expect(systemContents(prompt)).toStrictEqual(["SKILL", "ROLE", "Current task list:\n- [ ] x"])
-      expect(systemContents(prompt)[2]?.startsWith("Current task list:")).toBe(true)
+      expect(systemContents(prompt)).toStrictEqual([
+        "SKILL",
+        "ROLE",
+        "## Persistent memory\n- fact: a fact",
+        "Current task list:\n- [ ] x",
+      ])
+      expect(systemContents(prompt)[3]?.startsWith("Current task list:")).toBe(true)
       expect(userTexts(prompt)).toStrictEqual([
         `${COMPACTION_SUMMARY_PREFIX}folded history`,
         "kept prior",

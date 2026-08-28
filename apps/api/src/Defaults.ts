@@ -10,13 +10,25 @@ export const DEFAULT_TTL_SECONDS = 86_400
 /** Fallback compaction token ceiling (100k) when a session stores no `compactionThreshold`: `Compaction.compactIfNeeded` reads it on every prompt/stream turn and summarizes older turns into a `compaction` event once the latest usage tokens exceed it — this governs when a session's context is compacted. */
 export const DEFAULT_COMPACTION_THRESHOLD = 100_000
 
+/** Default cumulative token ceiling per session — `null` = unlimited (opt-in). Set to a number to make every session default-capped; the cap is enforced pre-turn and mid-loop by the budget guard. */
+export const DEFAULT_MAX_TOTAL_TOKENS: number | null = null
+
+/** Default cumulative USD-cost ceiling per session — `null` = unlimited (opt-in). Cost is only reported by OpenRouter on paid keys; free models report none, so the token ceiling is the reliable floor. */
+export const DEFAULT_MAX_COST_USD: number | null = null
+
+/** Default for the cross-session memory system-prompt injection when a session stores no `memoryEnabled` — on by default; the memory tools themselves are governed by the rules table. */
+export const DEFAULT_MEMORY_ENABLED = true
+
 /** Merge a session's stored partial overrides over the app defaults into the fully-populated effective config. */
 export const resolveConfig = (stored: typeof AgentConfig.Type): ResolvedConfig => ({
   defaultModel: stored.defaultModel ?? DEFAULT_MODEL,
   rules: { ...DEFAULT_TOOL_RULES, ...(stored.rules ?? {}) },
   ttlSeconds: stored.ttlSeconds ?? DEFAULT_TTL_SECONDS,
   compactionThreshold: stored.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
+  maxTotalTokens: stored.maxTotalTokens ?? DEFAULT_MAX_TOTAL_TOKENS,
+  maxCostUsd: stored.maxCostUsd ?? DEFAULT_MAX_COST_USD,
   mcpServers: stored.mcpServers ?? [],
+  memoryEnabled: stored.memoryEnabled ?? DEFAULT_MEMORY_ENABLED,
 })
 
 /** Load the session's stored overrides from the DO and resolve them against Defaults. Decode-dies on corruption (config was validated at PUT). */

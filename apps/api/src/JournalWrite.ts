@@ -12,6 +12,7 @@ import {
 import { Effect, Result, Schema } from "effect"
 import { Prompt, type Response as AiResponse } from "effect/unstable/ai"
 import type { AgentNamespace } from "./AgentStub.ts"
+import { usageEventDelta, type SpendTotals } from "./Budget.ts"
 
 /**
  * Journal-writing helpers shared by the streaming and non-streaming turn
@@ -76,6 +77,16 @@ const OpenRouterCostSchema = Schema.Struct({
 })
 const decodeOpenRouterCost = Schema.decodeUnknownResult(OpenRouterCostSchema)
 
+/** The finish part's OpenRouter cost (USD) for one hop, or undefined when absent/malformed. Reuses the existing schema-first decode. */
+export const hopCostUsd = (parts: ReadonlyArray<AiResponse.AnyPart>): number | undefined => {
+  const finish = parts.find((part) => part.type === "finish")
+  if (finish === undefined) return undefined
+  const rawUsage = finish.metadata.openrouter?.usage
+  const costResult =
+    rawUsage !== null && rawUsage !== undefined ? decodeOpenRouterCost(rawUsage) : undefined
+  return costResult !== undefined && Result.isSuccess(costResult) ? costResult.success.cost : undefined
+}
+
 /**
  * Build a hop's `usage` event from its `finish` part: typed token counts plus
  * OpenRouter's cost when reported. Returns undefined when the hop had no finish
@@ -91,15 +102,7 @@ export const buildUsageEvent = (input: {
   if (finish === undefined) return undefined
   const inputTokens = finish.usage.inputTokens.total
   const outputTokens = finish.usage.outputTokens.total
-  const rawUsage = finish.metadata.openrouter?.usage
-  const costResult =
-    rawUsage !== null && rawUsage !== undefined
-      ? decodeOpenRouterCost(rawUsage)
-      : undefined
-  const cost =
-    costResult !== undefined && Result.isSuccess(costResult)
-      ? costResult.success.cost
-      : undefined
+  const cost = hopCostUsd(input.parts)
   return new JournalUsage({
     turn: input.turn,
     hop: input.hop,
@@ -150,6 +153,10 @@ export const openTurn = (
  * One batched hop-end journal write shared by every turn driver: granular tool
  * events + authoritative `hop-messages` + display text + usage, and `done` only
  * when supplied (a terminal, non-parked finish).
+ *
+ * Returns the hop's `SpendTotals` delta, derived from its `usage` event via
+ * `usageEventDelta` (the `ZERO_SPEND`-equivalent `{ tokens: 0, cost: 0 }` when
+ * the hop recorded no usage), so non-stream drivers can accumulate per-hop spend.
  */
 export const journalHopBatch = (input: {
   agent: ReturnType<AgentNamespace["getByName"]>
@@ -166,6 +173,7 @@ export const journalHopBatch = (input: {
       events.push(new JournalAssistantText({ turn: input.turn, hop: input.hop, text: input.text }))
     }
     const usage = buildUsageEvent({ turn: input.turn, hop: input.hop, model: input.model, parts: input.parts })
+    const delta: SpendTotals = usageEventDelta(usage)
     if (usage !== undefined) events.push(usage)
     if (input.done !== undefined) {
       events.push(
@@ -179,4 +187,5 @@ export const journalHopBatch = (input: {
     if (events.length > 0) {
       yield* Effect.promise(() => input.agent.appendEvents(events.map(eventJson)))
     }
+    return delta
   })

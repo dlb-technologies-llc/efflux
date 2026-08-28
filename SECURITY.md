@@ -5,6 +5,13 @@ untrusted code is the product**, not an incidental capability — so the deploym
 boundary around it matters more than it would for a typical web app. Read this before
 you put an instance on the public internet.
 
+> [!NOTE]
+> This repository currently ships **local-only**: the `deploy`/`predeploy` scripts are
+> removed and the upstream account resources were decommissioned (see *Deploy (disabled
+> — local-only)* in the README). Nothing here is deployed. Everything below applies the
+> moment you re-enable deploy and put an instance on a reachable hostname — read it
+> first, not after.
+
 ## The browser token is not an authentication boundary
 
 Every endpoint requires an `Authorization: Bearer $API_TOKEN` header, compared against

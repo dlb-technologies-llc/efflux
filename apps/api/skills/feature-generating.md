@@ -55,9 +55,49 @@ Follow this sequence:
 5. **Summarize before scheduling.** Once the script works, tell the user
    in plain text exactly what it will do and its schedule in plain UTC
    terms. Then call `create_scheduled_job` with a `description`, the
-   `entrypointCommand` to run, and a `schedule` — a 5-field UTC cron
-   expression (e.g. `*/10 * * * *`) or an `@daily`/`@hourly` macro. This
-   requires the user's explicit approval — they will see the exact command
-   and schedule in the approval prompt.
-6. Confirm once approved: tell the user the feature is live and when it
+   `entrypointCommand` to run, and usually a `schedule` — a 5-field UTC
+   cron expression (e.g. `*/10 * * * *`) or an `@daily`/`@hourly` macro.
+   `schedule` is optional: omit it to create a chain-only job that never
+   fires on its own and runs only when another job triggers it (step 7).
+   This requires the user's explicit approval — they will see the exact
+   command and schedule in the approval prompt.
+6. **Offer outcome alerts (optional).** If the user wants to be told how
+   a run went — especially when it fails — pass an optional `notify`
+   object to the same `create_scheduled_job` call. This is a
+   scheduler-level safety net: it fires from the scheduler itself, so it
+   still alerts the user even if the job's own script crashes before it
+   could report anything.
+   - **Slack** (and any other `{text}`-accepting webhook — Discord,
+     PagerDuty): first `request_secret` a secret holding the user's Slack
+     Incoming Webhook URL (uppercase snake_case, e.g. `SLACK_ALERT_URL`),
+     then pass `notify: { channel: "slack", on: "failure",
+     slackUrlSecret: "SLACK_ALERT_URL" }`. Never put the raw webhook URL
+     in the config — it must be a secret referenced by name, exactly like
+     the credentials in step 3.
+   - **Email:** pass `notify: { channel: "email", on: "failure",
+     emailTo: "you@domain" }`. The `emailTo` address must be a verified
+     destination on the account's Email Routing.
+   - `on: "failure"` alerts only when the run fails; `on: "always"`
+     alerts on every run. Use `"failure"` unless the user asks to hear
+     about every run.
+7. **Chain jobs into pipelines (optional).** A job can trigger another
+   job in this session when a run finishes: pass `onSuccessJobId` and/or
+   `onFailureJobId` — the id of another job here — to
+   `create_scheduled_job`. The target must already exist at creation
+   time, so build pipelines downstream-first: every successful
+   `create_scheduled_job` result includes the created job's id — create
+   the last job in the chain first and feed its id upstream. Example:
+   for "fetch data, then send a report", first create the report-sender
+   with no `schedule` (chain-only), then create the data-fetch job with
+   a `schedule` and `onSuccessJobId` set to the id you just got back.
+   Use `onFailureJobId` for a cleanup or alert branch. You can also pass
+   an optional `retry: { maxAttempts, backoffSeconds }` — `maxAttempts`
+   (2–5) is the TOTAL tries per firing (the initial run plus up to
+   `maxAttempts - 1` retries) and `backoffSeconds` (10–3600) is the
+   fixed delay between tries; manual "run now" runs never retry, and
+   failure notifications and `onFailureJobId` chaining fire only after
+   the final try fails. Each `create_scheduled_job` call still requires
+   its own approval. Chains are same-session only, and a chained target
+   that is paused is skipped.
+8. Confirm once approved: tell the user the feature is live and when it
    will first run.
