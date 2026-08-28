@@ -77,6 +77,9 @@ OpenRouter's `LanguageModel` is provided at the Worker root (`aiLayer`) and cons
 
 Every endpoint is a method on the `AgentApi` HttpApi. All endpoints require an `Authorization: Bearer $API_TOKEN` header (the `API_TOKEN` deploy secret); requests without it get a 401.
 
+> [!WARNING]
+> The web console's copy of that token is inlined into the public JS bundle at build time, so on a publicly reachable deployment the bearer gates non-browser abuse and nothing more. Since a session's `Bash` tool is arbitrary code execution in your container on your OpenRouter key, put [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) in front of any instance you don't want strangers running code in. See [SECURITY.md](SECURITY.md).
+
 ```sh
 # Start (or continue) a session — default model
 curl https://<your-worker>/agents/support/user-abc \
@@ -294,6 +297,8 @@ wrangler secret put API_TOKEN
 bun run deploy
 ```
 
+`wrangler.jsonc` deliberately does not pin an `account_id`; wrangler resolves it from `CLOUDFLARE_ACCOUNT_ID` or your interactive login, so a fork deploys to your own account without editing the config.
+
 The `predeploy` hook runs `bun run build` and `bun scripts/upload-skills.ts` first, so a stale `apps/web/dist` can't ship and R2 skills/roles stay in sync. `wrangler deploy` reads `wrangler.jsonc`, which declares the Worker `efflux`, the `Agent`/`Sandbox`/`Registry` DurableObjects (`Sandbox` is a container built from `apps/api/container/Dockerfile`), the `efflux-skills`/`efflux-sessions` R2 buckets, the `efflux-knowledge` AI Search instance, the cron trigger, and the FE assets. On the first request after a cold deploy the `Sandbox` container spins up from zero instances, so the first tool call can 500 and then succeed on retry (see `ISSUES.md`).
 
 Useful root scripts:
@@ -305,6 +310,23 @@ Useful root scripts:
 | `bun run tail`      | `wrangler tail` — stream Worker logs                              |
 | `bun run typecheck` | `cf-typegen` + `tsc --noEmit` across the six tsconfigs          |
 | `bun run cf-typegen`| `wrangler types` — regenerate `worker-configuration.d.ts`         |
+
+## Security
+
+Efflux executes model-authored shell commands in a container — that is the point of it,
+and it makes the deployment boundary the thing to get right.
+
+- **The browser token is not an auth boundary.** `VITE_API_TOKEN` is inlined into the
+  public bundle; anyone who loads the console can read it.
+- **Put an identity boundary in front of any public instance.** Cloudflare Access is the
+  native fit.
+- **What is genuinely defended:** constant-time bearer comparison, AES-GCM-encrypted
+  session secrets, an SSRF guard on `web_fetch`, and an ask-by-default policy for `Bash`,
+  `request_secret`, and `create_scheduled_job`.
+
+[SECURITY.md](SECURITY.md) has the full threat model, the known limitations (DNS
+rebinding, generic `/approve` resolution, the unpinned base image), and how to report a
+vulnerability.
 
 ## The claim
 
@@ -335,3 +357,7 @@ A typical agent-framework "support agent" example is ~30 lines. Efflux is larger
 - Testable services. Each piece is a Layer you can swap.
 
 The foundation requires no framework.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

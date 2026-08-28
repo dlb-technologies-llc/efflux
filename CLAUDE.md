@@ -13,7 +13,7 @@ Single source of truth — the `efflux-*` skills defer here.
 - `bun run dev` — `wrangler dev` (also needs Docker). `bun run tail` — stream Worker logs. `bun run cf-typegen` — `wrangler types`.
 - `bun run dev:local` — the zero-setup local path: validates `.dev.vars` (fail-fast on missing/duplicate keys, placeholder `OPENROUTER_API_KEY`, or `VITE_API_TOKEN` ≠ `API_TOKEN`), rebuilds the FE with `VITE_API_TOKEN` inlined (and asserts it landed), seeds the default skills+roles into local Miniflare R2 (`upload-skills.ts --local`), then `wrangler dev`. Plain `bun run dev` remains raw `wrangler dev`.
 - Secrets: `wrangler secret put OPENROUTER_API_KEY` (model calls) + `API_TOKEN` (the Authorization bearer; the FE's `VITE_API_TOKEN` is inlined at build time and must match) + `SECRETS_ENCRYPTION_KEY` (AES-GCM key for session-stored secrets, `apps/api/src/SecretsCrypto.ts`) for the deployed Worker; `.dev.vars` locally (template: `.dev.vars.example`). `.dev.vars` must exist BEFORE `bun run typecheck` — the generated `Env` derives its keys from it.
-- First-time deploy provisioning (once per account): `wrangler r2 bucket create efflux-skills` + `efflux-sessions`, `wrangler ai-search create efflux-knowledge --type builtin`, then the secrets above. Deployed at `https://efflux.david-0e2.workers.dev`. A renamed `remote: true` binding (e.g. `ai_search`) blocks `wrangler dev` until its instance exists — see `ISSUES.md`.
+- First-time deploy provisioning (once per account): `wrangler r2 bucket create efflux-skills` + `efflux-sessions`, `wrangler ai-search create efflux-knowledge --type builtin`, then the secrets above. `wrangler.jsonc` pins no `account_id` — wrangler resolves it from `CLOUDFLARE_ACCOUNT_ID` or the interactive login, so never hardcode one back in. Deployed at `https://<your-worker>.workers.dev`. A renamed `remote: true` binding (e.g. `ai_search`) blocks `wrangler dev` until its instance exists — see `ISSUES.md`.
 - `bun scripts/agent.ts <name> <id> --message "..." [--url <worker-url>] [--model M] [--skill S] [--role R]` — live smoke CLI (`BASE_URL` env also works).
 - `bun run openai-smoke <name> <id> [--url <worker-url>]` — stock OpenAI-SDK smoke: configures the session (`openai/gpt-4o-mini`, `Bash:allow`), then drives a tool-using conversation (non-stream + stream) through the `/v1` facade and confirms the session in `GET /v1/models`.
 
@@ -41,6 +41,8 @@ Single source of truth — the `efflux-*` skills defer here.
 ## Landmines
 
 Read `ISSUES.md` at the repo root BEFORE touching Worker boot, secrets, DO RPC boundaries, containers, or the tool loop. It is the authority on known traps.
+
+`SECURITY.md` is the public threat model — the browser token is inlined into the FE bundle and is NOT an auth boundary. Keep it accurate when touching auth, secrets, the SSRF guard, or the approval flow.
 
 ## Skills
 
